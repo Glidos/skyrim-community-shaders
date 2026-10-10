@@ -33,6 +33,7 @@
 #include "ShaderCacheEnablePolicy.h"
 #include "State.h"
 #include "Utils/ContentHash.h"
+#include "Utils/FileSystem.h"
 #include "Utils/GenerationClaim.h"
 #include "Utils/ShaderCacheManifest.h"
 #include "Utils/ShaderCachePack.h"
@@ -455,6 +456,38 @@ namespace SIE
 			auto key = Util::WStringToString(std::wstring(relativePath));
 			std::replace(key.begin(), key.end(), '\\', '/');
 			return key;
+		}
+
+		winrt::com_ptr<ID3DBlob> ReadCachedShaderBlob(const std::wstring& a_diskPath)
+		{
+			winrt::com_ptr<ID3DBlob> blob;
+			if (FAILED(D3DReadFileToBlob(a_diskPath.c_str(), blob.put())))
+				return nullptr;
+
+			constexpr size_t headerSize = 32;
+			constexpr size_t totalSizeOffset = 24;
+			if (blob && blob->GetBufferSize() >= headerSize) {
+				const auto* bytes = static_cast<const uint8_t*>(blob->GetBufferPointer());
+				uint32_t totalSize = 0;
+				std::memcpy(&totalSize, bytes + totalSizeOffset, sizeof(totalSize));
+				if (std::memcmp(bytes, "DXBC", 4) == 0 && totalSize == blob->GetBufferSize())
+					return blob;
+			}
+
+			// A later successful compile replaces this file; deleting here could race a writer.
+			logger::warn("Ignoring malformed cached shader {}; compiling from source", Util::WStringToString(a_diskPath));
+			return nullptr;
+		}
+
+		bool WriteCachedShaderBlob(const std::wstring& a_diskPath, ID3DBlob* a_blob)
+		{
+			const std::string_view bytecode(static_cast<const char*>(a_blob->GetBufferPointer()), a_blob->GetBufferSize());
+			std::string error;
+			if (!Util::FileHelpers::WriteTextFileAtomic(a_diskPath, bytecode, error, false)) {
+				logger::error("Failed to save shader to {}: {}", Util::WStringToString(a_diskPath), error);
+				return false;
+			}
+			return true;
 		}
 
 		bool ManagedShaderPackLayoutPresent();
@@ -1137,23 +1170,8 @@ namespace SIE
 				return false;
 			}
 
-			std::error_code error;
-			std::filesystem::create_directories(
-				std::filesystem::path(a_diskPath).parent_path(),
-				error);
-			if (error) {
-				logger::error(
-					"Failed to create shader cache folder for {}: {}",
-					Util::WStringToString(a_diskPath),
-					error.message());
+			if (!WriteCachedShaderBlob(a_diskPath, a_shaderBlob))
 				return false;
-			}
-
-			const HRESULT saveResult = D3DWriteBlobToFile(a_shaderBlob, a_diskPath.c_str(), true);
-			if (FAILED(saveResult)) {
-				logger::error("Failed to save shader to {}", Util::WStringToString(a_diskPath));
-				return false;
-			}
 
 			logger::debug("Saved shader to {}", Util::WStringToString(a_diskPath));
 			RecordShaderDigest(a_diskPath, a_sourceDigest, a_compileStateDigest);
@@ -2609,13 +2627,10 @@ namespace SIE
 
 				if (diskCacheOutdated) {
 					// Fall through to recompile from source.
-				} else if (FAILED(D3DReadFileToBlob(diskPath.c_str(), &shaderBlob))) {
+				} else if (auto cached = ReadCachedShaderBlob(diskPath); !cached) {
 					logger::error("Failed to load {} shader {}::{:X}", magic_enum::enum_name(shaderClass), magic_enum::enum_name(type), descriptor);
-
-					if (shaderBlob != nullptr) {
-						shaderBlob->Release();
-					}
 				} else {
+					shaderBlob = cached.detach();
 					logger::debug("Loaded shader from {}", Util::WStringToString(diskPath));
 					if (!cache.AddCompletedShader(
 							key,
@@ -4067,10 +4082,9 @@ namespace SIE
 						} else if (!ManagedShaderPackLayoutPresent()) {
 							const auto recorded = GetShaderCacheManifest().Get(GetManifestKey(key->diskPath));
 							if (recorded && *recorded == Util::ContentHash::CombineHashes(*cachedDigest, key->looseDigest).ToHex()) {
-								if (FAILED(D3DReadFileToBlob(key->diskPath.c_str(), cached.put()))) {
-									cached = nullptr;
+								cached = ReadCachedShaderBlob(key->diskPath);
+								if (!cached)
 									logger::debug("Cannot read cached standalone shader {}; compiling from source", request.source.string());
-								}
 							}
 						}
 					}

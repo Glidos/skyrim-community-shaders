@@ -88,8 +88,10 @@ A partial managed installation never falls back to loose persistence.
 
 Standalone reuse respects disk-cache holds and the skip-unchanged setting.
 Source changes or rejected cached bytecode fall back to compilation; cache
-transitions prevent stale writes. Compilation and D3D object creation keep
-separate timing counters. Direct `D3DCompile*` callers remain uncached.
+transitions prevent stale writes. Loose cache reads reject invalid DXBC
+headers and size mismatches. Writes use atomic replacement; a failed
+replacement retains the previous file and does not publish a new manifest
+entry. Compilation and D3D object creation keep separate timing counters. Direct `D3DCompile*` callers remain uncached.
 Adding standalone shaders to the shipped inventory still requires a complete,
 declared permutation inventory.
 

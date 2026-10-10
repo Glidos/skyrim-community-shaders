@@ -7,6 +7,8 @@ foreach(
     IN
     ITEMS
         standalone_source_digest.h
+        standalone_file_direct.h
+        standalone_file_atomic.h
         standalone_compile_key.h
         standalone_cache_under_test.h
         standalone_d3d_under_test.h
@@ -22,6 +24,7 @@ add_custom_command(
     DEPENDS
         src/ShaderCache.cpp
         src/Utils/D3D.cpp
+        src/Utils/FileSystem.cpp
         tests/extract_standalone_shader_cache.cmake
         tests/extract_source_region.cmake
     VERBATIM

@@ -8,6 +8,8 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <cstdint>
+#include <cstring>
 #include <d3dcompiler.h>
 #include <functional>
 #include <iostream>
@@ -60,6 +62,13 @@ namespace Util
 {
 	std::string WStringToString(const std::wstring& value) { return std::filesystem::path(value).string(); }
 	std::string DefinesToString(std::span<const D3D_SHADER_MACRO> macros) { return ShaderDefines::Serialize(macros); }
+}
+namespace Util::FileHelpers
+{
+	// clang-format off
+#include "standalone_file_direct.h"
+#include "standalone_file_atomic.h"
+	// clang-format on
 }
 namespace CSX::Api
 {
@@ -134,7 +143,8 @@ namespace SIE
 				pack->blobs[GetManifestKey(path) + Util::ContentHash::CombineHashes(sourceDigest, packDigest).ToHex()].copy_from(blob);
 			} else if (!managed) {
 				std::filesystem::create_directories(std::filesystem::path(path).parent_path());
-				assert(SUCCEEDED(D3DWriteBlobToFile(blob, path.c_str(), true)));
+				if (!WriteCachedShaderBlob(path, blob))
+					return;
 				auto& manifest = GetShaderCacheManifest();
 				manifest.Set(GetManifestKey(path), Util::ContentHash::CombineHashes(sourceDigest, looseDigest).ToHex());
 				assert(flush);
@@ -179,6 +189,53 @@ namespace
 		file << text;
 		assert(file.good());
 	}
+	void VerifyLooseBlobIO(ID3DBlob* a_blob)
+	{
+		const std::wstring path = L"Data/ShaderCache/AtomicTests/test.cso";
+		assert(!SIE::ReadCachedShaderBlob(path));
+		assert(SIE::WriteCachedShaderBlob(path, a_blob));
+		const std::string original(static_cast<const char*>(a_blob->GetBufferPointer()), a_blob->GetBufferSize());
+		auto verifyOriginal = [&] {
+			const auto read = SIE::ReadCachedShaderBlob(path);
+			assert(read && read->GetBufferSize() == original.size());
+			assert(std::memcmp(read->GetBufferPointer(), original.data(), original.size()) == 0);
+		};
+		verifyOriginal();
+
+		std::vector<std::string> malformed{ "", original.substr(0, 31), original.substr(0, original.size() - 1), original + "x" };
+		auto badMagic = original;
+		badMagic[0] = 'X';
+		malformed.push_back(badMagic);
+		auto badLength = original;
+		const uint32_t impossibleSize = 0xffffffff;
+		std::memcpy(badLength.data() + 24, &impossibleSize, sizeof(impossibleSize));
+		malformed.push_back(badLength);
+		for (const auto& bytes : malformed) {
+			Write(path, bytes);
+			assert(!SIE::ReadCachedShaderBlob(path));
+			assert(std::filesystem::exists(path));
+			assert(SIE::WriteCachedShaderBlob(path, a_blob));
+			verifyOriginal();
+		}
+
+		winrt::com_ptr<ID3DBlob> replacement;
+		constexpr std::string_view replacementSource = "float4 main() : SV_Target { return 0; }";
+		assert(SUCCEEDED(D3DCompile(replacementSource.data(), replacementSource.size(), nullptr, nullptr, nullptr,
+			"main", "ps_5_0", 0, 0, replacement.put(), nullptr)));
+		{
+			winrt::file_handle held(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+			assert(held);
+			assert(!SIE::WriteCachedShaderBlob(path, replacement.get()));
+		}
+		verifyOriginal();
+		for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::path(path).parent_path()))
+			assert(entry.path().extension() != ".tmp");
+		assert(SIE::WriteCachedShaderBlob(path, replacement.get()));
+		const auto replaced = SIE::ReadCachedShaderBlob(path);
+		assert(replaced && replaced->GetBufferSize() == replacement->GetBufferSize());
+		assert(std::memcmp(replaced->GetBufferPointer(), replacement->GetBufferPointer(), replaced->GetBufferSize()) == 0);
+	}
+
 	struct IsolatedFiles
 	{
 		std::filesystem::path previous = std::filesystem::current_path();
@@ -318,6 +375,7 @@ int main()
 		winrt::com_ptr<ID3D11PixelShader> shader;
 		return SUCCEEDED(device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, shader.put()));
 	};
+	VerifyLooseBlobIO(compile().get());
 	before = SIE::writes;
 	assert(cache.CompileStandaloneShaderCached(request, [&] { auto blob = compile(); ++SIE::testDiskGeneration; return blob; }, create));
 	assert(SIE::writes == before);
@@ -379,5 +437,5 @@ int main()
 	assert(!Util::CompileShader(L"Data/Shaders/test.hlsl", defines, "ps_5_0"));
 	std::filesystem::remove("Data/Shaders/test.hlsl");
 	assert(!Util::CompileShader(L"Data/Shaders/test.hlsl", defines, "ps_5_0"));
-	std::cout << "Standalone shader cache: real compiler/WARP, warm reuse, identities, source/include edits, policies, corruption and invalidation passed\n";
+	std::cout << "Standalone shader cache: real compiler/WARP, warm reuse, identities, source/include edits, policies, corruption, atomic replacement and invalidation passed\n";
 }
