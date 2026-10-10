@@ -2766,6 +2766,39 @@ if(BUILD_CONTROLLER_TESTS)
         MotionSharpeningRuntimeCompile
         PROPERTIES WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     )
+    set(_core_settings_test_dir
+        "${CMAKE_CURRENT_BINARY_DIR}/core_settings_test"
+    )
+    set(_core_settings_test_headers
+        "${_core_settings_test_dir}/subrect_settings_types.h"
+        "${_core_settings_test_dir}/subrect_settings_under_test.h"
+    )
+    add_custom_command(
+        OUTPUT ${_core_settings_test_headers}
+        COMMAND
+            "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
+            "-DOUTPUT_DIRECTORY=${_core_settings_test_dir}" -P
+            "${PROJECT_SOURCE_DIR}/tests/extract_core_settings.cmake"
+        DEPENDS
+            src/Utils/Subrect.cpp
+            src/Utils/Subrect.h
+            tests/extract_core_settings.cmake
+        VERBATIM
+    )
+    add_custom_target(
+        core_settings_test_sources
+        DEPENDS ${_core_settings_test_headers}
+    )
+    add_controller_test(core_settings_test CoreSettings tests/core_settings_test.cpp)
+    add_dependencies(core_settings_test core_settings_test_sources)
+    target_include_directories(
+        core_settings_test
+        PRIVATE "${_core_settings_test_dir}"
+    )
+    target_link_libraries(
+        core_settings_test
+        PRIVATE nlohmann_json::nlohmann_json
+    )
     add_controller_test(
         motion_sharpening_settings_test
         MotionSharpeningSettings

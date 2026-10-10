@@ -53,6 +53,7 @@
 #include "ShaderCache.h"
 #include "TruePBR.h"
 #include "Utils/FileSystem.h"
+#include "Utils/SettingsOverlay.h"
 #include "Utils/SphericalHarmonics.h"
 #include "Utils/WorldLoadTransitionPolicy.h"
 #include "WeatherManager.h"
@@ -1238,7 +1239,6 @@ void State::Load(
 	logger::info("Loading default settings from: {}", defaultConfigFilePath.string());
 	const auto defaultResult = tryLoadConfig(defaultConfigFilePath, settings);
 	bool loadedDefaultFromDisk = defaultResult == Util::FileHelpers::JsonFileReadResult::Success;
-	bool sourceConfigSafeForAutomaticSave = true;
 	if (defaultResult == Util::FileHelpers::JsonFileReadResult::NotFound) {
 		logger::info("No usable default config ({}), generating a new one", defaultConfigFilePath.string());
 		std::fill(enabledClasses, enabledClasses + magic_enum::enum_integer(RE::BSShader::Type::Total) - 1, true);
@@ -1246,21 +1246,17 @@ void State::Load(
 		loadedDefaultFromDisk =
 			tryLoadConfig(defaultConfigFilePath, settings) == Util::FileHelpers::JsonFileReadResult::Success;
 		if (!loadedDefaultFromDisk) {
-			sourceConfigSafeForAutomaticSave = false;
 			logger::warn("Could not persist default settings; continuing with an in-memory baseline");
 			if (!generateFallbackSettingsInMemory())
 				return;
 		}
 	} else if (defaultResult == Util::FileHelpers::JsonFileReadResult::Error) {
-		sourceConfigSafeForAutomaticSave = false;
 		logger::error("Default config is invalid or unreadable; preserving it and using an in-memory baseline: {}", defaultConfigFilePath.string());
 		if (!generateFallbackSettingsInMemory())
 			return;
 	}
 	if (loadedDefaultFromDisk) {
-		const auto result = canonicalizeConfig(defaultConfigFilePath, settings);
-		if (result == SettingsSerialization::CanonicalizationResult::Error)
-			sourceConfigSafeForAutomaticSave = false;
+		canonicalizeConfig(defaultConfigFilePath, settings);
 		SettingsMigrations::MigrateAdaptiveBalanceRootLayer(settings);
 		if (auto adaptiveIt = settings.find(SettingsMigrations::kAdaptiveBalanceSettingsName.data());
 			adaptiveIt != settings.end())
@@ -1275,7 +1271,6 @@ void State::Load(
 			auto presetCompatibility = PresetCompatibility::Evaluate(userSettings, Plugin::VERSION_LABEL);
 			PresetCompatibility::Publish(presetCompatibility);
 			if (!presetCompatibility.ShouldApply()) {
-				sourceConfigSafeForAutomaticSave = false;
 				logger::error(
 					"Rejected user settings without modifying {}: {}",
 					configPath.string(),
@@ -1283,8 +1278,7 @@ void State::Load(
 			} else {
 				if (presetCompatibility.disposition == PresetCompatibility::Disposition::kCompatible)
 					logger::info("Accepted marked preset: {}", presetCompatibility.message);
-				if (canonicalizeConfig(configPath, userSettings) == SettingsSerialization::CanonicalizationResult::Error)
-					sourceConfigSafeForAutomaticSave = false;
+				canonicalizeConfig(configPath, userSettings);
 				const auto adaptiveBalanceIt = userSettings.find(SettingsMigrations::kAdaptiveBalanceSettingsName.data());
 				const auto legacyAdaptiveBrightnessIt =
 					userSettings.find(SettingsMigrations::kLegacyAdaptiveBrightnessSettingsName.data());
@@ -1302,6 +1296,8 @@ void State::Load(
 					adaptiveIt != userSettings.end())
 					SettingsMigrations::MarkExplicitAdaptiveBalanceWaterProfiles(*adaptiveIt);
 				for (const auto& [key, value] : userSettings.items()) {
+					if (Util::Settings::OverlayCoreSettings(settings, key, value))
+						continue;
 					auto existingIt = settings.find(key);
 					if (!userDefinedAdaptiveBalance &&
 						key == SettingsMigrations::kAdaptiveBalanceSettingsName &&
@@ -1325,7 +1321,6 @@ void State::Load(
 			evaluation.currentVersion = std::string{ Plugin::VERSION_LABEL };
 			evaluation.message = "SettingsUser.json is unreadable; defaults remain active and the source file is protected from overwrite.";
 			PresetCompatibility::Publish(std::move(evaluation));
-			sourceConfigSafeForAutomaticSave = false;
 		}
 	}
 
@@ -1438,15 +1433,7 @@ void State::Load(
 			const auto loadedVersion = versionIt != settings.end() && versionIt->is_string() ?
 			                               versionIt->get<std::string>() :
 			                               std::string{ "<missing or invalid>" };
-			if (sourceConfigSafeForAutomaticSave) {
-				logger::info("Found config for version {}; upgrading to {}", loadedVersion, currentVersion);
-				Save(a_configMode);  // Use original config mode
-			} else {
-				logger::warn(
-					"Found config for version {}, but skipped automatic upgrade to {} because one or more source configs are not safe to rewrite",
-					loadedVersion,
-					currentVersion);
-			}
+			logger::info("Loaded config for version {}; version {} will be written on save", loadedVersion, currentVersion);
 		}
 
 		FeatureIssues::ScanForOrphanedFeatureINIs();
