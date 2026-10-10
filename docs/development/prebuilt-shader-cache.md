@@ -61,6 +61,16 @@ runtime compile state.
 Generated inventories may include `captured_shader_variants`, written by
 `.github/configs/generate-shader-configs.ps1`. The builder verifies that exact
 number of entries before compiling so a truncated capture cannot be packaged.
+When shader lookup keys are consolidated after capture, retain that source
+count and set `normalized_shader_variants` to the resulting unique entry
+count. The builder validates this normalized count and requires it to be
+positive and no greater than the captured count. Normalization must preserve
+all source requests through equivalent keys and defines; it is not a new
+runtime capture. Regenerating from a fresh capture replaces this metadata.
+Lighting pixel inventories omit the specular, soft, rim and back lighting bits
+outside LOD techniques, matching `State::ModifyShaderLookup`; these flags
+remain available to shaders through the per-draw descriptor. Rebuild both
+runtime caches when changing this mapping.
 Both bundled profiles apply `PBR_GRASS=1` and the empty
 `GRASS_OPTIMIZATIONS` macro to RunGrass vertex and pixel stages only. Macro
 values must match the native factory: empty `PBR_GRASS` is a different cache

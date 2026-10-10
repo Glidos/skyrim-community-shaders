@@ -1,6 +1,7 @@
 #ifndef LIGHTING_EVAL_HLSLI
 #define LIGHTING_EVAL_HLSLI
 #include "Common/LightingCommon.hlsli"
+#include "Common/LightingFlags.hlsli"
 
 #include "Common/BRDF.hlsli"
 #include "Common/Math.hlsli"
@@ -72,14 +73,13 @@ float3 VanillaSpecular(DirectContext context, float shininess, float2 uv, float2
 	HdotN = saturate(dot(H, N));
 #endif
 
-#if defined(SPECULAR)
-	float lightColorMultiplier = exp2(shininess * log2(HdotN));
-
-#elif defined(SPARKLE)
+#if defined(SPARKLE)
 	float lightColorMultiplier = 0;
 #else
 	float lightColorMultiplier = HdotN;
 #endif
+	if (Lighting::HasSpecular())
+		lightColorMultiplier = exp2(shininess * log2(HdotN));
 
 #if defined(ANISO_LIGHTING)
 	lightColorMultiplier *= 0.7 * max(0, L.z);
@@ -123,17 +123,14 @@ void EvaluateLighting(DirectContext context, MaterialProperties material, float3
 		lightingOutput.transmission += material.BaseColor * GetFoliageTransmission(NdotL, dot(context.viewDir, context.lightDir)) * diffuseLightColor * Color::VanillaNormalization();
 	}
 #	endif
-#	if defined(SOFT_LIGHTING)
-	lightingOutput.diffuse += softLightColor * GetSoftLightMultiplier(NdotL) * material.rimSoftLightColor * Color::VanillaNormalization();
-#	endif
+	if (Lighting::HasSoftLighting())
+		lightingOutput.diffuse += softLightColor * GetSoftLightMultiplier(NdotL) * material.rimSoftLightColor * Color::VanillaNormalization();
 
-#	if defined(RIM_LIGHTING)
-	lightingOutput.diffuse += softLightColor * GetRimLightMultiplier(context.lightDir, context.viewDir, context.worldNormal) * material.rimSoftLightColor * Color::VanillaNormalization();
-#	endif
+	if (Lighting::HasRimLighting())
+		lightingOutput.diffuse += softLightColor * GetRimLightMultiplier(context.lightDir, context.viewDir, context.worldNormal) * material.rimSoftLightColor * Color::VanillaNormalization();
 
-#	if defined(BACK_LIGHTING)
-	lightingOutput.diffuse += softLightColor * saturate(-NdotL) * material.backLightColor * Color::VanillaNormalization();
-#	endif
+	if (Lighting::HasBackLighting())
+		lightingOutput.diffuse += softLightColor * saturate(-NdotL) * material.backLightColor * Color::VanillaNormalization();
 	lightingOutput.specular = VanillaSpecular(context, material.Shininess, uv, uv_ddx, uv_ddy) * material.SpecularColor * material.Glossiness * diffuseLightColor * Color::VanillaNormalization();
 #endif
 }

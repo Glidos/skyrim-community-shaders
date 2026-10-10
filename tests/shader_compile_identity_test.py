@@ -131,6 +131,48 @@ class ShaderCompileIdentityTests(unittest.TestCase):
                 self.assertGreater(len(tasks), 1000)
                 self.assertEqual(len(compile_task_defines(tasks)), len(tasks))
 
+    def test_lighting_inventory_keys_match_runtime_flag_mask(self) -> None:
+        flags = {"SPECULAR", "SOFT_LIGHTING", "RIM_LIGHTING", "BACK_LIGHTING"}
+        mask = sum(1 << bit for bit in (9, 10, 11, 12))
+        for name, expected in (("shader-validation.yaml", 220), ("shader-validation-vr.yaml", 258)):
+            path = REPO / ".github/configs" / name
+            config = yaml.safe_load(path.read_text(encoding="utf-8"))
+            BUILDER.validate_captured_variant_count(config, path)
+            lighting = next(shader for shader in config["shaders"] if shader["file"] == "Lighting.hlsl")
+            entries = lighting["configs"]["PSHADER"]["entries"]
+            self.assertEqual(len(entries), expected)
+            keys = set()
+            for entry in entries:
+                descriptor = int(entry["entry"].rsplit(":", 1)[1], 16)
+                self.assertNotIn(descriptor, keys)
+                keys.add(descriptor)
+                if (descriptor >> 24) & 0x3f not in (9, 18, 13, 15):
+                    self.assertEqual(descriptor & mask, 0)
+                    self.assertFalse(flags.intersection(entry["defines"]))
+
+    def test_normalized_inventory_retains_capture_count_and_fails_closed(self) -> None:
+        from copy import deepcopy
+        config = {
+            "captured_shader_variants": 3,
+            "normalized_shader_variants": 2,
+            "shaders": [{"file": "Lighting.hlsl", "configs": {"PSHADER": {
+                "entries": [{"entry": "Lighting:Pixel:0"}, {"entry": "Lighting:Pixel:1"}],
+            }}}],
+        }
+        before = deepcopy(config)
+        BUILDER.validate_captured_variant_count(config, Path("normalized.yaml"))
+        self.assertEqual(config, before)
+        for invalid in (None, True, 0, -1, 4, "2", 2.5, 1):
+            with self.subTest(normalized=invalid):
+                candidate = dict(config, normalized_shader_variants=invalid)
+                with self.assertRaises(SystemExit):
+                    BUILDER.validate_captured_variant_count(candidate, Path("invalid.yaml"))
+        for missing in ("captured_shader_variants", "normalized_shader_variants"):
+            candidate = dict(config)
+            del candidate[missing]
+            with self.assertRaises(SystemExit):
+                BUILDER.validate_captured_variant_count(candidate, Path("incomplete.yaml"))
+
     def test_macro_encoding_preserves_boundaries_and_fxc_defaults(self) -> None:
         def encoded(defines):
             return compile_task_defines([("Test.hlsl", "PSHADER", "main:1", defines)])[("Test", "1.pso")]

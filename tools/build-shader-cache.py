@@ -77,6 +77,7 @@ COMPATIBILITY_VARIANTS_FILE = Path("config/shader-compatibility-variants.json")
 PUBLICATION_REPLACE_ATTEMPTS = 20
 PUBLICATION_REPLACE_RETRY_SECONDS = 0.5
 CAPTURED_VARIANT_COUNT_KEY = "captured_shader_variants"
+NORMALIZED_VARIANT_COUNT_KEY = "normalized_shader_variants"
 CSX_PLUGIN_VERSION_PATTERN = re.compile(
     r"^CSX (?P<version>[0-9]+\.[0-9]+(?:\.[0-9]+)?)-(?P<runtime>SE|VR)$"
 )
@@ -1651,15 +1652,27 @@ def apply_cache_profile_defines(
 
 
 def validate_captured_variant_count(config: dict[str, object], config_path: Path) -> None:
-    """Ensure a generated inventory still contains every captured variant."""
+    """Validate inventory size while retaining capture provenance after normalization."""
     expected = config.get(CAPTURED_VARIANT_COUNT_KEY)
+    normalized = config.get(NORMALIZED_VARIANT_COUNT_KEY)
     if expected is None:
+        if NORMALIZED_VARIANT_COUNT_KEY in config:
+            raise SystemExit(f"normalized shader config requires its captured count: {config_path}")
         return
     if isinstance(expected, bool) or not isinstance(expected, int) or expected < 1:
         raise SystemExit(
             f"shader config {CAPTURED_VARIANT_COUNT_KEY} must be a positive integer: "
             f"{config_path}"
         )
+
+    captured = expected
+    if NORMALIZED_VARIANT_COUNT_KEY in config:
+        if isinstance(normalized, bool) or not isinstance(normalized, int) or not 0 < normalized <= captured:
+            raise SystemExit(
+                f"shader config {NORMALIZED_VARIANT_COUNT_KEY} must be a positive integer "
+                f"no greater than its captured count: {config_path}"
+            )
+        expected = normalized
 
     shaders = config.get("shaders")
     if not isinstance(shaders, list):
@@ -1683,9 +1696,12 @@ def validate_captured_variant_count(config: dict[str, object], config_path: Path
     if actual != expected:
         raise SystemExit(
             f"shader config inventory is incomplete: {actual} variants are present, "
-            f"but its clean runtime capture declared {expected}: {config_path}"
+            f"but its inventory metadata declares {expected}: {config_path}"
         )
-    print(f"shader config: validated {actual} captured variants from {config_path}")
+    if normalized is not None:
+        print(f"shader config: validated {actual} normalized variants from {captured} captured entries: {config_path}")
+    else:
+        print(f"shader config: validated {actual} captured variants from {config_path}")
 
 
 def filter_profile_defines(

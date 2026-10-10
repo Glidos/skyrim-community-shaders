@@ -185,16 +185,16 @@ namespace Skylighting
 		float Visibility;
 	};
 
-	ShadowedSample SampleWithShadow(float3 positionMS, float3 normalWS)
+	/** Samples visibility only when the material and current shadow data require it. */
+	ShadowedSample SampleWithShadow(float3 positionMS, float3 normalWS, bool sampleShadowVisibility = true)
 	{
 		ShadowedSample result = (ShadowedSample)0;
 		result.Probe = GetUnoccludedProbe();
 		result.Visibility = 1.0;
 
-		// Preserve the existing two-argument sampling cost when the current frame
-		// has no valid directional-shadow inputs. Callers retain their old shadow
-		// fallback and do not read a stale visibility volume.
-		if (SharedData::skylightingSettings.ShadowDataAvailable == 0) {
+		// Materials without soft-shadow lighting keep the probe-only sampling cost.
+		// Missing directional inputs must not read a stale visibility volume.
+		if (!sampleShadowVisibility || SharedData::skylightingSettings.ShadowDataAvailable == 0) {
 			result.Probe = Sample(positionMS, normalWS);
 		} else {
 			const SharedData::SkylightingSettings params = SharedData::skylightingSettings;
