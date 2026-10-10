@@ -305,6 +305,7 @@ struct AdaptiveBrightness : Feature
 	mutable float smoothedWaterWindSpeed = 0.0f;
 	mutable uint32_t smoothedWaterWindFrame = 0;
 	mutable bool waterWindSmoothingInitialized = false;
+	mutable bool commonBufferNeedsVanillaPointLights = false;
 	bool performanceCostMeasurementEnabled = true;
 	bool weatherColorHookInstalled = false;
 
@@ -338,7 +339,9 @@ struct AdaptiveBrightness : Feature
 	bool IsRuntimeEnabled() const;
 	/** Return the global final godray multiplier, or neutral while Adaptive Balance is bypassed. */
 	float GetEffectiveGodrayFinalBrightness() const;
+	/** Resolves shared lighting and refreshes its matching per-draw point-light requirement. */
 	PerFrameData GetCommonBufferData() const;
+	/** Uses the latest shared-lighting buffer state without recomposing profiles for each draw. */
 	bool NeedsVanillaPointLightData() const;
 	void UpdateVanillaPointLightData(RE::BSRenderPass* a_pass, uint32_t a_lightCount, uint32_t a_bufferRegister);
 	EffectiveLinearLightingSettings GetEffectiveLinearLightingSettings(

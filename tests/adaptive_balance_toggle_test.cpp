@@ -1170,8 +1170,91 @@ void CheckFinalGodrayBrightness()
 		assert(!ValidateAdaptiveBalanceVisuals({ { "godrayFinalBrightness", value } }).empty());
 }
 
+void CheckVanillaPointLightRequirements()
+{
+	AdaptiveBrightness balance;
+	globals::features::linearLighting.runtimeEnabled = false;
+	assert(!balance.NeedsVanillaPointLightData());
+	assert(balance.profileResolutions == 0);
+
+	const auto checkDraws = [&](bool expected) {
+		const auto resolutions = balance.profileResolutions;
+		for (unsigned draw = 0; draw < 1000; ++draw)
+			assert(balance.NeedsVanillaPointLightData() == expected);
+		assert(balance.profileResolutions == resolutions);
+	};
+
+	using Profile = AdaptiveBrightness::ProfileSettings;
+	for (auto field : { &Profile::linearPointLightMult, &Profile::spotlightMult,
+			 &Profile::linearSpotlightMult, &Profile::omnidirectionalBulbMult,
+			 &Profile::linearOmnidirectionalBulbMult }) {
+		balance.settings.globalProfile.*field = 2.0f;
+		balance.GetCommonBufferData();
+		checkDraws(true);
+
+		// UI inspection must not change the requirement before shader constants refresh.
+		balance.settings.globalProfile.*field = 1.0f;
+		balance.GetEffectiveSharedLightingSettings();
+		checkDraws(true);
+		balance.GetCommonBufferData();
+		checkDraws(false);
+	}
+
+	balance.settings.globalProfile.pointLightMult = 2.0f;
+	balance.settings.globalProfile.linearPointLightMult = 2.0f;
+	balance.GetCommonBufferData();
+	checkDraws(false);
+	balance.settings.globalProfile = Profile::GlobalDefaults();
+
+	Profile day, night;
+	day.advanced = night.advanced = true;
+	night.linearPointLightMult = 2.0f;
+	balance.testProfileBlend = { &day, &night, 0.0f };
+	balance.GetCommonBufferData();
+	checkDraws(false);
+	balance.testProfileBlend.factor = 0.5f;
+	balance.GetCommonBufferData();
+	checkDraws(true);
+
+	AdaptiveBrightness::LocationOverride location;
+	balance.testLocationLayers = { &location };
+	location.layered = false;
+	balance.GetCommonBufferData();
+	checkDraws(false);
+	location.layered = true;
+	balance.GetCommonBufferData();
+	checkDraws(true);
+
+	for (auto gate : { &balance.settings.enabled, &balance.performanceCostMeasurementEnabled,
+			 &balance.loaded, &RE::PlayerCharacter::GetSingleton()->hasCell }) {
+		*gate = false;
+		balance.GetCommonBufferData();
+		checkDraws(false);
+		*gate = true;
+		balance.GetCommonBufferData();
+		checkDraws(true);
+	}
+	globals::state->menuOpen = true;
+	balance.GetCommonBufferData();
+	checkDraws(false);
+	globals::state->menuOpen = false;
+	balance.GetCommonBufferData();
+	checkDraws(true);
+
+	balance.SetEnabled(false);
+	balance.GetCommonBufferData();
+	globals::features::linearLighting.runtimeEnabled = true;
+	checkDraws(true);
+	balance.loaded = false;
+	checkDraws(false);
+	balance.loaded = true;
+	globals::features::linearLighting.runtimeEnabled = false;
+	checkDraws(false);
+}
+
 int main()
 {
+	CheckVanillaPointLightRequirements();
 	CheckFinalGodrayBrightness();
 	CheckAppearanceProfiles();
 	CheckSkyGradientOwnership();

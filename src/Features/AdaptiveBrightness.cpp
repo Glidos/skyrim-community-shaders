@@ -3900,6 +3900,7 @@ void AdaptiveBrightness::ResetWaterWindSmoothing() const
 AdaptiveBrightness::PerFrameData AdaptiveBrightness::GetCommonBufferData() const
 {
 	const auto effectiveSettings = GetEffectiveSharedLightingSettings();
+	commonBufferNeedsVanillaPointLights = UsesClassifiedPointLightMultipliers(effectiveSettings);
 
 	PerFrameData data{};
 	data.skyBrightness = effectiveSettings.skyBrightness;
@@ -3939,7 +3940,7 @@ bool AdaptiveBrightness::NeedsVanillaPointLightData() const
 	if (globals::features::linearLighting.IsRuntimeEnabled())
 		return true;
 
-	return UsesClassifiedPointLightMultipliers(GetEffectiveSharedLightingSettings());
+	return commonBufferNeedsVanillaPointLights;
 }
 
 void AdaptiveBrightness::UpdateVanillaPointLightData(
