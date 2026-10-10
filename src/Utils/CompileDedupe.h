@@ -212,12 +212,13 @@ namespace Util::CompileDedupe
 	{
 		if (!entry)
 			return;
+		// Retry admission must be ready before existing waiters can wake.
+		registry->Forget(key, entry);
 		{
 			std::scoped_lock lock(entry->mutex);
 			entry->state = Entry::State::Failed;
 		}
 		entry->ready.notify_all();
-		registry->Forget(key, entry);
 		entry.reset();
 	}
 }
