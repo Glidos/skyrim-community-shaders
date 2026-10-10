@@ -3558,6 +3558,7 @@ if(BUILD_CONTROLLER_TESTS)
         tests/shader_cache_provenance_test.cpp
     )
     include("${PROJECT_SOURCE_DIR}/tests/shader_cache_variants.cmake")
+    include("${PROJECT_SOURCE_DIR}/tests/shared_shader_compile.cmake")
     add_controller_test(
         shader_compile_identity_test
         ShaderCompileIdentity

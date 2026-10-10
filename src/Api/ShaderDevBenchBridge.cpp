@@ -161,6 +161,7 @@ namespace
 		Snapshot001 snapshot;
 		const auto status = a_api.GetSnapshot(a_api.context, &snapshot);
 		auto snapshotJson = SnapshotJson(snapshot);
+		snapshotJson["compilation"]["contentDedupeTasks"] = globals::shaderCache ? globals::shaderCache->GetContentDedupeTasks() : 0;
 		snapshotJson["compilation"]["recentFailures"] = globals::shaderCache ?
 		                                                     RecentFailuresJson(globals::shaderCache->GetRecentCompileFailures()) :
 		                                                     json::array();
@@ -428,7 +429,7 @@ namespace CSX::Api::ShaderDevBenchBridge
 			return;
 		}
 		const char* descriptor = R"({
-			"description":"Versioned CSX shader, feature, compilation, and cache lifecycle API. snapshot.compilation.recentFailures contains the last 32 source compile failures as {key,path,error,epoch,frame}; error text is capped at 2000 bytes. Mutations use preflight followed by execute with the exact same arguments and returned token. backgroundCompile releases the boot compile wait and wakes the dispatcher to apply the background thread budget. exportTrace writes completed task timings as Chrome Trace JSON after a build finishes. set_skip_unchanged permits only content-verified disk hits when true; false skips disk reads while preserving disk writes.",
+			"description":"Versioned CSX shader, feature, compilation, and cache lifecycle API. snapshot.compilation.sourceCompiles counts actual compiler invocations; contentDedupeTasks counts tasks reusing identical preprocessed bytecode across different shader keys. snapshot.compilation.recentFailures contains the last 32 source compile failures as {key,path,error,epoch,frame}; error text is capped at 2000 bytes. Mutations use preflight followed by execute with the exact same arguments and returned token. backgroundCompile releases the boot compile wait and wakes the dispatcher to apply the background thread budget. exportTrace writes completed task timings as Chrome Trace JSON after a build finishes. set_skip_unchanged permits only content-verified disk hits when true; false skips disk reads while preserving disk writes.",
 			"inputSchema":{
 				"type":"object",
 				"required":["contractMajor","clientId","commandId","action"],
@@ -437,7 +438,7 @@ namespace CSX::Api::ShaderDevBenchBridge
 					"clientId":{"type":"string","minLength":1,"maxLength":128},
 					"commandId":{"type":"string","minLength":1,"maxLength":128},
 					"expectedBuildId":{"type":"string"},
-					"action":{"type":"string","enum":["registry","snapshot","features","preflight","execute","backgroundCompile","exportTrace"],"description":"backgroundCompile atomically enables background compilation and wakes the dispatcher; result.changed reports whether the mode changed."},
+					"action":{"type":"string","enum":["registry","snapshot","features","preflight","execute","backgroundCompile","exportTrace"],"description":"snapshot includes compilation.contentDedupeTasks, the count of shared bytecode results across different shader keys. backgroundCompile atomically enables background compilation and wakes the dispatcher; result.changed reports whether the mode changed."},
 					"path":{"type":"string","description":"exportTrace only: destination relative to the Community Shaders log directory; defaults to compile-trace.json."},
 					"mutation":{
 						"type":"object",

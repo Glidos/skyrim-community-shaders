@@ -319,6 +319,8 @@ namespace SIE
 		void IncCacheHit(std::optional<uint64_t> a_taskGeneration);
 		/** @brief Counts a source compile if it belongs to the active generation. */
 		void IncSourceCompile(std::optional<uint64_t> a_taskGeneration);
+		/** @brief Counts shared bytecode reuse only for the active generation. */
+		void IncContentDedupe(std::optional<uint64_t> a_taskGeneration);
 		/** @brief Latches timing when a current-generation source compile begins. */
 		void MarkPhaseStarted(std::optional<uint64_t> a_taskGeneration);
 		/** @brief Returns whether a task still belongs to the active compilation batch. */
@@ -340,7 +342,8 @@ namespace SIE
 		std::atomic<uint32_t> dispatchedTasksInFlight = 0;  // tasks admitted by WaitTake's throttle
 		std::atomic<uint64_t> cacheHitTasks = 0;            // number of compiles of a previously seen shader combo
 		std::atomic<uint64_t> diskHitTasks = 0;             // tasks resolved from disk cache rather than compiled
-		std::atomic<uint64_t> sourceCompileTasks = 0;       // tasks that reached source compilation after cache lookup
+		std::atomic<uint64_t> sourceCompileTasks = 0;       // actual compiler invocations after cache lookup
+		std::atomic<uint64_t> contentDedupeTasks = 0;       // tasks reusing identical preprocessed bytecode
 		std::atomic<uint64_t> diskHitPriorityWeight = 0;    // cumulative priority weight of disk-hit tasks
 		LARGE_INTEGER compilationPhaseStart = { 0 };        // QPC timestamp when the first real source compile begins
 		std::atomic<bool> compilationPhaseStarted = false;  // set when first actual compilation begins
@@ -657,6 +660,10 @@ namespace SIE
 		uint64_t GetTotalTasks();
 		uint64_t GetDiskHitTasks();
 		uint64_t GetSourceCompileTasks();
+		/** @brief Returns tasks reusing bytecode from another shader key. */
+		uint64_t GetContentDedupeTasks();
+		/** @brief Records shared bytecode reuse for the active generation. */
+		void IncContentDedupeTasks(std::optional<uint64_t> a_taskGeneration = std::nullopt);
 		void IncCacheHitTasks(std::optional<uint64_t> a_taskGeneration = std::nullopt);
 		void IncSourceCompileTasks(std::optional<uint64_t> a_taskGeneration = std::nullopt);
 		/** @brief Marks the start of a real source compilation. */
