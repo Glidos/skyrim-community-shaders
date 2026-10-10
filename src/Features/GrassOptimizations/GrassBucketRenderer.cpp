@@ -98,7 +98,9 @@ namespace
 		uint32_t overrideDistance;
 		float collisionDistance;
 		uint32_t padding1 = 0, padding2 = 0;
+		std::array<uint32_t, 4> indexCounts{};
 	};
+	static_assert(sizeof(Parameters) == 192 && offsetof(Parameters, indexCounts) == 176);
 	struct DrawConstants
 	{
 		uint32_t enabled, eye, base;
@@ -1520,6 +1522,7 @@ bool GrassBucketRenderer::Impl::DrawBucket(Bucket& bucket, Outcome& outcome)
 		frameSettings.RenderDistanceOverride > 0 ? frameSettings.RenderDistanceOverride : nativeRenderDistance,
 		frameSettings.EdgeFadeStart, frameSettings.SimpleShadingPixelSize, representative.bound.radius,
 		std::sqrt(std::max(1.0f, representative.triangles / 8.0f)), frameSettings.RenderDistanceOverride > 0 ? 1u : 0u, frameSettings.CollisionDistance };
+	params.indexCounts = { meshes[0].indexCount, meshes[1].indexCount, meshes[2].indexCount, 0 };
 	if (frameSettings.EnableOcclusionCulling && hiZ.Build(context.get(), frame)) {
 		params.depthWidth = hiZ.Width();
 		params.depthHeight = hiZ.Height();
@@ -1536,19 +1539,16 @@ bool GrassBucketRenderer::Impl::DrawBucket(Bucket& bucket, Outcome& outcome)
 	}
 #endif
 	std::array<uint8_t, 6 * 256> drawBytes{};
-	std::array<uint32_t, 48> args{};
 	for (uint32_t tier = 0; tier < 3; ++tier)
 		for (uint32_t eye = 0; eye < eyes; ++eye) {
 			const auto slot = tier * eyes + eye;
 			const DrawConstants constants{ 1, eye, slot * capacity, frameSettings.CollisionDistance, params.origin };
 			std::memcpy(drawBytes.data() + slot * 256, &constants, sizeof(constants));
-			args[slot * 8 + 3] = meshes[tier].indexCount;
 		}
 	Upload(context.get(), *drawConstants, drawBytes.data(), drawBytes.size());
 	Upload(context.get(), *frustumConstants, &frustumData, sizeof(frustumData));
 	Upload(context.get(), *parameters, &params, sizeof(params));
 	Upload(context.get(), *table, cullingSlices.data(), cullingSlices.size() * sizeof(Slice));
-	context->UpdateSubresource(arguments->resource.get(), 0, nullptr, args.data(), 0, 0);
 	DispatchBucket(bucket, shader, params, nativeGeometry.get(), first, count);
 	// All allocations and uploads precede the first draw; never render native members afterward.
 	outcome = Outcome::Batched;
@@ -1612,6 +1612,9 @@ void GrassBucketRenderer::Impl::DispatchBucket(Bucket& bucket, ID3D11ComputeShad
 	}
 	{
 		GrassD3D::ComputeState restore(context.get(), kCullUAVCount);
+		// Reset counters before any thread group can append survivors.
+		constexpr UINT zeros[4]{};
+		context->ClearUnorderedAccessViewUint(arguments->uav.get(), zeros);
 		auto cb = parameters->resource.get();
 		auto native = nativeGeometry;
 		winrt::com_ptr<ID3D11Buffer> stereo;

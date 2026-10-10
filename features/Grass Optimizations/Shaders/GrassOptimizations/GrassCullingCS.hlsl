@@ -21,6 +21,7 @@ cbuffer Parameters : register(b0)
 	uint OverrideDistance;
 	float CollisionDistance;
 	uint Padding1, Padding2;
+	uint4 IndexCounts;
 };
 
 cbuffer FrustumParameters : register(b3)
@@ -183,6 +184,9 @@ bool Hidden(float2 lo, float2 hi, float nearest, uint eye, out uint reason, out 
 	return nearest > farthest + DepthBias;
 }
 [numthreads(64, 1, 1)] void main(uint3 id : SV_DispatchThreadID) {
+	// Initialize every eye/LOD slot even when its instances are absent or culled.
+	if (id.x < 3 * EyeCount)
+		Arguments.Store(id.x * 32 + 12, IndexCounts[id.x / EyeCount]);
 	if (id.x >= InstanceCount)
 		return;
 	uint left = 0, right = SliceCount;

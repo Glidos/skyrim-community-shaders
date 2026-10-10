@@ -14,7 +14,13 @@ void RunCullingShader(bool vr)
 	ComPtr<ID3D11ComputeShader> shader;
 	Check(device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, shader.GetAddressOf()));
 	Util::SetResourceName(shader.Get(), "GrassTest::CullCS");
-	const UINT eyes = vr ? 2 : 1, capacity = 64;
+	D3D11_SHADER_BUFFER_DESC parameterLayout{};
+	D3D11_SHADER_VARIABLE_DESC indexCountLayout{};
+	const auto parameterReflection = reflection->GetConstantBufferByName("Parameters");
+	Check(parameterReflection->GetDesc(&parameterLayout));
+	Check(parameterReflection->GetVariableByName("IndexCounts")->GetDesc(&indexCountLayout));
+	Require(parameterLayout.Size == 192 && indexCountLayout.StartOffset == 176 && indexCountLayout.Size == 16, "Indirect index counts changed the CPU parameter layout");
+	const UINT eyes = vr ? 2 : 1, capacity = 128;
 	using Record = std::array<uint32_t, 8>;
 	const std::array<Record, 3> records{ Record{ 0, 0x3c003800, 0x3c00, 0, 0x3c000000, 0x3c000000, 0, 0 },
 		Record{ 0x4400, 0x3c003800, 0x3c00, 0, 0x3c000000, 0x3c000000, 0, 0 },
@@ -43,7 +49,9 @@ void RunCullingShader(bool vr)
 	for (auto& record : sentinel) record.fill(0xdeadbeef);
 	auto output = makeBuffer(UINT(sentinel.size() * sizeof(Record)), D3D11_BIND_UNORDERED_ACCESS, 0, D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS, sentinel.data(), "GrassTest::Output");
 	auto extras = makeBuffer(capacity * eyes * 3 * 24, D3D11_BIND_UNORDERED_ACCESS, 24, D3D11_RESOURCE_MISC_BUFFER_STRUCTURED, nullptr, "GrassTest::Extras");
-	auto args = makeBuffer(192, D3D11_BIND_UNORDERED_ACCESS, 0, D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS, nullptr, "GrassTest::Args");
+	std::array<uint32_t, 48> initialArguments;
+	initialArguments.fill(0xdeadbeef);
+	auto args = makeBuffer(sizeof(initialArguments), D3D11_BIND_UNORDERED_ACCESS, 0, D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS | D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS, initialArguments.data(), "GrassTest::Args");
 	auto counters = makeBuffer(19 * sizeof(uint32_t), D3D11_BIND_UNORDERED_ACCESS, 0, D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS, nullptr, "GrassTest::Counters");
 	ComPtr<ID3D11ShaderResourceView> inputSRV, tableSRV;
 	D3D11_SHADER_RESOURCE_VIEW_DESC inputView{};
@@ -112,6 +120,7 @@ void RunCullingShader(bool vr)
 	params.SetVariable("SliceCount", 2u);
 	params.SetVariable("Capacity", capacity);
 	params.SetVariable("EyeCount", eyes);
+	std::array<UINT, 4> indexCounts{ 9, 6, 3, 0 };
 	params.SetVariable("ModelBound", std::array<float, 4>{ 0, 0, 0, .05f });
 	params.SetVariable("QualityRadius", .05f);
 	params.SetVariable("MeshWeight", 1.0f);
@@ -147,7 +156,8 @@ void RunCullingShader(bool vr)
 		context->Unmap(staging.Get(), 0);
 		return result;
 	};
-	const auto dispatch = [&](bool frustum, bool density, bool hiZ, bool lod) {
+	const auto dispatch = [&](bool frustum, bool density, bool hiZ, bool lod, UINT groups = 1) {
+		params.SetVariable("IndexCounts", indexCounts);
 		params.SetVariable("FrustumEnabled", UINT(frustum));
 		params.SetVariable("DensityEnabled", UINT(density));
 		params.SetVariable("DepthMips", hiZ ? 1u : 0u);
@@ -162,10 +172,18 @@ void RunCullingShader(bool vr)
 		context->CSSetShaderResources(0, 3, srvs.data());
 		context->CSSetUnorderedAccessViews(0, 4, uavs.data(), nullptr);
 		context->CSSetShader(shader.Get(), nullptr, 0);
-		context->Dispatch(1, 1, 1);
+		context->Dispatch(groups, 1, 1);
 		uavs.fill(nullptr);
 		context->CSSetUnorderedAccessViews(0, 4, uavs.data(), nullptr);
-		return read(args.Get());
+		const auto values = read(args.Get());
+		for (UINT slot = 0; slot < 6; ++slot) {
+			const UINT expectedIndices = slot < 3 * eyes ? indexCounts[slot / eyes] : 0;
+			Require(values[slot * 8 + 3] == expectedIndices, "Indirect draw has stale or missing mesh index counts");
+			for (UINT word = 0; word < 8; ++word)
+				if (word != 3 && word != 4)
+					Require(values[slot * 8 + word] == 0, "Indirect draw offsets or padding were not reset");
+		}
+		return values;
 	};
 	auto values = dispatch(false, false, false, false);
 	for (UINT eye = 0; eye < eyes; ++eye) Require(values[eye * 8 + 4] == 3, "Full-density mode dropped an instance");
@@ -297,6 +315,50 @@ void RunCullingShader(bool vr)
 		stereo->Bind(context.Get());
 		values = dispatch(false, false, false, false);
 		Require(values[4] == 3 && values[12] == 0, "VR mono pass submitted duplicate eye geometry");
+		stereo->SetVariable("StereoEnabled", 1.0f);
+		stereo->Bind(context.Get());
+	}
+
+	// Cross-group appends and short batches share the same complete argument initialization.
+	constexpr UINT manyInstances = 65;
+	const std::vector<Record> manyRecords(manyInstances, records[0]);
+	auto manyInput = makeBuffer(UINT(manyRecords.size() * sizeof(Record)), D3D11_BIND_SHADER_RESOURCE, 0,
+		D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS, manyRecords.data(), "GrassTest::ManyInstances");
+	inputView.BufferEx.NumElements = manyInstances * 8;
+	Check(device->CreateShaderResourceView(manyInput.Get(), &inputView, inputSRV.ReleaseAndGetAddressOf()));
+	Util::SetResourceName(inputSRV.Get(), "GrassTest::ManyInstances SRV");
+	const std::array<Slice, 2> manySlices{ Slice{ 0, manyInstances, manyInstances, 0, { 0, 0, 0, 1 } }, Slice{} };
+	context->UpdateSubresource(table.Get(), 0, nullptr, manySlices.data(), 0, 0);
+	params.SetVariable("SliceCount", 1u);
+	params.SetVariable("BandPixels", 0.0f);
+	params.SetVariable("MidPixels", 1e9f);
+	for (bool diagnostic : { true, false }) {
+		if (!diagnostic) {
+			std::vector<D3D_SHADER_MACRO> productionDefines;
+			if (vr)
+				productionDefines.push_back({ "VR", "1" });
+			auto productionCode = Compile(L"features/Grass Optimizations/Shaders/GrassOptimizations/GrassCullingCS.hlsl", "cs_5_0", productionDefines);
+			Check(device->CreateComputeShader(productionCode->GetBufferPointer(), productionCode->GetBufferSize(), nullptr, shader.ReleaseAndGetAddressOf()));
+			Util::SetResourceName(shader.Get(), "GrassTest::ProductionCullCS");
+		}
+		for (UINT instances : { 0u, 1u, manyInstances }) {
+			params.SetVariable("InstanceCount", instances);
+			const UINT groups = std::max(1u, (instances + 63) / 64);
+			for (UINT tier = 0; tier < 3; ++tier) {
+				indexCounts = tier == 0 ? std::array<UINT, 4>{ 18, 0, 0, 0 } : std::array<UINT, 4>{ 18, 12, 6, 0 };
+				params.SetVariable("FarPixels", tier == 2 ? 1e9f : 0.0f);
+				values = dispatch(false, false, false, tier != 0, groups);
+				for (UINT slot = 0; slot < 6; ++slot) {
+					const UINT expectedInstances = slot < 3 * eyes && slot / eyes == tier ? instances : 0;
+					Require(values[slot * 8 + 4] == expectedInstances, "Argument reset lost or accumulated survivors across batches or thread groups");
+				}
+			}
+		}
+		params.SetVariable("MinPixels", 1e8f);
+		params.SetVariable("FullPixels", 2e8f);
+		values = dispatch(false, true, false, false, 2);
+		for (UINT slot = 0; slot < 6; ++slot)
+			Require(values[slot * 8 + 4] == 0, "Fully culled batch retained previous draw counts");
 	}
 }
 
