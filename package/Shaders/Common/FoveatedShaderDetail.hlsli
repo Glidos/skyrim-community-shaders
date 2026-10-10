@@ -27,4 +27,10 @@ bool FoveatedIsShaderDetailActive(float detailWeight)
 	return detailWeight > 0.0001f;
 }
 
+/** Uses the lower valid eye weight so corresponding surfaces share the detail decision. */
+float FoveatedCombineEyeWeights(float ownWeight, float otherWeight, bool otherValid)
+{
+	return otherValid ? min(ownWeight, otherWeight) : ownWeight;
+}
+
 #endif

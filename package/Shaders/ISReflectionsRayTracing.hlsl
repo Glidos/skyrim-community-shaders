@@ -41,6 +41,7 @@ static const float rayLength = 1.0;
 
 #	if defined(VR)
 static const int minFoveatedIterations = 16;
+static const float kSSRFoveationDepthAgreeThreshold = 0.05f;
 
 float GetVRSSRFoveationWeight(float ssrFoveationMode, float2 eyeUv, uint eyeIndex)
 {
@@ -258,16 +259,6 @@ PS_OUTPUT main(PS_INPUT input)
 		screenPosition, eyeIndex, NormalTex, FrameBuffer::DynamicResolutionParams1.xy);
 	depthScreenPosition = VRStereoEffects::ClampDynamicStereoUVToEyeTexel(
 		screenPosition, eyeIndex, depthTextureDimensions, FrameBuffer::DynamicResolutionParams1.xy);
-
-	float ssrFoveationMode = SharedData::VRFoveationModes.x;
-	[branch] if (ssrFoveationMode >= FOVEATED_SHADER_DETAIL_MODE_FEATHERED)
-	{
-		ssrFoveationWeight = GetVRSSRFoveationWeight(ssrFoveationMode, uv, eyeIndex);
-		[branch] if (!ShouldEvaluateVRSSR(ssrFoveationWeight))
-		{
-			return psout;
-		}
-	}
 #	endif
 
 	[branch] if (NormalTex.Sample(NormalSampler, normalScreenPosition).z <= 0)
@@ -278,6 +269,33 @@ PS_OUTPUT main(PS_INPUT input)
 	float3 viewNormal = DefaultNormal;
 
 	float depth = DepthTex.SampleLevel(DepthSampler, depthScreenPosition, 0).x;
+
+#	if defined(VR)
+	float ssrFoveationMode = SharedData::VRFoveationModes.x;
+	[branch] if (ssrFoveationMode >= FOVEATED_SHADER_DETAIL_MODE_FEATHERED)
+	{
+		float ownFoveationWeight = GetVRSSRFoveationWeight(ssrFoveationMode, uv, eyeIndex);
+		float otherFoveationWeight = ownFoveationWeight;
+		bool otherFoveationValid = false;
+		Stereo::StereoBilateralResult reprojection = Stereo::ReprojectToOtherEye(
+			Stereo::ConvertToStereoUV(uv, eyeIndex), depth, eyeIndex, float2(depthTextureDimensions));
+		[branch] if (reprojection.valid)
+		{
+			float2 otherEyeScreenPosition = VRStereoEffects::ClampDynamicStereoUVToEyeTexel(
+				FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(reprojection.otherStereoUV),
+				1 - eyeIndex, depthTextureDimensions, FrameBuffer::DynamicResolutionParams1.xy);
+			float otherDepth = DepthTex.SampleLevel(DepthSampler, otherEyeScreenPosition, 0).x;
+			otherFoveationValid = Stereo::IsReprojectionExact(reprojection, depth, otherDepth, kSSRFoveationDepthAgreeThreshold);
+			otherFoveationWeight = GetVRSSRFoveationWeight(
+				ssrFoveationMode, Stereo::ConvertFromStereoUV(reprojection.otherStereoUV, 1 - eyeIndex), 1 - eyeIndex);
+		}
+		ssrFoveationWeight = FoveatedCombineEyeWeights(ownFoveationWeight, otherFoveationWeight, otherFoveationValid);
+		[branch] if (!ShouldEvaluateVRSSR(ssrFoveationWeight))
+		{
+			return psout;
+		}
+	}
+#	endif
 
 	float4 positionVS = float4(float2(uv.x, 1.0 - uv.y) * 2.0 - 1.0, depth, 1.0);
 	positionVS = mul(FrameBuffer::CameraProjInverse[eyeIndex], positionVS);
