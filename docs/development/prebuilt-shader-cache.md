@@ -6,6 +6,12 @@ Use `tools/build-shader-cache.py` for cache generation and
 `tools/build-fomod-package.py` for release AIO assembly. Do not assemble cache
 blobs, metadata, or installer mappings by hand.
 
+The runtime log is `CSX.log` in the game's standard SKSE log directory.
+`Plugin::LOG_NAME`, generated from `PLUGIN_LOG_NAME`, controls its basename;
+the DLL, SKSE identity and settings directory remain `CommunityShaders`.
+The shader-config generator can also discover `CommunityShaders.log` from
+older builds when `CSX.log` is absent, or read an explicit `-LogFile` path.
+
 ## Purpose and scope
 
 The cache distributes compiled DXBC for CSX' engine-managed
@@ -377,7 +383,7 @@ the tool refuses linked paths and non-file destinations.
 Capture from the exact runtime/profile being shipped. Disable any installed
 prebuilt shader cache, clear the runtime disk cache, select Debug or Trace log
 level, start the game, and wait until the shader compilation counter reaches
-zero before exiting. Preserve the completed `CommunityShaders.log`, then run:
+zero before exiting. Preserve the completed `CSX.log`, then run:
 
 ```powershell
 .\.github\configs\generate-shader-configs.ps1 `
@@ -659,7 +665,7 @@ For a smoke test, use a clean mod-manager profile, move any existing
 no-cache installer paths. Cover SE and AE separately even though they share the
 desktop cache. For each runtime, test with the companion DLL absent, present
 with the CSX feature enabled, and present with the CSX feature disabled; inspect
-`CommunityShaders.log` for pack validation,
+`CSX.log` for pack validation,
 compatibility selection, fallback compilation, and unexpected invalidation.
 
 ### Generate a VR-only development FOMOD

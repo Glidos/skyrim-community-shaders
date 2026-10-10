@@ -23,7 +23,7 @@ namespace
 	using RoleFontGuard = MenuFonts::FontRoleGuard;
 	constexpr float kHeaderActionIconScale = 0.75f;
 	constexpr const char* kShaderFailureTooltip =
-		"Show/hide the shader failure message. Errors may appear in game. Check feature versions and load order, then CommunityShaders.log. Use the Nexus Mods page or Discord for help.";
+		"Show/hide the shader failure message. Errors may appear in game. Check feature versions and load order, then CSX.log. Use the Nexus Mods page or Discord for help.";
 
 	struct HeaderContentAlignment
 	{

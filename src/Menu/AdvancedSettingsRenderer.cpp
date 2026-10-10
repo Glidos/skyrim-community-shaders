@@ -537,7 +537,7 @@ void AdvancedSettingsRenderer::RenderCompileTraceExport()
 		if (lastExportOk) {
 			ImGui::TextColored({ 0.4f, 0.9f, 0.4f, 1.0f }, "Exported: %s", lastExportPath.c_str());
 		} else {
-			ImGui::TextColored({ 0.9f, 0.4f, 0.4f, 1.0f }, "Export failed; check CommunityShaders.log.");
+			ImGui::TextColored({ 0.9f, 0.4f, 0.4f, 1.0f }, "Export failed; check CSX.log.");
 		}
 	}
 }

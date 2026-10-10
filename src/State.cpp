@@ -1424,8 +1424,8 @@ void State::Load(
 			} catch (const std::exception& e) {
 				const auto displayName = feature->GetDisplayName();
 				feature->failedLoadedMessage = feature->failedLoadedMessage.empty() ?
-				                                   (displayName + " failed to load. Check CommunityShaders.log") :
-				                                   (feature->failedLoadedMessage + "\n" + displayName + " failed to load. Check CommunityShaders.log");
+				                                   (displayName + " failed to load. Check CSX.log") :
+				                                   (feature->failedLoadedMessage + "\n" + displayName + " failed to load. Check CSX.log");
 				logger::warn("Error loading setting for feature '{}': {}", feature->GetShortName(), e.what());
 			}
 		}
@@ -1695,7 +1695,7 @@ bool State::Save(ConfigMode a_configMode)
 	} catch (...) {
 		return reportFailure(
 			std::format("Failed to collect settings for {} due to an unknown error", configPath.string()),
-			"Settings were not saved because the active values could not be collected. See CommunityShaders.log.");
+			"Settings were not saved because the active values could not be collected. See CSX.log.");
 	}
 
 	std::string writeError;
@@ -1737,7 +1737,7 @@ bool State::Save(ConfigMode a_configMode)
 					"Settings save incomplete after writing {}: failed {}",
 					configPath.string(), failureDetails),
 				std::format(
-					"{} was written, but {} could not be persisted. Changes remain marked unsaved; see CommunityShaders.log.",
+					"{} was written, but {} could not be persisted. Changes remain marked unsaved; see CSX.log.",
 					configName, failureDetails));
 		}
 

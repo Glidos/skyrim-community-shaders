@@ -290,7 +290,7 @@ namespace
 				return Foundation().MakeError(
 					a_args,
 					"export_failed",
-					"trace export failed or the current build has no task records; check CommunityShaders.log",
+					"trace export failed or the current build has no task records; check CSX.log",
 					"dispatch",
 					false);
 			}

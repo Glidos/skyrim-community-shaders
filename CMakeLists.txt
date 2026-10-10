@@ -85,6 +85,7 @@ project(
 )
 
 set(CSX_PACKAGE_NAME "CSX")
+set(PLUGIN_LOG_NAME "CSX")
 
 # default install path
 if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)

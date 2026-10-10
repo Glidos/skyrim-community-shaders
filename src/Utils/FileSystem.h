@@ -199,7 +199,7 @@ namespace Util
 
 		/**
 		 * Returns the path to the CSX log file in the default SKSE logging folder.
-		 * @return Documents / "My Games" / "Skyrim..." / "SKSE" / "CommunityShaders.log"
+		 * @return Documents / "My Games" / "Skyrim..." / "SKSE" / "CSX.log"
 		 */
 		std::filesystem::path GetLogPath();
 
