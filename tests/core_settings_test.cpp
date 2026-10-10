@@ -118,7 +118,7 @@ namespace
 		const json first{ { "name", "First" }, { "uv", { 0.1f, 0.2f, 0.5f, 0.6f } } };
 		const json second{ { "name", "Second" }, { "uv", { 0.2f, 0.1f, 0.6f, 0.5f } } };
 		Controller controller;
-		controller.LoadSettings({ { "CropPresets", json::array({ 42, first, nullptr, second, false }) }, { "SelectedPresetIndex", 1 } });
+		controller.LoadSettings({ { "CropPresets", json::array({ 42, first, nullptr, second, false }) }, { "SelectedPresetIndex", 3 } });
 		json saved;
 		controller.SaveSettings(saved);
 		Check(saved["CropPresets"] == json::array({ first, second }), "Malformed presets discarded valid neighbors");
@@ -128,6 +128,20 @@ namespace
 		json roundTrip;
 		reloaded.SaveSettings(roundTrip);
 		Check(roundTrip == saved, "Filtered crop settings did not round-trip");
+		Controller selectedFirst;
+		selectedFirst.LoadSettings({ { "CropPresets", json::array({ 42, first, nullptr, second }) }, { "SelectedPresetIndex", 1 } });
+		json firstSaved;
+		selectedFirst.SaveSettings(firstSaved);
+		Check(firstSaved["SelectedPresetIndex"] == 0 && firstSaved["CropX"] == first["uv"][0], "Filtering changed the first selected preset's identity");
+		for (const auto& selection : { json(2), json(std::numeric_limits<std::uint64_t>::max()), json("1"), json(1.5) }) {
+			Controller custom;
+			custom.LoadSettings({ { "CropX", 0.3f }, { "CropW", 0.4f },
+				{ "CropPresets", json::array({ 42, first, nullptr, second }) }, { "SelectedPresetIndex", selection } });
+			json customSaved;
+			custom.SaveSettings(customSaved);
+			Check(customSaved["SelectedPresetIndex"] == -1 && std::abs(custom.GetUV().x - 0.3f) < 1e-6f,
+				"An invalid preset selection replaced the custom crop");
+		}
 		Controller seeded;
 		seeded.SeedDefaultPresets({ { "Left Eye", { 0.0f, 0.0f, 0.5f, 1.0f } }, { "Right Eye", { 0.5f, 0.0f, 0.5f, 1.0f } } });
 		seeded.LoadSettings({ { "CropPresets", json::array({ nullptr, false }) } });
