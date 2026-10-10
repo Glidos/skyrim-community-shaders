@@ -35,6 +35,9 @@ namespace
 		std::mutex compilationMutex;
 		std::atomic<uint64_t> generation = 0;
 		std::atomic<uint64_t> contentDedupeTasks = 0;
+		std::atomic<uint64_t> activeReuseTasks = 0;
+		std::atomic<uint64_t> previousReuseTasks = 0;
+		void IncContentReuse(bool a_previous, std::optional<uint64_t> a_taskGeneration);
 		void IncContentDedupe(std::optional<uint64_t> a_taskGeneration);
 	};
 
@@ -225,4 +228,10 @@ int main()
 	counters.IncContentDedupe(2);
 	counters.IncContentDedupe(std::nullopt);
 	assert(counters.contentDedupeTasks == 2);
+	counters.IncContentReuse(false, 1);
+	counters.IncContentReuse(true, 1);
+	assert(counters.activeReuseTasks == 0 && counters.previousReuseTasks == 0);
+	counters.IncContentReuse(false, 2);
+	counters.IncContentReuse(true, 2);
+	assert(counters.activeReuseTasks == 1 && counters.previousReuseTasks == 1);
 }

@@ -3559,6 +3559,7 @@ if(BUILD_CONTROLLER_TESTS)
     )
     include("${PROJECT_SOURCE_DIR}/tests/shader_cache_variants.cmake")
     include("${PROJECT_SOURCE_DIR}/tests/shared_shader_compile.cmake")
+    include("${PROJECT_SOURCE_DIR}/tests/shader_content_reuse.cmake")
     add_controller_test(
         shader_compile_identity_test
         ShaderCompileIdentity

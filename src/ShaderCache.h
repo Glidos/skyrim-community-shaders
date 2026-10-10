@@ -19,6 +19,7 @@
 #include "ShaderCompilationSchedulingPolicy.h"
 #include "Utils/CacheInvalidation.h"
 #include "Utils/ContentHash.h"
+#include "Utils/ShaderContentReuse.h"
 #include "Utils/WinApi.h"
 
 using namespace std::chrono;
@@ -321,6 +322,8 @@ namespace SIE
 		void IncSourceCompile(std::optional<uint64_t> a_taskGeneration);
 		/** @brief Counts shared bytecode reuse only for the active generation. */
 		void IncContentDedupe(std::optional<uint64_t> a_taskGeneration);
+		/** @brief Records verified disk content reuse for the active generation. */
+		void IncContentReuse(bool a_previous, std::optional<uint64_t> a_taskGeneration);
 		/** @brief Latches timing when a current-generation source compile begins. */
 		void MarkPhaseStarted(std::optional<uint64_t> a_taskGeneration);
 		/** @brief Returns whether a task still belongs to the active compilation batch. */
@@ -344,6 +347,8 @@ namespace SIE
 		std::atomic<uint64_t> diskHitTasks = 0;             // tasks resolved from disk cache rather than compiled
 		std::atomic<uint64_t> sourceCompileTasks = 0;       // actual compiler invocations after cache lookup
 		std::atomic<uint64_t> contentDedupeTasks = 0;       // tasks reusing identical preprocessed bytecode
+		std::atomic<uint64_t> activeReuseTasks = 0;         // content hits in installed packs or active loose cache
+		std::atomic<uint64_t> previousReuseTasks = 0;       // content hits in the complete loose rollback cache
 		std::atomic<uint64_t> diskHitPriorityWeight = 0;    // cumulative priority weight of disk-hit tasks
 		LARGE_INTEGER compilationPhaseStart = { 0 };        // QPC timestamp when the first real source compile begins
 		std::atomic<bool> compilationPhaseStarted = false;  // set when first actual compilation begins
@@ -491,7 +496,8 @@ namespace SIE
 			const Util::ContentHash::Hash128& a_packCompileStateDigest,
 			const Util::ContentHash::Hash128& a_sourceDigest,
 			uint64_t a_diskCacheGeneration,
-			bool a_flushManifest = false);
+			bool a_flushManifest = false,
+			std::optional<Util::ShaderContentReuse::Identity> a_contentIdentity = std::nullopt);
 		void SetSaveLoadDiskPersistenceBlocked(bool a_blocked);
 		void DeleteDiskCache();
 		void ValidateDiskCache();
@@ -591,7 +597,8 @@ namespace SIE
 			bool a_developerMode,
 			bool fromDisk = false,
 			std::optional<uint64_t> a_taskGeneration = std::nullopt,
-			std::optional<Util::ContentHash::Hash128> a_sourceDigest = std::nullopt);
+			std::optional<Util::ContentHash::Hash128> a_sourceDigest = std::nullopt,
+			std::optional<Util::ShaderContentReuse::Identity> a_contentIdentity = std::nullopt);
 
 		enum class ClaimResult
 		{
@@ -662,6 +669,12 @@ namespace SIE
 		uint64_t GetSourceCompileTasks();
 		/** @brief Returns tasks reusing bytecode from another shader key. */
 		uint64_t GetContentDedupeTasks();
+		/** @brief Returns verified content hits in installed packs or the active loose cache. */
+		uint64_t GetActiveReuseTasks();
+		/** @brief Returns verified content hits in the loose rollback cache. */
+		uint64_t GetPreviousReuseTasks();
+		/** @brief Counts reuse without charging stale tasks to a new batch. */
+		void IncContentReuseTasks(bool a_previous, std::optional<uint64_t> a_taskGeneration = std::nullopt);
 		/** @brief Records shared bytecode reuse for the active generation. */
 		void IncContentDedupeTasks(std::optional<uint64_t> a_taskGeneration = std::nullopt);
 		void IncCacheHitTasks(std::optional<uint64_t> a_taskGeneration = std::nullopt);
@@ -1020,6 +1033,7 @@ namespace SIE
 			bool developerMode = false;
 			std::optional<Util::ContentHash::Hash128> sourceDigest;
 			Microsoft::WRL::ComPtr<ID3DBlob> compiledBlob;
+			std::optional<Util::ShaderContentReuse::Identity> contentIdentity;
 
 			bool operator<(const hlslRecord& other) const
 			{
@@ -1048,6 +1062,7 @@ namespace SIE
 			Util::ContentHash::Hash128 sourceDigest;
 			bool developerMode = false;
 			uint64_t diskCacheGeneration = 0;
+			std::optional<Util::ShaderContentReuse::Identity> contentIdentity;
 		};
 		ShaderCache();
 		void ManageCompilationSet(std::stop_token stoken);

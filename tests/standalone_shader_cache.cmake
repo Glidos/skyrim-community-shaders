@@ -32,7 +32,10 @@ add_custom_command(
 add_d3d_shader_test(standalone_shader_cache_test StandaloneShaderCache tests/standalone_shader_cache_test.cpp)
 target_sources(
     standalone_shader_cache_test
-    PRIVATE ${_standalone_cache_headers} src/Utils/ShaderInclude.cpp
+    PRIVATE
+        ${_standalone_cache_headers}
+        src/Utils/ShaderInclude.cpp
+        src/Utils/CryptoHash.cpp
 )
 target_include_directories(
     standalone_shader_cache_test
@@ -40,7 +43,11 @@ target_include_directories(
 )
 target_link_libraries(
     standalone_shader_cache_test
-    PRIVATE xxHash::xxhash nlohmann_json::nlohmann_json spdlog::spdlog
+    PRIVATE
+        xxHash::xxhash
+        nlohmann_json::nlohmann_json
+        spdlog::spdlog
+        bcrypt.lib
 )
 target_compile_definitions(
     standalone_shader_cache_test
