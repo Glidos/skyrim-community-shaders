@@ -2570,6 +2570,31 @@ if(BUILD_CONTROLLER_TESTS)
         PRIVATE "${_fsr_save_reuse_test_dir}"
     )
 
+    set(_sky_fade_window_test_dir
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/sky-fade-window-test"
+    )
+    add_custom_command(
+        OUTPUT "${_sky_fade_window_test_dir}/sky_fade_window_under_test.h"
+        COMMAND
+            "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
+            "-DOUTPUT_DIRECTORY=${_sky_fade_window_test_dir}" -P
+            "${PROJECT_SOURCE_DIR}/tests/extract_sky_fade_window.cmake"
+        DEPENDS
+            src/Features/SkySync.cpp
+            tests/extract_sky_fade_window.cmake
+            tests/extract_source_region.cmake
+        VERBATIM
+    )
+    add_controller_test(sky_fade_window_test SkyFadeWindow tests/sky_fade_window_test.cpp)
+    target_sources(
+        sky_fade_window_test
+        PRIVATE "${_sky_fade_window_test_dir}/sky_fade_window_under_test.h"
+    )
+    target_include_directories(
+        sky_fade_window_test
+        PRIVATE "${_sky_fade_window_test_dir}"
+    )
+
     add_controller_test(
         pbr_material_registry_test
         PBRMaterialRegistry
