@@ -6,6 +6,9 @@ foreach(
     _header
     IN
     ITEMS
+        shader_category_flag.h
+        shader_category_prewarm.h
+        shader_category_demand.h
         shader_task_declarations.h
         shader_task_comparison.h
         shader_capture_declarations.h
@@ -28,6 +31,7 @@ add_custom_command(
         src/ShaderCache.h
         src/ShaderCache.cpp
         src/ShaderCacheSmartClear.cpp
+        src/Features/Upscaling.cpp
         tests/extract_shader_cache_variants.cmake
         tests/extract_source_region.cmake
     VERBATIM

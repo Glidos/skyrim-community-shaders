@@ -1,5 +1,6 @@
 #include "Hooks.h"
 #include "Api/AcceptedDrawService.h"
+#include "Deferred.h"
 #include "EngineFixes/VRShadowBatch.h"
 
 #include "Utils/CharacterCategoryAuthoring.h"
@@ -706,6 +707,7 @@ struct BSShader_LoadShaders
 		const bool precompileGrass = shader->shaderType == RE::BSShader::Type::Grass &&
 		                             globals::features::truePBR.loaded && globals::features::grassLighting.loaded;
 		if (shaderCache->IsDiskCache() || shaderCache->IsDump() || precompileGrass) {
+			const bool categories = globals::features::upscaling.NeedsCharacterCategoryShaders();
 			if (shaderCache->IsDiskCache()) {
 				Feature::ForEachLoadedFeature("GenerateShaderPermutations", [shader](Feature* feature) {
 					feature->GenerateShaderPermutations(shader);
@@ -732,7 +734,7 @@ struct BSShader_LoadShaders
 				state->ModifyShaderLookup(*shader, vertexShaderDesriptor, pixelShaderDescriptor);
 				shaderCache->GetPixelShader(*shader, pixelShaderDescriptor);
 				state->ModifyShaderLookup(*shader, vertexShaderDesriptor, pixelShaderDescriptor, true);
-				shaderCache->GetPixelShader(*shader, pixelShaderDescriptor);
+				shaderCache->PrewarmDeferredPixelShaders(*shader, pixelShaderDescriptor, categories);
 			}
 		}
 		BSShaderHooks::hk_LoadShaders((REX::BSShader*)shader, stream);
@@ -1695,6 +1697,11 @@ namespace Hooks
 				}
 			}
 
+			auto* deferred = globals::deferred;
+			if (!state->settingCustomShader && deferred && deferred->deferredPass &&
+				deferred->IsCharacterCategoryEnabled() && state->currentShader &&
+				SIE::ShaderCache::GetCharacterCategoryFlag(state->currentShader->shaderType.get()) != 0)
+				deferred->InvalidateCharacterCategoryCapture();
 			*globals::game::currentPixelShader = a_pixelShader;
 
 			if (a_pixelShader)

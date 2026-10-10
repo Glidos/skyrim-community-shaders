@@ -1709,6 +1709,44 @@ void GpuSupportQuantizationCases(Harness& gpu)
 	std::cout << "Sparse mask R8 half-step departure cases: 4\n";
 }
 
+void DeferredMaskShaderOutputs(const std::filesystem::path& root)
+{
+	for (const auto* family : { "Sky", "DistantTree", "Effect", "Lighting", "RunGrass" }) {
+		for (const bool vr : { false, true }) {
+			for (const bool categories : { false, true }) {
+				std::vector<D3D_SHADER_MACRO> macros{ { "PSHADER", "1" }, { "DEFERRED", "1" } };
+				if (std::string_view(family) == "Sky")
+					macros.push_back({ "TEX", "1" });
+				if (vr)
+					macros.push_back({ "VR", "1" });
+				if (categories)
+					macros.push_back({ "CHARACTER_CATEGORY", "1" });
+				macros.push_back({ nullptr, nullptr });
+				PackageIncludes includes(root);
+				ComPtr<ID3DBlob> code, errors;
+				const auto path = root / (std::string(family) + ".hlsl");
+				const auto hr = D3DCompileFromFile(path.c_str(), macros.data(), &includes,
+					"main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors);
+				Require(SUCCEEDED(hr), std::string(family) + " compile: " +
+										   (errors ? std::string(static_cast<const char*>(errors->GetBufferPointer()), errors->GetBufferSize()) : ""));
+				ComPtr<ID3D11ShaderReflection> reflection;
+				Check(D3DReflect(code->GetBufferPointer(), code->GetBufferSize(), IID_PPV_ARGS(&reflection)), "Reflect mask output");
+				D3D11_SHADER_DESC desc{};
+				Check(reflection->GetDesc(&desc), "Read mask shader description");
+				bool writesMask = false;
+				for (UINT index = 0; index < desc.OutputParameters; ++index) {
+					D3D11_SIGNATURE_PARAMETER_DESC output{};
+					Check(reflection->GetOutputParameterDesc(index, &output), "Read mask signature");
+					writesMask |= output.SystemValueType == D3D_NAME_TARGET && output.SemanticIndex == 7;
+				}
+				const bool needsAo = std::string_view(family) == "Lighting" || std::string_view(family) == "RunGrass";
+				Require(writesMask == (categories || needsAo), std::string(family) + " exported the wrong mask layout");
+			}
+		}
+	}
+	std::cout << "Deferred mask outputs: 20 production shader permutations passed\\n";
+}
+
 int wmain(int argc, wchar_t** argv)
 {
 	try {
@@ -1730,6 +1768,7 @@ int wmain(int argc, wchar_t** argv)
 		}
 		gpu.CapturePreservesOutsideAndBothChannels();
 		gpu.VertexAoPreservesOriginalPrecision();
+		DeferredMaskShaderOutputs(argv[1]);
 		gpu.FocusCategoryEncoding(argv[1]);
 		gpu.CompositeRespectsCurrentMaskBounds();
 		SelectionAndCoverage(gpu);

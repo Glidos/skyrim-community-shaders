@@ -22862,19 +22862,27 @@ void Upscaling::UpdateVRStartupMainMenuRenderState()
 		"[Upscaling] Defined the post-compilation startup MainMenu render state: method=None, Render Scale=off.");
 }
 
+bool Upscaling::NeedsCharacterCategoryShaders() const
+{
+	return loaded && settings.neuralRenderingEnabled &&
+	       (settings.neuralCharacterRenderingEnabled || settings.neuralCharacterSceneStrengthsEnabled) &&
+	       settings.neuralCharacterVisualIsolationEnabled;
+}
+
+bool Upscaling::IsCharacterNeuralRenderingRouteConfigured() const
+{
+	return NeedsCharacterCategoryShaders() && IsNeuralRenderingRequested() &&
+	       (NeuralRendering::UsesIndependentFinalLdrInputs(GetNeuralRenderingMode(), GetRuntimeUpscaleMethod() == UpscaleMethod::kFSR) ||
+			   (GetRuntimeUpscaleMethod() == UpscaleMethod::kDLSS &&
+				   (GetNeuralRenderingMode() == NeuralRendering::RenderingMode::ReducedResolution || IsFoveatedVendorDispatchEnabled(UpscaleMethod::kDLSS)))) &&
+	       !settings.foveatedPeripheryMaskVisualization &&
+	       !IsNeuralRenderingFrameGenerationBlocked();
+}
+
 bool Upscaling::IsCharacterNeuralRenderingRouteRequested() const
 {
 	// Insertion switches block evaluation, not collection of source categories.
-	const bool routeConfigured =
-		loaded && IsNeuralRenderingRequested() &&
-		(settings.neuralCharacterRenderingEnabled || settings.neuralCharacterSceneStrengthsEnabled) &&
-		settings.neuralCharacterVisualIsolationEnabled &&
-		(NeuralRendering::UsesIndependentFinalLdrInputs(GetNeuralRenderingMode(), GetRuntimeUpscaleMethod() == UpscaleMethod::kFSR) ||
-			(GetRuntimeUpscaleMethod() == UpscaleMethod::kDLSS &&
-				(GetNeuralRenderingMode() == NeuralRendering::RenderingMode::ReducedResolution || IsFoveatedVendorDispatchEnabled(UpscaleMethod::kDLSS)))) &&
-		!settings.foveatedPeripheryMaskVisualization &&
-		!IsNeuralRenderingFrameGenerationBlocked();
-	if (!routeConfigured)
+	if (!IsCharacterNeuralRenderingRouteConfigured())
 		return false;
 	const bool hardMenuBlocked =
 		IsNeuralRenderingHardMenuBlocked(*this, globals::state);

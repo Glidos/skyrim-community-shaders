@@ -157,7 +157,9 @@ struct PS_OUTPUT
 	float4 MotionVectors: SV_Target1;
 	float4 Normal: SV_Target2;
 #if defined(DEFERRED)
+#	if defined(CHARACTER_CATEGORY)
 	float4 Masks2: SV_Target7;
+#	endif
 #endif
 #if defined(CLOUD_SHADOWS) && defined(CLOUDS) && !defined(DEFERRED)
 	float4 CloudShadows: SV_Target3;
@@ -329,8 +331,10 @@ PS_OUTPUT main(PS_INPUT input)
 	psout.Normal = float4(0.5, 0.5, 0, psout.Color.w);
 
 #	if defined(DEFERRED)
+#		if defined(CHARACTER_CATEGORY)
 	psout.Masks2 = CharacterCategoryMask::Encode(
 		0.0, 0u, psout.Color.w);
+#		endif
 #	endif
 
 #	if defined(CLOUD_SHADOWS) && defined(CLOUDS) && !defined(DEFERRED)

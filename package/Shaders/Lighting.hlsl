@@ -4366,9 +4366,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	psout.Masks = float4(0, 0, masksZ, psout.Diffuse.w);
 #		endif
 
-	// Stored as 1 - vertexAO so the cleared default (0) means no occlusion.
-	// Exact R8 codes reject interpolated IDs. The output alpha still supplies
-	// the inherited MRT source blend factor without becoming stored target data.
+	// Cleared zero means no vertex occlusion in either mask layout.
+#		if defined(CHARACTER_CATEGORY)
 	const uint characterCategory =
 		(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::CharacterExcluded) != 0u ?
 			CharacterCategoryMask::Excluded :
@@ -4379,6 +4378,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 		1.0 - vertexAO, characterCategory, psout.Diffuse.w,
 		(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::CharacterFocusFadeMask) >>
 			Permutation::ExtraFlags::CharacterFocusFadeShift);
+#		else
+	psout.Masks2 = float4(1.0 - vertexAO, 0, 0, psout.Diffuse.w);
+#		endif
 
 	float stochasticBlend = (screenNoise * screenNoise) < psout.Diffuse.w ? 1.0 : 0.0;
 	psout.NormalGlossiness.w = stochasticBlend;

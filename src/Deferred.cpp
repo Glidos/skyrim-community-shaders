@@ -1,7 +1,10 @@
 #include "Deferred.h"
 
 #include <algorithm>
+#include <format>
+#include <stdexcept>
 #include <type_traits>
+#include <wrl/client.h>
 
 #ifdef DEVBENCH_BRIDGE_ENABLED
 #	include <array>
@@ -28,6 +31,7 @@
 
 #include "Hooks.h"
 #include "Utils/D3D.h"
+#include "Utils/ResourceName.h"
 
 #ifdef DEVBENCH_BRIDGE_ENABLED
 namespace
@@ -129,56 +133,42 @@ void SetupRenderTarget(RE::RENDER_TARGET target, D3D11_TEXTURE2D_DESC texDesc, D
 	rtvDesc.Format = format;
 	uavDesc.Format = format;
 
-	ID3D11Texture2D* texture = nullptr;
-	ID3D11ShaderResourceView* srv = nullptr;
-	ID3D11RenderTargetView* rtv = nullptr;
-	ID3D11UnorderedAccessView* uav = nullptr;
-	auto releaseCreated = [&]() {
-		if (uav) {
-			uav->Release();
-			uav = nullptr;
-		}
-		if (rtv) {
-			rtv->Release();
-			rtv = nullptr;
-		}
-		if (srv) {
-			srv->Release();
-			srv = nullptr;
-		}
-		if (texture) {
-			texture->Release();
-			texture = nullptr;
-		}
-	};
+	Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+	Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
+	Microsoft::WRL::ComPtr<ID3D11RenderTargetView> rtv;
+	Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> uav;
+	const auto name = std::format("Deferred::{}", magic_enum::enum_name(target));
+	DX::ThrowIfFailed(device->CreateTexture2D(&texDesc, nullptr, texture.GetAddressOf()));
+	Util::SetResourceName(texture.Get(), "%s", name.c_str());
 
-	try {
-		DX::ThrowIfFailed(device->CreateTexture2D(&texDesc, nullptr, &texture));
-
-		if (texDesc.BindFlags & D3D11_BIND_SHADER_RESOURCE)
-			DX::ThrowIfFailed(device->CreateShaderResourceView(texture, &srvDesc, &srv));
-
-		if (texDesc.BindFlags & D3D11_BIND_RENDER_TARGET)
-			DX::ThrowIfFailed(device->CreateRenderTargetView(texture, &rtvDesc, &rtv));
-
-		if (texDesc.BindFlags & D3D11_BIND_UNORDERED_ACCESS)
-			DX::ThrowIfFailed(device->CreateUnorderedAccessView(texture, &uavDesc, &uav));
-	} catch (...) {
-		releaseCreated();
-		throw;
+	if (texDesc.BindFlags & D3D11_BIND_SHADER_RESOURCE) {
+		DX::ThrowIfFailed(device->CreateShaderResourceView(texture.Get(), &srvDesc, srv.GetAddressOf()));
+		Util::SetResourceName(srv.Get(), "%s SRV", name.c_str());
+	}
+	if (texDesc.BindFlags & D3D11_BIND_RENDER_TARGET) {
+		DX::ThrowIfFailed(device->CreateRenderTargetView(texture.Get(), &rtvDesc, rtv.GetAddressOf()));
+		Util::SetResourceName(rtv.Get(), "%s RTV", name.c_str());
+	}
+	if (texDesc.BindFlags & D3D11_BIND_UNORDERED_ACCESS) {
+		DX::ThrowIfFailed(device->CreateUnorderedAccessView(texture.Get(), &uavDesc, uav.GetAddressOf()));
+		Util::SetResourceName(uav.Get(), "%s UAV", name.c_str());
 	}
 
+	// Publish only a complete target; failures leave the previous layout usable.
 	auto& data = renderer->GetRuntimeData().renderTargets[target];
 	ReleaseRenderTargetSlot(target);
-	data.texture = texture;
-	data.SRV = srv;
-	data.RTV = rtv;
-	data.UAV = uav;
+	data.texture = texture.Detach();
+	data.SRV = srv.Detach();
+	data.RTV = rtv.Detach();
+	data.UAV = uav.Detach();
 }
 
 void Deferred::ReleaseRenderTargets()
 {
 	finalSceneDepthFrame.reset();
+	characterCategoryCaptureValid = false;
+	failedCharacterCategoryMode.reset();
+	NeuralRendering::CharacterRendering::Instance().Invalidate();
 	ReleaseRenderTargetSlot(ALBEDO);
 	ReleaseRenderTargetSlot(SPECULAR);
 	ReleaseRenderTargetSlot(REFLECTANCE);
@@ -260,8 +250,13 @@ void Deferred::SetupResources()
 		SetupRenderTarget(NORMALROUGHNESS, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R10G10B10A2_UNORM, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
 		// Masks
 		SetupRenderTarget(MASKS, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R11G11B10_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
-		// Exact categories share the attachment without reducing vertex AO precision.
-		SetupRenderTarget(MASKS2, texDesc, srvDesc, rtvDesc, uavDesc, NeuralRendering::kCharacterCategoryFormat, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
+		const bool categories = globals::features::upscaling.IsCharacterNeuralRenderingRouteConfigured();
+		const auto maskFormat = categories ? NeuralRendering::kCharacterCategoryFormat : NeuralRendering::kVertexAoFormat;
+		SetupRenderTarget(MASKS2, texDesc, srvDesc, rtvDesc, uavDesc, maskFormat, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
+		characterCategoryEnabled = categories;
+		characterCategoryCaptureValid = false;
+		failedCharacterCategoryMode.reset();
+		NeuralRendering::CharacterRendering::Instance().Invalidate();
 
 		// TAA Water Buffers
 		SetupRenderTarget(RE::RENDER_TARGETS::kWATER_1, texDesc, srvDesc, rtvDesc, uavDesc, DXGI_FORMAT_R16G16B16A16_FLOAT, D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
@@ -557,11 +552,46 @@ void Deferred::PrepassPasses()
 	Feature::ForEachLoadedFeature("Prepass", [](Feature* feature) { feature->Prepass(); }, true);
 }
 
+void Deferred::UpdateCharacterCategoryTarget()
+{
+	const bool requested = globals::features::upscaling.IsCharacterNeuralRenderingRouteConfigured();
+	if (requested == characterCategoryEnabled) {
+		failedCharacterCategoryMode.reset();
+		return;
+	}
+	if (failedCharacterCategoryMode == requested)
+		return;
+
+	NeuralRendering::CharacterRendering::Instance().Invalidate();
+	auto& target = globals::game::renderer->GetRuntimeData().renderTargets[MASKS2];
+	try {
+		if (!target.texture || !target.SRV || !target.RTV)
+			throw std::runtime_error("Deferred mask target is incomplete");
+		D3D11_TEXTURE2D_DESC textureDesc{};
+		D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+		D3D11_RENDER_TARGET_VIEW_DESC rtvDesc{};
+		target.texture->GetDesc(&textureDesc);
+		target.SRV->GetDesc(&srvDesc);
+		target.RTV->GetDesc(&rtvDesc);
+		SetupRenderTarget(MASKS2, textureDesc, srvDesc, rtvDesc, {},
+			requested ? NeuralRendering::kCharacterCategoryFormat : NeuralRendering::kVertexAoFormat,
+			D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
+		characterCategoryEnabled = requested;
+		failedCharacterCategoryMode.reset();
+	} catch (const std::exception& error) {
+		// Retry after a settings transition or resource recreation, not every draw.
+		failedCharacterCategoryMode = requested;
+		logger::error("Deferred mask layout switch failed; retaining the previous layout: {}", error.what());
+	}
+}
+
 void Deferred::StartDeferred()
 {
 	finalSceneDepthFrame.reset();
 	if (!globals::state->inWorld)
 		return;
+	UpdateCharacterCategoryTarget();
+	characterCategoryCaptureValid = characterCategoryEnabled;
 	globals::state->UpdateSharedData(true, false);
 
 	auto shadowState = globals::game::shadowState;
@@ -1007,7 +1037,9 @@ void Deferred::Hooks::Main_RenderWorld_BlendedDecals::thunk(RE::BSShaderAccumula
 		}
 
 		const auto& upscaling = globals::features::upscaling;
-		if (deferred && deferred->deferredPass &&
+		if (deferred && deferred->deferredPass && deferred->IsCharacterCategoryEnabled() && !deferred->IsCharacterCategoryCaptureReady())
+			NeuralRendering::CharacterRendering::Instance().Invalidate();
+		if (deferred && deferred->deferredPass && deferred->IsCharacterCategoryCaptureReady() &&
 			upscaling.IsCharacterNeuralRenderingRouteRequested() && renderer &&
 			globals::d3d::device && globals::d3d::context) {
 			std::uint32_t inputWidthPerEye = 0;

@@ -4,6 +4,7 @@
 #include "RE/B/BSShadowDirectionalLight.h"
 #include "Utils/LazyShader.h"
 
+#include <atomic>
 #include <optional>
 
 #define ALBEDO RE::RENDER_TARGETS::kINDIRECT
@@ -29,6 +30,11 @@ public:
 	void ReflectionsPrepasses();
 	void EarlyPrepasses();
 	void StartDeferred();
+	/** The allocated mask layout, latched before the deferred pass. */
+	bool IsCharacterCategoryEnabled() const { return characterCategoryEnabled.load(std::memory_order_relaxed); }
+	/** A native shader fallback makes this pass unsuitable for authored capture. */
+	void InvalidateCharacterCategoryCapture() { characterCategoryCaptureValid = false; }
+	bool IsCharacterCategoryCaptureReady() const { return IsCharacterCategoryEnabled() && characterCategoryCaptureValid; }
 	void OverrideBlendStates();
 	void ResetBlendStates();
 	void DeferredPasses();
@@ -94,6 +100,10 @@ private:
 	/// Copies completed opaque depth without changing the active render targets.
 	bool CopySceneDepth();
 	std::optional<uint32_t> finalSceneDepthFrame;
+	void UpdateCharacterCategoryTarget();
+	std::atomic_bool characterCategoryEnabled{ false };
+	bool characterCategoryCaptureValid = false;
+	std::optional<bool> failedCharacterCategoryMode;
 
 	template <typename T>
 	void SetShadowCascadeParameters(const T& lightData, DirectionalShadowLightData& dd);

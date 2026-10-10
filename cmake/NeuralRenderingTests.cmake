@@ -414,3 +414,18 @@ target_compile_definitions(nr_camera_upload_on_test PRIVATE DEVBENCH_BRIDGE_ENAB
 add_test(NAME NRDiagnosticsBridgeGate COMMAND "${Python3_EXECUTABLE}"
     "${PROJECT_SOURCE_DIR}/tests/nr_diagnostics_bridge_gate_test.py" --compiler "${CMAKE_CXX_COMPILER}")
 set_tests_properties(NRDiagnosticsBridgeGate PROPERTIES LABELS "ControllerTests" TIMEOUT 30)
+
+
+set(_deferred_mask_test_dir "${CMAKE_CURRENT_BINARY_DIR}/deferred_mask_test")
+add_custom_command(
+    OUTPUT "${_deferred_mask_test_dir}/deferred_mask_under_test.h"
+        "${_deferred_mask_test_dir}/deferred_target_under_test.h"
+    COMMAND "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
+        "-DOUTPUT_DIRECTORY=${_deferred_mask_test_dir}" -P
+        "${PROJECT_SOURCE_DIR}/tests/extract_deferred_mask.cmake"
+    DEPENDS src/Deferred.cpp tests/extract_deferred_mask.cmake tests/extract_source_region.cmake
+    VERBATIM
+)
+add_d3d_shader_test(deferred_mask_test DeferredMaskWARP tests/deferred_mask_test.cpp)
+target_sources(deferred_mask_test PRIVATE "${_deferred_mask_test_dir}/deferred_mask_under_test.h")
+target_include_directories(deferred_mask_test PRIVATE "${_deferred_mask_test_dir}")

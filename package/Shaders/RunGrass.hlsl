@@ -708,8 +708,12 @@ PS_OUTPUT RenderBasicGrass(PS_INPUT input, bool frontFace)
 #		endif
 	psout.Albedo = float4(albedo, 1);
 	psout.Masks = float4(0, 0, Color::RGBToYCoCg(directionalAmbientColor).x, 0);
+#		if defined(CHARACTER_CATEGORY)
 	psout.Masks2 = CharacterCategoryMask::Encode(
 		1.0 - vertexAO, 0, psout.Diffuse.w);
+#		else
+	psout.Masks2 = float4(1.0 - vertexAO, 0, 0, psout.Diffuse.w);
+#		endif
 #	endif
 
 	return psout;
@@ -1006,8 +1010,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	psout.Specular = float4(specularColor, 1);
 	psout.Masks = float4(0, 0, Color::RGBToYCoCg(directionalAmbientColor).x, 0);
+#			if defined(CHARACTER_CATEGORY)
 	psout.Masks2 = CharacterCategoryMask::Encode(
 		1.0 - vertexAO, 0, psout.Diffuse.w);
+#			else
+	psout.Masks2 = float4(1.0 - vertexAO, 0, 0, psout.Diffuse.w);
+#			endif
 #		endif
 	return psout;
 }

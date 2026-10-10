@@ -2653,7 +2653,11 @@ public:
 	{
 		return vrStartupMainMenuRenderStateActive.load(std::memory_order_acquire);
 	}
+	/** @brief Configured category consumers, independent of startup or temporary route suspension. */
+	bool NeedsCharacterCategoryShaders() const;
 	/** @return Whether a character-NR route can execute with the current runtime settings. */
+	/** Whether the configured NR route consumes authored material categories. */
+	bool IsCharacterNeuralRenderingRouteConfigured() const;
 	bool IsCharacterNeuralRenderingRouteRequested() const;
 	/** Returns the enabled actor-material category bits for G-buffer capture. */
 	std::uint32_t GetCharacterNeuralRenderingCategoryMask() const noexcept;

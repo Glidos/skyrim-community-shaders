@@ -1990,6 +1990,11 @@ void State::SetupResources()
 void State::ModifyShaderLookup(const RE::BSShader& a_shader, uint& a_vertexDescriptor, uint& a_pixelDescriptor, bool a_forceDeferred)
 {
 	auto deferred = globals::deferred;
+	const auto categoryFlag = SIE::ShaderCache::GetCharacterCategoryFlag(a_shader.shaderType.get());
+	a_vertexDescriptor &= ~categoryFlag;
+	a_pixelDescriptor &= ~categoryFlag;
+	if ((deferred->deferredPass || a_forceDeferred) && deferred->IsCharacterCategoryEnabled())
+		a_pixelDescriptor |= categoryFlag;
 
 	if (a_shader.shaderType.get() != RE::BSShader::Type::Utility && a_shader.shaderType.get() != RE::BSShader::Type::ImageSpace) {
 		switch (a_shader.shaderType.get()) {

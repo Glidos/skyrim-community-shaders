@@ -106,6 +106,12 @@ namespace NeuralRendering
 			static CharacterRendering instance;
 			return instance;
 		}
+		unsigned invalidations = 0;
+		void Invalidate()
+		{
+			++invalidations;
+			categories = nullptr;
+		}
 		bool CaptureAuthoredCategories(Device*, Context*, Texture* source, ID3D11ShaderResourceView* depthSource,
 			uint32_t w, uint32_t h, uint32_t f, uint32_t m, float x, float y, bool support)
 		{
@@ -163,6 +169,10 @@ public:
 	void StartDeferred() { deferredPass = true; }
 	void EndDeferred() { end(); }
 	bool deferredPass = false;
+	bool categoryCaptureReady = true;
+	bool categoryEnabled = true;
+	bool IsCharacterCategoryEnabled() const { return categoryEnabled; }
+	bool IsCharacterCategoryCaptureReady() const { return categoryEnabled && categoryCaptureReady; }
 	std::function<void()> end = [] {};
 	struct Hooks
 	{
@@ -388,7 +398,7 @@ void TestUnavailableResources()
 
 void TestCharacterCaptureOrderingAndAdmission()
 {
-	for (int blocked = 0; blocked < 7; ++blocked) {
+	for (int blocked = 0; blocked < 9; ++blocked) {
 		Fixture f;
 		f.Start();
 		globals::features::upscaling.characters = blocked != 1;
@@ -402,6 +412,10 @@ void TestCharacterCaptureOrderingAndAdmission()
 			globals::d3d::device = nullptr;
 		if (blocked == 6)
 			globals::features::upscaling.dimensionsAvailable = false;
+		if (blocked == 7)
+			f.deferred.categoryCaptureReady = false;
+		if (blocked == 8)
+			f.deferred.categoryEnabled = false;
 		globals::features::terrainBlending.render = [&] { f.main.content = 60; };
 		bool decalsRan = false, deferredEnded = false;
 		auto& capture = NeuralRendering::CharacterRendering::Instance();
@@ -413,6 +427,7 @@ void TestCharacterCaptureOrderingAndAdmission()
 		f.deferred.end = [&] { deferredEnded = true; };
 		f.Decals();
 		Check(capture.captures == (blocked == 0 ? 1 : 0), "Character capture admission ignored a required producer/resource gate");
+		Check(capture.invalidations == (blocked == 7 ? 1u : 0u), "Only an incomplete wide-mask pass should invalidate capture at the capture hook");
 		Check(f.context.copies == 1 && f.deferred.IsSceneDepthFinal(), "Character capture must preserve final scene depth publication");
 		if (blocked == 0) {
 			Check(capture.categories == &f.categories && capture.depth == &f.mainSrv,

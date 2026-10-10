@@ -234,6 +234,7 @@ void CharacterCategoryAuthoring::Update(RE::BSRenderPass* a_pass)
 
 	if (!globals::features::upscaling.IsNeuralRenderingEnabled() ||
 		!globals::deferred || !globals::deferred->deferredPass ||
+		!globals::deferred->IsCharacterCategoryEnabled() ||
 		!state->inWorld || !a_pass || !a_pass->geometry || !a_pass->shaderProperty)
 		return;
 

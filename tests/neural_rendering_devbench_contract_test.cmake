@@ -2519,10 +2519,10 @@ foreach(_forbidden_full_capture IN ITEMS
 endforeach()
 
 string(FIND "${_deferred}"
-    [[SetupRenderTarget(MASKS2, texDesc, srvDesc, rtvDesc, uavDesc, NeuralRendering::kCharacterCategoryFormat,]]
+    [[SetupRenderTarget(MASKS2, texDesc, srvDesc, rtvDesc, uavDesc, maskFormat,]]
     _shared_tuple_allocation)
 if(_shared_tuple_allocation EQUAL -1)
-    message(FATAL_ERROR "Every runtime must allocate the category tuple consumed by character capture")
+    message(FATAL_ERROR "Every runtime must allocate the selected AO/category mask layout")
 endif()
 
 string(FIND

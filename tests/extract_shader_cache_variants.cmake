@@ -6,6 +6,7 @@ file(MAKE_DIRECTORY "${OUTPUT_DIRECTORY}")
 file(READ "${PROJECT_ROOT}/src/ShaderCache.h" _header)
 file(READ "${PROJECT_ROOT}/src/ShaderCache.cpp" _source)
 file(READ "${PROJECT_ROOT}/src/ShaderCacheSmartClear.cpp" _capture)
+file(READ "${PROJECT_ROOT}/src/Features/Upscaling.cpp" _upscaling)
 extract_between(
     "${_header}" "\tenum class ShaderClass" "\n}"
     "shader_task_declarations.h"
@@ -44,4 +45,20 @@ extract_between(
 extract_between(
     "${_capture}" "\tbool ShaderCache::IsTrackingActiveShaders() const"
     "\n}" "shader_capture_under_test.h"
+)
+
+extract_between(
+    "${_header}" "\t\tstatic constexpr uint32_t GetCharacterCategoryFlag("
+    "\n\t\tRE::BSGraphics::PixelShader* GetPixelShader("
+    "shader_category_flag.h"
+)
+extract_between(
+    "${_source}" "\tvoid ShaderCache::PrewarmDeferredPixelShaders("
+    "\n\tRE::BSGraphics::PixelShader* ShaderCache::GetPixelShader("
+    "shader_category_prewarm.h"
+)
+extract_between(
+    "${_upscaling}" "bool Upscaling::NeedsCharacterCategoryShaders() const"
+    "\nbool Upscaling::IsCharacterNeuralRenderingRouteConfigured() const"
+    "shader_category_demand.h"
 )

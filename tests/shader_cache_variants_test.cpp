@@ -59,6 +59,10 @@ namespace RE
 		{
 			Lighting,
 			ImageSpace,
+			Grass,
+			DistantTree,
+			Sky,
+			Effect,
 			Total
 		};
 		struct TypeValue
@@ -135,6 +139,10 @@ namespace SIE
 	{
 #include "shader_capture_declarations.h"
 #include "shader_capture_state.h"
+#include "shader_category_flag.h"
+		std::vector<uint32_t> pixelRequests;
+		void GetPixelShader(const RE::BSShader&, uint32_t descriptor) { pixelRequests.push_back(descriptor); }
+		void PrewarmDeferredPixelShaders(const RE::BSShader& shader, uint32_t descriptor, bool categories);
 		struct Blob
 		{
 			ShaderCompilationTask::Status status = ShaderCompilationTask::Completed;
@@ -183,9 +191,24 @@ namespace SIE
 {
 #include "shader_capture_tracking_under_test.h"
 #include "shader_capture_under_test.h"
+#include "shader_category_prewarm.h"
 #include "shader_eviction_under_test.h"
 #include "shader_queue_add_under_test.h"
 }
+
+struct Upscaling
+{
+	bool loaded = true;
+	struct
+	{
+		bool neuralRenderingEnabled = false;
+		bool neuralCharacterRenderingEnabled = false;
+		bool neuralCharacterSceneStrengthsEnabled = false;
+		bool neuralCharacterVisualIsolationEnabled = false;
+	} settings;
+	bool NeedsCharacterCategoryShaders() const;
+};
+#include "shader_category_demand.h"
 
 namespace
 {
@@ -321,6 +344,57 @@ namespace
 		}
 	}
 
+	void TestCategoryVariantIdentity()
+	{
+		for (const auto type : { RE::BSShader::Lighting, RE::BSShader::Grass,
+				 RE::BSShader::DistantTree, RE::BSShader::Sky, RE::BSShader::Effect }) {
+			const auto flag = ShaderCache::GetCharacterCategoryFlag(type);
+			Require(flag != 0 && (flag & (flag - 1)) == 0);
+			RE::BSShader shader;
+			shader.shaderType.value = type;
+			const uint32_t baseline = 1u;
+			ShaderCompilationTask plain(ShaderClass::Pixel, shader, baseline);
+			ShaderCompilationTask categories(ShaderClass::Pixel, shader, baseline | flag);
+			Require(plain.GetId() != categories.GetId());
+			SIE::CompilationSet queue;
+			queue.Add(plain);
+			queue.Add(categories);
+			queue.Add(plain);
+			Require(queue.availableTasks.size() == 2);
+		}
+		Require(ShaderCache::GetCharacterCategoryFlag(RE::BSShader::ImageSpace) == 0);
+	}
+
+	void TestCategoryPrewarm()
+	{
+		for (unsigned mode = 0; mode < 32; ++mode) {
+			Upscaling upscaling;
+			upscaling.loaded = (mode & 1) != 0;
+			upscaling.settings.neuralRenderingEnabled = (mode & 2) != 0;
+			upscaling.settings.neuralCharacterRenderingEnabled = (mode & 4) != 0;
+			upscaling.settings.neuralCharacterSceneStrengthsEnabled = (mode & 8) != 0;
+			upscaling.settings.neuralCharacterVisualIsolationEnabled = (mode & 16) != 0;
+			const bool expected = mode == 23 || mode == 27 || mode == 31;
+			Require(upscaling.NeedsCharacterCategoryShaders() == expected);
+			for (const auto type : { RE::BSShader::Lighting, RE::BSShader::Grass,
+					 RE::BSShader::DistantTree, RE::BSShader::Sky, RE::BSShader::Effect, RE::BSShader::ImageSpace }) {
+				RE::BSShader shader;
+				shader.shaderType.value = type;
+				const auto flag = ShaderCache::GetCharacterCategoryFlag(type);
+				for (const bool priorCategoryLayout : { false, true }) {
+					ShaderCache cache;
+					constexpr uint32_t descriptor = 0x10001u;
+					cache.PrewarmDeferredPixelShaders(shader, descriptor | (priorCategoryLayout ? flag : 0),
+						upscaling.NeedsCharacterCategoryShaders());
+					Require(cache.pixelRequests.size() == (expected && flag ? 2u : 1u));
+					Require(cache.pixelRequests.front() == descriptor);
+					if (expected && flag)
+						Require(cache.pixelRequests.back() == (descriptor | flag));
+				}
+			}
+		}
+	}
+
 	void TestStageAndTypeIdentity()
 	{
 		ShaderCache cache;
@@ -354,6 +428,8 @@ int main()
 		TestCaptureAndClearVariants(true);
 		TestProtectedVariants();
 		TestStageAndTypeIdentity();
+		TestCategoryVariantIdentity();
+		TestCategoryPrewarm();
 		std::cout << "Shader cache variant checks passed\n";
 		return 0;
 	} catch (const std::exception& error) {
