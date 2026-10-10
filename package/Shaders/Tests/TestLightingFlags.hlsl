@@ -1,6 +1,13 @@
 #include "/Shaders/Common/Permutation.hlsli"
 #include "/Test/STF/ShaderTestFramework.hlsli"
 
+// The DXC fixture exposes legacy cbuffer members at global scope.
+namespace Permutation
+{
+	static uint TestPixelShaderDescriptor = 0;
+}
+#define PixelShaderDescriptor TestPixelShaderDescriptor
+
 #define LIGHTING
 namespace OrdinaryMaterial
 {
@@ -61,6 +68,7 @@ namespace OtherShaderFamily
 {
 #include "/Shaders/Common/LightingFlags.hlsli"
 }
+#undef PixelShaderDescriptor
 
 /// @tags lighting, permutations, eye
 /// Every merged flag combination must survive without unrelated descriptor bits.
@@ -68,6 +76,11 @@ namespace OtherShaderFamily
 	for (uint combination = 0; combination < 16; ++combination) {
 		uint flags = combination << 9;
 		uint descriptor = flags | Permutation::LightingFlags::VertexColor | Permutation::LightingFlags::DefShadow;
+		Permutation::TestPixelShaderDescriptor = descriptor;
+		ASSERT(AreEqual, OrdinaryMaterial::Lighting::HasSpecular(), (flags & Permutation::LightingFlags::Specular) != 0u);
+		ASSERT(AreEqual, OrdinaryMaterial::Lighting::HasSoftLighting(), (flags & Permutation::LightingFlags::SoftLighting) != 0u);
+		ASSERT(AreEqual, OrdinaryMaterial::Lighting::HasRimLighting(), (flags & Permutation::LightingFlags::RimLighting) != 0u);
+		ASSERT(AreEqual, OrdinaryMaterial::Lighting::HasBackLighting(), (flags & Permutation::LightingFlags::BackLighting) != 0u);
 		ASSERT(AreEqual, OrdinaryMaterial::Lighting::GetFlags(descriptor), flags);
 		ASSERT(AreEqual, OrdinaryMaterial::Lighting::GetShadingFlags(descriptor), flags);
 		ASSERT(AreEqual, EyeMaterial::Lighting::GetShadingFlags(descriptor), flags);
@@ -88,9 +101,9 @@ namespace OtherShaderFamily
 /// @tags lighting, permutations, landscape, lod
 /// Landscape sampler aliases, static LOD keys and other families stay isolated.
 [numthreads(1, 1, 1)] void TestLightingTechniqueFlags() {
-	ASSERT(AreEqual, LandscapeMaterial::Lighting::GetFlags(0xffffffffu), Permutation::LightingFlags::Specular);
+	ASSERT(AreEqual, LandscapeMaterial::Lighting::GetFlags(~0u), Permutation::LightingFlags::Specular);
 	ASSERT(AreEqual, LandscapeMaterial::Lighting::GetFlags(Permutation::LightingFlags::BackLighting), 0u);
 	ASSERT(AreEqual, LodMaterial::Lighting::GetFlags(0u), Permutation::LightingFlags::Specular | Permutation::LightingFlags::RimLighting);
-	ASSERT(AreEqual, LodMaterial::Lighting::GetFlags(0xffffffffu), Permutation::LightingFlags::Specular | Permutation::LightingFlags::RimLighting);
-	ASSERT(AreEqual, OtherShaderFamily::Lighting::GetFlags(0xffffffffu), 0u);
+	ASSERT(AreEqual, LodMaterial::Lighting::GetFlags(~0u), Permutation::LightingFlags::Specular | Permutation::LightingFlags::RimLighting);
+	ASSERT(AreEqual, OtherShaderFamily::Lighting::GetFlags(~0u), 0u);
 }

@@ -5,6 +5,7 @@
 #include <cassert>
 #include <chrono>
 #include <future>
+#include <memory>
 #include <thread>
 
 using namespace Util::CompileDedupe;
@@ -109,13 +110,13 @@ namespace
 		Registry registry;
 		const auto key = Key("retry");
 		auto owner = registry.Acquire(key);
-		auto waiter = std::async(std::launch::async, [&] { return registry.Acquire(key); });
+		auto waiter = std::async(std::launch::async, [&] { return std::make_unique<Acquired>(registry.Acquire(key)); });
 		WaitForWaiter(registry, key);
 		assert(waiter.wait_for(std::chrono::seconds(0)) == std::future_status::timeout);
 		owner.ticket.reset();
 		auto retry = waiter.get();
-		assert(retry.ticket && !retry.blob);
-		retry.ticket->Publish("ok", 2);
+		assert(retry->ticket && !retry->blob);
+		retry->ticket->Publish("ok", 2);
 		assert(*registry.Acquire(key).blob == std::vector<char>({ 'o', 'k' }));
 	}
 
@@ -124,12 +125,12 @@ namespace
 		Registry registry(4);
 		const auto key = Key("clear");
 		auto oldOwner = registry.Acquire(key);
-		auto waiter = std::async(std::launch::async, [&] { return registry.Acquire(key); });
+		auto waiter = std::async(std::launch::async, [&] { return std::make_unique<Acquired>(registry.Acquire(key)); });
 		WaitForWaiter(registry, key);
 		registry.Clear();
 		auto newOwner = registry.Acquire(key);
 		oldOwner.ticket->Publish("old!", 4);
-		assert(*waiter.get().blob == std::vector<char>({ 'o', 'l', 'd', '!' }));
+		assert(*waiter.get()->blob == std::vector<char>({ 'o', 'l', 'd', '!' }));
 		assert(registry.RetainedBytes() == 0);
 		assert(registry.DroppedBlobs() == 0);
 		newOwner.ticket->Publish("new!", 4);
@@ -152,10 +153,10 @@ namespace
 		Registry registry(3);
 		const auto key = Key("large");
 		auto owner = registry.Acquire(key);
-		auto waiter = std::async(std::launch::async, [&] { return registry.Acquire(key); });
+		auto waiter = std::async(std::launch::async, [&] { return std::make_unique<Acquired>(registry.Acquire(key)); });
 		WaitForWaiter(registry, key);
 		owner.ticket->Publish("four", 4);
-		assert(waiter.get().blob->size() == 4);
+		assert(waiter.get()->blob->size() == 4);
 		assert(registry.RetainedBytes() == 0);
 		assert(registry.DroppedBlobs() == 1);
 		assert(registry.Acquire(key).ticket);

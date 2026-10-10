@@ -70,9 +70,9 @@ namespace RE
 }
 
 template <class T>
-T* skyrim_cast(RE::BSSkyShaderProperty* property)
+T skyrim_cast(RE::BSSkyShaderProperty* property)
 {
-	return property;
+	return static_cast<T>(property);
 }
 
 struct SkySync

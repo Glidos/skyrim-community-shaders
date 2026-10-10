@@ -55,6 +55,7 @@ target_compile_definitions(
 )
 set_tests_properties(ShaderContentReuse PROPERTIES TIMEOUT 60)
 if(MSVC)
+    target_compile_definitions(shader_content_reuse_test PRIVATE _SILENCE_CXX20_U8PATH_DEPRECATION_WARNING)
     target_compile_options(shader_content_reuse_test PRIVATE /UNDEBUG /utf-8)
 else()
     target_compile_options(shader_content_reuse_test PRIVATE -UNDEBUG)

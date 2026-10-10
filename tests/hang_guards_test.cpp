@@ -59,7 +59,7 @@ namespace logger
 struct Upscaling
 {
 	bool d3d12SwapChainActive = false;
-	HANDLE waitableObject = reinterpret_cast<HANDLE>(std::uintptr_t(1));
+	HANDLE frameLatencyHandle = reinterpret_cast<HANDLE>(std::uintptr_t(1));
 	struct
 	{
 		bool frameLimitMode = false;
@@ -68,7 +68,7 @@ struct Upscaling
 	LARGE_INTEGER qpf = [] { LARGE_INTEGER value{}; value.QuadPart = 1000; return value; }();
 	bool generation = false;
 
-	HANDLE GetFrameLatencyWaitableObject() const { return waitableObject; }
+	HANDLE GetFrameLatencyWaitableObject() const { return frameLatencyHandle; }
 	bool ShouldUseFrameGenerationThisFrame() const { return generation; }
 	void TimerSleepQPC(int64_t target)
 	{
@@ -133,12 +133,12 @@ namespace
 		nextWaitResult = WAIT_FAILED;
 		upscaling.FrameLimiter();
 		Require(waitCalls == 10 && errorReads == 1 && logger::warnings == 1, "failed wait must read the error and retain bounded diagnostics");
-		upscaling.waitableObject = nullptr;
+		upscaling.frameLatencyHandle = nullptr;
 		upscaling.FrameLimiter();
-		upscaling.waitableObject = INVALID_HANDLE_VALUE;
+		upscaling.frameLatencyHandle = INVALID_HANDLE_VALUE;
 		upscaling.FrameLimiter();
 		Require(waitCalls == 10 && errorReads == 1, "missing handles must skip the Win32 wait");
-		upscaling.waitableObject = reinterpret_cast<HANDLE>(std::uintptr_t(1));
+		upscaling.frameLatencyHandle = reinterpret_cast<HANDLE>(std::uintptr_t(1));
 		nextWaitResult = WAIT_OBJECT_0;
 		upscaling.settings.frameLimitMode = true;
 		upscaling.FrameLimiter();

@@ -96,14 +96,14 @@ namespace
 {
 	using namespace Util;
 	using ShaderContentReuse::Identity;
-	ShaderCacheManifest::Manifest manifest;
-	ShaderCachePack::Store* pack = nullptr;
+	ShaderCacheManifest::Manifest cacheManifest;
+	ShaderCachePack::Store* activePack = nullptr;
 	bool managed = false, quarantined = false;
 	std::shared_mutex g_diskCacheMutationMutex;
 	std::mutex g_standaloneCacheIOMutex;
 	std::atomic<uint64_t> diskGeneration = 0, g_manifestWriteCount = 0;
 	constexpr uint64_t kManifestFlushBatchSize = 25;
-	ContentHash::Hash128 sourceDigest = ContentHash::HashString("source-v1");
+	ContentHash::Hash128 testSourceDigest = ContentHash::HashString("source-v1");
 
 	const std::filesystem::path& DiskCachePath()
 	{
@@ -117,11 +117,11 @@ namespace
 	}
 	uint64_t GetDiskCacheGeneration() { return diskGeneration; }
 	bool ManagedShaderPackLayoutPresent() { return managed; }
-	auto* GetShaderPackStore(bool) { return quarantined ? nullptr : pack; }
+	auto* GetShaderPackStore(bool) { return quarantined ? nullptr : activePack; }
 	void QuarantineShaderPackLane(bool, std::string_view) { quarantined = true; }
-	auto& GetShaderCacheManifest() { return manifest; }
-	void FlushShaderCacheManifestLocked() { assert(manifest.Save()); }
-	std::optional<ContentHash::Hash128> GetShaderContentDigest(const std::filesystem::path&, const std::filesystem::path&) { return sourceDigest; }
+	auto& GetShaderCacheManifest() { return cacheManifest; }
+	void FlushShaderCacheManifestLocked() { assert(cacheManifest.Save()); }
+	std::optional<ContentHash::Hash128> GetShaderContentDigest(const std::filesystem::path&, const std::filesystem::path&) { return testSourceDigest; }
 	std::filesystem::path ShaderSourceRoot() { return "Data/Shaders"; }
 	std::string GetShaderPackFamily(const std::wstring&) { return "Lighting"; }
 
@@ -158,16 +158,16 @@ namespace
 			std::filesystem::current_path(root);
 			std::filesystem::create_directories(DiskCachePath() / "Lighting");
 			std::filesystem::create_directories(PreviousDiskCachePath() / "Lighting");
-			manifest.Load(DiskCachePath() / "Manifest.json");
+			cacheManifest.Load(DiskCachePath() / "Manifest.json");
 			g_previousManifest.reset();
 			++diskGeneration;
-			pack = nullptr;
+			activePack = nullptr;
 			managed = quarantined = false;
 			ShaderCache::Instance().active = ShaderCache::Instance().skipUnchanged = true;
 		}
 		~Fixture()
 		{
-			pack = nullptr;
+			activePack = nullptr;
 			std::filesystem::current_path(oldWorkingDirectory);
 			std::error_code error;
 			std::filesystem::remove_all(root, error);
@@ -195,8 +195,8 @@ namespace
 	{
 		Fixture fixture;
 		const auto record = ShaderContentReuse::Bind(CodeIdentity(), std::string_view("a\0b", 3));
-		manifest.Set("Lighting/a.pso", "digest", record);
-		assert(manifest.Save());
+		cacheManifest.Set("Lighting/a.pso", "digest", record);
+		assert(cacheManifest.Save());
 		ShaderCacheManifest::Manifest loaded;
 		loaded.Load(DiskCachePath() / "Manifest.json");
 		assert(loaded.GetContentKey("Lighting/a.pso") == record);
@@ -239,8 +239,12 @@ namespace
 		const auto newCompile = ContentHash::HashString("new-defines");
 		const std::wstring path = L"Data/ShaderCache/Lighting/1.pso";
 		const auto generation = GetDiskCacheGeneration();
-		assert(SaveShaderBlobToDisk(blob.get(), false, path, "Lighting.hlsl", oldCompile, oldCompile, sourceDigest, generation, identity));
-		assert(manifest.Save());
+		assert(SaveShaderBlobToDisk(blob.get(), false, path, "Lighting.hlsl", oldCompile, oldCompile, testSourceDigest, generation, identity));
+		assert(cacheManifest.Save());
+		// The previous lane is immutable within a cache generation.
+		const auto previous = PreviousDiskCachePath() / "Lighting/1.pso";
+		std::filesystem::copy_file(path, previous);
+		std::filesystem::copy_file(DiskCachePath() / "Manifest.json", PreviousDiskCachePath() / "Manifest.json");
 		ContentReuseSource origin;
 		assert(FindReusableShaderBlob(identity, false, path, "Lighting.hlsl", newCompile, generation, origin));
 		assert(origin == ContentReuseSource::ActiveCache);
@@ -260,9 +264,6 @@ namespace
 		ShaderCache::Instance().active = true;
 		assert(!FindReusableShaderBlob(identity, false, path, "Lighting.hlsl", newCompile, generation - 1, origin));
 
-		const auto previous = PreviousDiskCachePath() / "Lighting/1.pso";
-		std::filesystem::copy_file(path, previous);
-		std::filesystem::copy_file(DiskCachePath() / "Manifest.json", PreviousDiskCachePath() / "Manifest.json");
 		const auto timestamp = std::filesystem::last_write_time(path);
 		std::string wrong(Bytes(blob.get()));
 		wrong.back() ^= 1;
@@ -276,13 +277,13 @@ namespace
 		assert(!FindReusableShaderBlob(identity, false, path, "Lighting.hlsl", newCompile, generation, origin));
 		managed = false;
 
-		const auto before = manifest.GetContentKey("Lighting/1.pso");
+		const auto before = cacheManifest.GetContentKey("Lighting/1.pso");
 		FileHelpers::failWrite = true;
-		assert(!SaveShaderBlobToDisk(blob.get(), false, path, "Lighting.hlsl", newCompile, newCompile, sourceDigest, generation, changed));
-		assert(manifest.GetContentKey("Lighting/1.pso") == before);
+		assert(!SaveShaderBlobToDisk(blob.get(), false, path, "Lighting.hlsl", newCompile, newCompile, testSourceDigest, generation, changed));
+		assert(cacheManifest.GetContentKey("Lighting/1.pso") == before);
 		FileHelpers::failWrite = false;
 		++diskGeneration;
-		assert(!SaveShaderBlobToDisk(blob.get(), false, path, "Lighting.hlsl", newCompile, newCompile, sourceDigest, generation, changed));
+		assert(!SaveShaderBlobToDisk(blob.get(), false, path, "Lighting.hlsl", newCompile, newCompile, testSourceDigest, generation, changed));
 		ShaderCacheManifest::Manifest previousManifest;
 		previousManifest.Load(PreviousDiskCachePath() / "Manifest.json");
 		previousManifest.Clear();
@@ -308,10 +309,10 @@ namespace
 		ShaderCachePack::Store store(a, b, ShaderCachePack::Lane::Optimized, setId);
 		std::string error;
 		assert(store.InitializeEmptyFilesAndOpen(&error));
-		pack = &store;
+		activePack = &store;
 		managed = true;
 		const auto generation = GetDiskCacheGeneration();
-		assert(SaveShaderBlobToDisk(blob.get(), false, path, "Lighting.hlsl", oldCompile, oldCompile, sourceDigest, generation, identity));
+		assert(SaveShaderBlobToDisk(blob.get(), false, path, "Lighting.hlsl", oldCompile, oldCompile, testSourceDigest, generation, identity));
 		assert(store.Checkpoint(&error));
 		winrt::com_ptr<ID3DBlob> exact;
 		exact.attach(LoadShaderBlobFromPack(store, false, path, "Lighting.hlsl", oldCompile));
@@ -322,7 +323,7 @@ namespace
 		assert(!std::filesystem::exists(path));
 
 		const auto other = CodeIdentity("changed-code");
-		assert(SaveShaderBlobToDisk(blob.get(), false, path, "Lighting.hlsl", newCompile, newCompile, sourceDigest, generation, other));
+		assert(SaveShaderBlobToDisk(blob.get(), false, path, "Lighting.hlsl", newCompile, newCompile, testSourceDigest, generation, other));
 		assert(store.Checkpoint(&error));
 		store.Close();
 		assert(store.Open(&error));
@@ -332,8 +333,8 @@ namespace
 
 		auto invalid = identity;
 		invalid.compatibility = CryptoHash::Sha256Hex("changed-provider");
-		assert(!SaveShaderBlobToDisk(blob.get(), false, path, "Lighting.hlsl", oldCompile, oldCompile, sourceDigest, generation, invalid));
-		const auto old = BuildShaderPackIdentity(path, "Lighting.hlsl", oldCompile, sourceDigest);
+		assert(!SaveShaderBlobToDisk(blob.get(), false, path, "Lighting.hlsl", oldCompile, oldCompile, testSourceDigest, generation, invalid));
+		const auto old = BuildShaderPackIdentity(path, "Lighting.hlsl", oldCompile, testSourceDigest);
 		auto tampered = store.Find(old->exactKey, &error);
 		assert(tampered);
 		auto metadata = nlohmann::json::parse(tampered->metadata);
