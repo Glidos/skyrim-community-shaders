@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <optional>
@@ -22,6 +23,19 @@ namespace GrassPolicy
 	constexpr bool BatchCapacityValid(uint64_t instances, uint64_t slices)
 	{
 		return instances > 0 && instances <= kMaxBatchInstances && slices > 0 && slices <= kMaxBatchSlices;
+	}
+	struct ScratchCapacity
+	{
+		uint32_t instances = 0, slices = 0;
+		bool operator==(const ScratchCapacity&) const = default;
+	};
+	/** @brief Grow independent scratch dimensions without shrinking storage needed by other buckets. */
+	constexpr std::optional<ScratchCapacity> PlanScratchCapacity(ScratchCapacity current, uint64_t instances, uint64_t slices)
+	{
+		if (!BatchCapacityValid(instances, slices) || current.instances > kMaxBatchInstances || current.slices > kMaxBatchSlices)
+			return std::nullopt;
+		return ScratchCapacity{ std::max(current.instances, std::bit_ceil(static_cast<uint32_t>(instances))),
+			std::max(current.slices, std::bit_ceil(static_cast<uint32_t>(slices))) };
 	}
 	/** @brief Replacing a resident snapshot must retain the bounded CPU record budget. */
 	constexpr bool SnapshotBudgetValid(uint64_t resident, uint64_t previous, uint64_t incoming)

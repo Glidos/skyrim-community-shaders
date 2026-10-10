@@ -1863,6 +1863,7 @@ if(BUILD_CONTROLLER_TESTS)
     set_tests_properties(SettingsUI PROPERTIES TIMEOUT 30)
 
     add_controller_test(grass_draw_batch_test GrassOptimizationPolicy tests/grass_draw_batch_test.cpp)
+    add_controller_test(grass_pass_cache_test GrassPassCache tests/grass_pass_cache_test.cpp)
     add_controller_test(grass_runtime_layout_test GrassRuntimeLayout tests/grass_runtime_layout_test.cpp)
     target_link_libraries(
         grass_runtime_layout_test
@@ -2604,6 +2605,9 @@ if(BUILD_CONTROLLER_TESTS)
         PRIVATE spdlog::spdlog windowsapp.lib
     )
     include("${PROJECT_SOURCE_DIR}/tests/vr_depth_encode.cmake")
+    add_d3d_shader_test(grass_d3d_state_test GrassD3DState tests/grass_d3d_state_test.cpp)
+    target_link_libraries(grass_d3d_state_test PRIVATE windowsapp.lib)
+    target_compile_definitions(grass_d3d_state_test PRIVATE NOMINMAX)
     add_d3d_shader_test(grass_batch_shader_test GrassBatchShader tests/grass_batch_shader_test.cpp)
     target_sources(grass_batch_shader_test PRIVATE src/Utils/ShaderInclude.cpp)
     target_link_libraries(grass_batch_shader_test PRIVATE spdlog::spdlog)

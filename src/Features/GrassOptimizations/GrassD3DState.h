@@ -19,8 +19,10 @@ namespace GrassD3D
 			ctx->VSGetConstantBuffers1(9, 1, cb.put(), &first, &count);
 			ctx->VSGetShaderResources(2, 1, srv.put());
 			ctx->IAGetInputLayout(layout.put());
+			std::array<ID3D11Buffer*, 2> rawVertices{};
+			ctx->IAGetVertexBuffers(0, static_cast<UINT>(rawVertices.size()), rawVertices.data(), strides.data(), offsets.data());
 			for (UINT i = 0; i < vertices.size(); ++i)
-				ctx->IAGetVertexBuffers(i, 1, vertices[i].put(), &strides[i], &offsets[i]);
+				vertices[i].attach(rawVertices[i]);
 			ctx->IAGetIndexBuffer(indices.put(), &format, &indexOffset);
 			ctx->IAGetPrimitiveTopology(&topology);
 		}
@@ -31,10 +33,10 @@ namespace GrassD3D
 			ctx->VSSetConstantBuffers1(9, 1, &buffer, &first, &count);
 			ctx->VSSetShaderResources(2, 1, &resource);
 			ctx->IASetInputLayout(layout.get());
-			for (UINT i = 0; i < vertices.size(); ++i) {
-				auto vertex = vertices[i].get();
-				ctx->IASetVertexBuffers(i, 1, &vertex, &strides[i], &offsets[i]);
-			}
+			std::array<ID3D11Buffer*, 2> rawVertices{};
+			for (UINT i = 0; i < vertices.size(); ++i)
+				rawVertices[i] = vertices[i].get();
+			ctx->IASetVertexBuffers(0, static_cast<UINT>(rawVertices.size()), rawVertices.data(), strides.data(), offsets.data());
 			ctx->IASetIndexBuffer(indices.get(), format, indexOffset);
 			ctx->IASetPrimitiveTopology(topology);
 		}

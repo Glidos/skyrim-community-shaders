@@ -22,6 +22,25 @@ int main()
 		auto jittered = identity;
 		jittered[3] = .001f;
 		require(GrassFrustum::SelectProjection(jittered, identity, jittered, identity) == identity);
+		const auto dense = GrassPolicy::PlanScratchCapacity({}, 32769, 1);
+		require(dense && *dense == GrassPolicy::ScratchCapacity{ 65536, 1 });
+		const auto manySlices = GrassPolicy::PlanScratchCapacity(*dense, 64, 257);
+		require(manySlices && *manySlices == GrassPolicy::ScratchCapacity{ 65536, 512 });
+		for (unsigned frame = 0; frame < 1000; ++frame) {
+			require(GrassPolicy::PlanScratchCapacity(*manySlices, 32769, 1) == manySlices);
+			require(GrassPolicy::PlanScratchCapacity(*manySlices, 64, 257) == manySlices);
+		}
+		const auto reverse = GrassPolicy::PlanScratchCapacity({}, 64, 257);
+		require(reverse && GrassPolicy::PlanScratchCapacity(*reverse, 32769, 1) == manySlices);
+		const auto maximum = GrassPolicy::PlanScratchCapacity(*manySlices, GrassPolicy::kMaxBatchInstances, GrassPolicy::kMaxBatchSlices);
+		require(maximum && *maximum == GrassPolicy::ScratchCapacity{ GrassPolicy::kMaxBatchInstances, GrassPolicy::kMaxBatchSlices });
+		require(GrassPolicy::PlanScratchCapacity(*maximum, 1, 1) == maximum);
+		require(!GrassPolicy::PlanScratchCapacity({}, 0, 1));
+		require(!GrassPolicy::PlanScratchCapacity({}, 1, 0));
+		require(!GrassPolicy::PlanScratchCapacity({}, UINT64_MAX, 1));
+		require(!GrassPolicy::PlanScratchCapacity({}, 1, UINT64_MAX));
+		require(!GrassPolicy::PlanScratchCapacity({ UINT32_MAX, 1 }, 1, 1));
+		require(!GrassPolicy::PlanScratchCapacity({ 1, UINT32_MAX }, 1, 1));
 		GrassPolicy::Settings settings;
 		require(settings.Valid());
 		require(settings.Enabled && settings.CrossCellBatching && settings.FrustumCulling &&

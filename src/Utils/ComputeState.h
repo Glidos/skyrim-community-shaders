@@ -14,12 +14,18 @@ namespace D3DState
 		explicit ComputeState(ID3D11DeviceContext1* context, UINT usedUAVs = 4) : ctx(context), uavCount(std::min(usedUAVs, 14u))
 		{
 			ctx->CSGetShader(shader.put(), classes.data(), &classCount);
+			std::array<ID3D11Buffer*, 4> rawBuffers{};
+			ctx->CSGetConstantBuffers1(0, static_cast<UINT>(rawBuffers.size()), rawBuffers.data(), first.data(), count.data());
 			for (UINT i = 0; i < buffers.size(); ++i)
-				ctx->CSGetConstantBuffers1(i, 1, buffers[i].put(), &first[i], &count[i]);
+				buffers[i].attach(rawBuffers[i]);
+			std::array<ID3D11ShaderResourceView*, 3> rawSRVs{};
+			ctx->CSGetShaderResources(0, static_cast<UINT>(rawSRVs.size()), rawSRVs.data());
 			for (UINT i = 0; i < srvs.size(); ++i)
-				ctx->CSGetShaderResources(i, 1, srvs[i].put());
+				srvs[i].attach(rawSRVs[i]);
+			std::array<ID3D11UnorderedAccessView*, 14> rawUAVs{};
+			ctx->CSGetUnorderedAccessViews(0, uavCount, rawUAVs.data());
 			for (UINT i = 0; i < uavCount; ++i)
-				ctx->CSGetUnorderedAccessViews(i, 1, uavs[i].put());
+				uavs[i].attach(rawUAVs[i]);
 		}
 		~ComputeState()
 		{
@@ -27,18 +33,18 @@ namespace D3DState
 			std::array<ID3D11UnorderedAccessView*, 14> emptyUAVs{};
 			ctx->CSSetShaderResources(0, 3, emptySRVs.data());
 			ctx->CSSetUnorderedAccessViews(0, uavCount, emptyUAVs.data(), nullptr);
-			for (UINT i = 0; i < buffers.size(); ++i) {
-				auto cb = buffers[i].get();
-				ctx->CSSetConstantBuffers1(i, 1, &cb, &first[i], &count[i]);
-			}
-			for (UINT i = 0; i < srvs.size(); ++i) {
-				auto srv = srvs[i].get();
-				ctx->CSSetShaderResources(i, 1, &srv);
-			}
-			for (UINT i = 0; i < uavCount; ++i) {
-				auto uav = uavs[i].get();
-				ctx->CSSetUnorderedAccessViews(i, 1, &uav, nullptr);
-			}
+			std::array<ID3D11Buffer*, 4> rawBuffers{};
+			for (UINT i = 0; i < buffers.size(); ++i)
+				rawBuffers[i] = buffers[i].get();
+			ctx->CSSetConstantBuffers1(0, static_cast<UINT>(rawBuffers.size()), rawBuffers.data(), first.data(), count.data());
+			std::array<ID3D11ShaderResourceView*, 3> rawSRVs{};
+			for (UINT i = 0; i < srvs.size(); ++i)
+				rawSRVs[i] = srvs[i].get();
+			ctx->CSSetShaderResources(0, static_cast<UINT>(rawSRVs.size()), rawSRVs.data());
+			std::array<ID3D11UnorderedAccessView*, 14> rawUAVs{};
+			for (UINT i = 0; i < uavCount; ++i)
+				rawUAVs[i] = uavs[i].get();
+			ctx->CSSetUnorderedAccessViews(0, uavCount, rawUAVs.data(), nullptr);
 			ctx->CSSetShader(shader.get(), classes.data(), classCount);
 			for (UINT i = 0; i < classCount; ++i)
 				classes[i]->Release();
