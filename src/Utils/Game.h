@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -128,22 +129,30 @@ namespace Util
 		inline float DirectionRangeToDegrees(uint8_t rawRange) { return rawRange * DIR_RANGE_TO_DEGREES; }
 		inline float RadiansToDegrees(float radians) { return radians * RADIANS_TO_DEGREES; }
 
-		// Angle normalization helpers
+		/** Wraps finite degrees into [0, 360); nonfinite inputs return zero. */
 		inline float NormalizeDegrees0To360(float degrees)
 		{
 			if (!std::isfinite(degrees))
 				return 0.0f;
-			while (degrees < 0.0f) degrees += 360.0f;
-			while (degrees >= 360.0f) degrees -= 360.0f;
+			degrees = std::fmod(degrees, 360.0f);
+			if (degrees < 0.0f)
+				degrees += 360.0f;
+			// A tiny negative remainder can round up to 360 when shifted.
+			if (degrees >= 360.0f)
+				degrees -= 360.0f;
 			return degrees;
 		}
 
+		/** Wraps finite degrees into [-180, 180]; nonfinite inputs return zero. */
 		inline float NormalizeDegreesToSignedRange(float degrees)
 		{
 			if (!std::isfinite(degrees))
 				return 0.0f;
-			while (degrees > 180.0f) degrees -= 360.0f;
-			while (degrees < -180.0f) degrees += 360.0f;
+			degrees = std::fmod(degrees, 360.0f);
+			if (degrees > 180.0f)
+				degrees -= 360.0f;
+			if (degrees < -180.0f)
+				degrees += 360.0f;
 			return degrees;
 		}
 
