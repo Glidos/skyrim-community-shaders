@@ -42,6 +42,7 @@ static const float rayLength = 1.0;
 #	if defined(VR)
 static const int minFoveatedIterations = 16;
 static const float kSSRFoveationDepthAgreeThreshold = 0.05f;
+static const float kSSRFoveationBackCheckThresholdPixels = 1.0f;
 
 float GetVRSSRFoveationWeight(float ssrFoveationMode, float2 eyeUv, uint eyeIndex)
 {
@@ -285,7 +286,11 @@ PS_OUTPUT main(PS_INPUT input)
 				FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(reprojection.otherStereoUV),
 				1 - eyeIndex, depthTextureDimensions, FrameBuffer::DynamicResolutionParams1.xy);
 			float otherDepth = DepthTex.SampleLevel(DepthSampler, otherEyeScreenPosition, 0).x;
-			otherFoveationValid = Stereo::IsReprojectionExact(reprojection, depth, otherDepth, kSSRFoveationDepthAgreeThreshold);
+			// Nonlinear depth alone can accept an occluder at a different distance.
+			Stereo::FinalizeStereoBlend(reprojection, Stereo::ConvertToStereoUV(uv, eyeIndex), depth, otherDepth,
+				eyeIndex, float2(depthTextureDimensions), kSSRFoveationDepthAgreeThreshold, 1.0f, kSSRFoveationBackCheckThresholdPixels);
+			otherFoveationValid = depth > 1e-5f && depth < 1.0f && otherDepth > 1e-5f && otherDepth < 1.0f &&
+				reprojection.backCheckPassed && Stereo::IsReprojectionExact(reprojection, depth, otherDepth, kSSRFoveationDepthAgreeThreshold);
 			otherFoveationWeight = GetVRSSRFoveationWeight(
 				ssrFoveationMode, Stereo::ConvertFromStereoUV(reprojection.otherStereoUV, 1 - eyeIndex), 1 - eyeIndex);
 		}
