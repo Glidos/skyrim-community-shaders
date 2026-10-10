@@ -593,7 +593,7 @@ void State::Debug()
 		drawCalls[magic_enum::enum_integer(RE::BSShader::Type::Total)]++;
 	}
 
-	if (currentShader && updateShader && frameAnnotations) {
+	if (currentShader && updateShader && drawAnnotationsActive) {
 		// Per-draw annotations must remain capture-only. Dynamic Tracy zones allocate
 		// a source location for every draw and cannot be sustained at this frequency.
 		BeginDrawEvent("Draw: CS {}::{:x}::{}", magic_enum::enum_name(currentShader->shaderType.get()), permutationData.PixelShaderDescriptor, currentShader->fxpFilename);
@@ -2092,6 +2092,14 @@ namespace
 		std::copy(a_title.begin(), a_title.end(), a_buffer.begin());
 		return a_buffer.c_str();
 	}
+}
+
+void State::RefreshDrawAnnotations()
+{
+	drawAnnotationsActive = frameAnnotations &&
+	                        ((pPerf.Get() && pPerf->GetStatus()) ||
+								GetModuleHandleW(L"renderdoc.dll") ||
+								GetModuleHandleW(L"WinPixGpuCapturer.dll"));
 }
 
 void State::BeginDrawEvent(std::string_view title)
