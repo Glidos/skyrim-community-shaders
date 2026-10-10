@@ -349,6 +349,9 @@ jobs:
                           throw 'FOMOD archive is missing or empty.'
                       }
 
+                      # Listing checks metadata; extraction verifies every compressed payload.
+                      Expand-CMakeArchive (Get-Item -LiteralPath $candidate) (Join-Path $workRoot 'verified')
+
                       $entries = @(& cmake -E tar tf $candidate) |
                           ForEach-Object {
                               $entry = $_.Trim().Replace('\', '/')
@@ -362,7 +365,8 @@ jobs:
                       }
                       $requiredEntries = @(
                           'fomod/ModuleConfig.xml',
-                          'fomod/info.xml'
+                          'fomod/info.xml',
+                          'Core/SKSE/Plugins/CommunityShaders.dll'
                       )
                       foreach ($cacheRoot in $cacheRoots) {
                           foreach ($member in @(

@@ -8,7 +8,13 @@ Fix Water variants. Bundling an integration does not bundle its companion
 plugin or remove hardware/runtime requirements.
 
 `release-build.yaml` assembles and validates this final archive before
-attestation and publication. Its upload and attestation patterns select
+attestation and publication. Staging requires a nonempty
+`SKSE/Plugins/CommunityShaders.dll` in both the input and copied core.
+Before replacing the AIO, the workflow fully extracts the candidate with
+CMake to verify its compressed payloads and requires the plugin DLL,
+installer metadata, and selected caches in its archive listing. Failure
+stops publication and preserves the original AIO; it never publishes a
+plain-AIO fallback. Its upload and attestation patterns select
 only `CSX_AIO-*.7z`. Core-only, individual-feature and standalone-cache
 archives remain internal workflow artifacts. GitHub adds source ZIP and
 tar.gz links automatically; those are not install packages.

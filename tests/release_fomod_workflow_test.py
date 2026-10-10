@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import fnmatch
+import itertools
 import json
 from pathlib import Path
 import re
@@ -177,10 +178,10 @@ class ReleaseFomodWorkflowTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
 
-    def test_archive_assembly_from_sparse_checkout_in_both_modes(self) -> None:
+    def test_archive_assembly_and_candidate_failures_in_both_modes(self) -> None:
         checkout = next(step for step in self.steps if step["name"] == "Checkout release packaging tools")
-        for include_se_ae in (True, False):
-            with self.subTest(include_se_ae=include_se_ae), tempfile.TemporaryDirectory() as temporary:
+        for include_se_ae, damage in itertools.product((True, False), (None, "missing-dll", "corrupt-data")):
+            with self.subTest(include_se_ae=include_se_ae, damage=damage), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 source = root / "checkout"
                 source.mkdir()
@@ -199,6 +200,7 @@ class ReleaseFomodWorkflowTests(unittest.TestCase):
                 cache_archives = {
                     path.name: path.read_bytes() for path in dist.glob("ShaderCache-*.7z")
                 }
+                original_aio = (dist / "CSX_AIO-test.7z").read_bytes()
                 runner_temp = root / "runner-temp"
                 runner_temp.mkdir()
                 environment = {
@@ -209,12 +211,43 @@ class ReleaseFomodWorkflowTests(unittest.TestCase):
                     "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ["PATH"],
                 }
                 script = root / "assemble.ps1"
-                script.write_text(self.packaging["run"], encoding="utf-8")
-                self._run(["pwsh", "-NoProfile", "-File", str(script)], source, env=environment)
+                program = self.packaging["run"]
+                if damage == "missing-dll":
+                    marker = "Push-Location $stagedRoot"
+                    self.assertEqual(program.count(marker), 1)
+                    program = program.replace(marker,
+                        "Remove-Item -LiteralPath (Join-Path $stagedRoot 'Core/SKSE/Plugins/CommunityShaders.dll')\n" + marker)
+                elif damage == "corrupt-data":
+                    marker = "if (-not (Test-Path -LiteralPath $candidate) -or"
+                    self.assertEqual(program.count(marker), 1)
+                    program = program.replace(marker,
+                        "$bytes = [System.IO.File]::ReadAllBytes($candidate)\n"
+                        "$bytes[32] = $bytes[32] -bxor 1\n"
+                        "[System.IO.File]::WriteAllBytes($candidate, $bytes)\n"
+                        "& cmake -E tar tf $candidate | Out-Null\n"
+                        "if ($LASTEXITCODE -ne 0) { throw 'Corruption fixture damaged archive metadata.' }\n" + marker)
+                script.write_text(program, encoding="utf-8")
+                result = subprocess.run(
+                    ["pwsh", "-NoProfile", "-File", str(script)], cwd=source,
+                    env=environment, capture_output=True, text=True, check=False,
+                )
+                diagnostic = result.stdout + result.stderr
+                if damage is None:
+                    self.assertEqual(result.returncode, 0, diagnostic)
+                else:
+                    self.assertNotEqual(result.returncode, 0, diagnostic)
+                    self.assertIn(
+                        "FOMOD archive is missing Core/SKSE/Plugins/CommunityShaders.dll."
+                        if damage == "missing-dll" else "Could not extract",
+                        diagnostic,
+                    )
+                    self.assertEqual((dist / "CSX_AIO-test.7z").read_bytes(), original_aio)
                 self.assertEqual(list(runner_temp.iterdir()), [])
                 self.assertEqual({path.name for path in dist.iterdir()}, {name for name, _ in archives})
                 for name, content in cache_archives.items():
                     self.assertEqual((dist / name).read_bytes(), content)
+                if damage is not None:
+                    continue
                 extracted = root / "extracted"
                 extracted.mkdir()
                 self._run(["cmake", "-E", "tar", "xf", str(dist / "CSX_AIO-test.7z")], extracted)

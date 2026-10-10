@@ -116,6 +116,7 @@ class FomodPackageTests(unittest.TestCase):
         (core / "core-file.txt").write_text("core", encoding="utf-8")
         build_manifest = core / BUILDER.CORE_BUILD_MANIFEST
         build_manifest.parent.mkdir(parents=True)
+        (core / BUILDER.PLUGIN_DLL).write_bytes(b"synthetic plugin payload")
         build_manifest.write_text(
             json.dumps(
                 {
@@ -148,6 +149,36 @@ class FomodPackageTests(unittest.TestCase):
     @staticmethod
     def _write_json(path: Path, value: dict) -> None:
         path.write_text(json.dumps(value), encoding="utf-8")
+
+    def test_rejects_missing_empty_or_directory_plugin_before_and_after_staging(self) -> None:
+        for include_se_ae in (True, False):
+            for staged in (False, True):
+                for damage in ("missing", "empty", "directory"):
+                    with self.subTest(include_se_ae=include_se_ae, staged=staged, damage=damage), tempfile.TemporaryDirectory() as temporary:
+                        root = Path(temporary)
+                        core, se_cache, vr_cache = self._inputs(root)
+                        output = root / "staged"
+                        if staged:
+                            BUILDER.stage_package(
+                                core, se_cache if include_se_ae else None, vr_cache,
+                                output, "v3.18.0", include_se_ae=include_se_ae,
+                            )
+                        plugin = (output / BUILDER.CORE_DIRECTORY if staged else core) / BUILDER.PLUGIN_DLL
+                        plugin.unlink()
+                        if damage == "empty":
+                            plugin.touch()
+                        elif damage == "directory":
+                            plugin.mkdir()
+                        with self.assertRaisesRegex(SystemExit, "missing or empty core plugin DLL"):
+                            if staged:
+                                BUILDER.validate_staged_package(output, "v3.18.0", include_se_ae)
+                            else:
+                                BUILDER.stage_package(
+                                    core, se_cache if include_se_ae else None, vr_cache,
+                                    output, "v3.18.0", include_se_ae=include_se_ae,
+                                )
+                        if not staged:
+                            self.assertFalse(output.exists())
 
     def test_cli_runtime_selection_requires_matching_cache_arguments(self) -> None:
         common = [
