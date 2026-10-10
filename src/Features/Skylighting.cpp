@@ -440,7 +440,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 
 void Skylighting::LoadSettings(json& o_json)
 {
-	const uint previousProbeGridQuality = settings.ProbeGridQuality;
+	const auto previous = settings;
 	ApplyPlatformDefaults(settings);
 
 	LoadIfPresent(o_json, "MaxZenith", settings.MaxZenith);
@@ -457,7 +457,15 @@ void Skylighting::LoadSettings(json& o_json)
 	LoadIfPresent(o_json, "IncludeMarkedRoofOccluders", settings.IncludeMarkedRoofOccluders);
 
 	NormalizeSettingsForRuntime(settings);
-	QueueResetSkylighting(previousProbeGridQuality != settings.ProbeGridQuality);
+	if (previous.ProbeGridQuality != settings.ProbeGridQuality ||
+		previous.EnableSkylighting != settings.EnableSkylighting ||
+		previous.ProbeFieldSize != settings.ProbeFieldSize ||
+		previous.MaxZenith != settings.MaxZenith ||
+		previous.MinDiffuseVisibility != settings.MinDiffuseVisibility ||
+		previous.MinSpecularVisibility != settings.MinSpecularVisibility ||
+		previous.IncludeMarkedRoofOccluders != settings.IncludeMarkedRoofOccluders) {
+		QueueResetSkylighting(previous.ProbeGridQuality != settings.ProbeGridQuality);
+	}
 }
 
 void Skylighting::SaveSettings(json& o_json)
@@ -569,9 +577,13 @@ void Skylighting::ResetSkylighting()
 	ClearShadowHistory();
 
 	ResetProbeUpdateWindow(*this);
-	forcedFullUpdateFrames = 1;
+	forcedFullUpdateFrames = kProbeHistoryWarmupUpdates;
+	lastOcclusionRenderFrame.reset();
+	lastProbeUpdateCapture.reset();
 	forceProbeUpdateThisFrame = true;
 	probeUpdateFrameCounter = 0;
+	probeScheduleFrame.reset();
+	probeUpdatePending = true;
 	occlusionUpdateFrameCounter = 0;
 }
 
@@ -1111,27 +1123,29 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 	probeUpdateCellID = cellID;
 	DirectX::XMINT3 cellIDDiffI = { (int)cellIDDiff.x, (int)cellIDDiff.y, (int)cellIDDiff.z };
 
-	bool shouldForceFullUpdate =
-		cellIDDiffI.x != 0 ||
-		cellIDDiffI.y != 0 ||
-		cellIDDiffI.z != 0 ||
-		forcedFullUpdateFrames > 0;
+	const uint sliceCount = settings.EnableIncrementalProbeUpdates ? ClampStableSliceCount(settings.StableSliceCount, probeArrayDims[2]) : 0u;
+	if (activeSliceCount != sliceCount) {
+		activeSliceCount = sliceCount;
+		ResetProbeUpdateWindow(*this);
+	}
+	if (cellIDDiffI.x != 0 || cellIDDiffI.y != 0 || cellIDDiffI.z != 0) {
+		forcedFullUpdateFrames = std::max(forcedFullUpdateFrames, kOcclusionCornerCount);
+		ResetProbeUpdateWindow(*this);
+	}
+	const bool shouldForceFullUpdate = forcedFullUpdateFrames > 0;
 	forceProbeUpdateThisFrame = shouldForceFullUpdate;
 
 	probeUpdateSliceStart = 0;
 	probeUpdateSliceCount = probeArrayDims[2];
 
 	if (UsesIncrementalProbeSlices(settings, probeArrayDims[2]) && !shouldForceFullUpdate) {
-		uint stableSliceCount = ClampStableSliceCount(settings.StableSliceCount, probeArrayDims[2]);
-
 		probeUpdateSliceStart = probeUpdateSliceCursor;
-		probeUpdateSliceCount = std::min(stableSliceCount, probeArrayDims[2] - probeUpdateSliceStart);
-	} else {
-		ResetProbeUpdateWindow(*this);
+		probeUpdateSliceCount = std::min(sliceCount, probeArrayDims[2] - probeUpdateSliceStart);
 	}
 
 	probeUpdateBufferEnabled = true;
 	probeUpdateShadowDataAvailable = shadowDataAvailable;
+	probeUpdateCapture = frameCount;
 	return {
 		.OcclusionViewProj = OcclusionTransform,
 		.OcclusionSHBasis4Pi = occlusionSHBasis4Pi,
@@ -1158,8 +1172,9 @@ void Skylighting::Prepass()
 	const bool shadowDataAvailable = HasCurrentShadowData();
 	if (!shadowDataAvailable)
 		shadowHistoryNeedsReset = true;
-	// Resource availability may change after the world constants were published.
-	if (context && probeUpdateBufferEnabled && shadowDataAvailable != probeUpdateShadowDataAvailable)
+	// Captures and resource availability can change after world publication.
+	if (context && probeUpdateBufferEnabled &&
+		(shadowDataAvailable != probeUpdateShadowDataAvailable || probeUpdateCapture != frameCount))
 		globals::state->UpdateFeatureData(true);
 	if (!IsRuntimeActive() || UpdateInteriorState() || HasPendingReset() || needsOcclusionRefresh ||
 		globals::state->isMapMenuOpen || !HasProbeUpdateResources() || !probeUpdateBufferEnabled) {
@@ -1216,15 +1231,21 @@ void Skylighting::Prepass()
 			if (updatingIncrementalSlices) {
 				shouldUpdateProbes = forceProbeUpdateThisFrame || ((probeUpdateCornerMask & occlusionCornerBit) == 0);
 			} else {
-				const uint probeUpdateInterval = GetProbeUpdateInterval(settings);
-				shouldUpdateProbes = ShouldRunPeriodicUpdate(probeUpdateFrameCounter, probeUpdateInterval, forceProbeUpdateThisFrame);
+				if (probeScheduleFrame != globals::state->frameCount) {
+					probeScheduleFrame = globals::state->frameCount;
+					const uint probeUpdateInterval = GetProbeUpdateInterval(settings);
+					probeUpdatePending |= ShouldRunPeriodicUpdate(probeUpdateFrameCounter, probeUpdateInterval, forceProbeUpdateThisFrame);
+				}
+				// Keep due work pending until a fresh capture can satisfy it.
+				shouldUpdateProbes = forceProbeUpdateThisFrame || probeUpdatePending;
 			}
 
 			uint dispatchSliceCount = probeUpdateSliceCount == 0 ? 1 : probeUpdateSliceCount;
 			if (dispatchSliceCount > probeArrayDims[2])
 				dispatchSliceCount = probeArrayDims[2];
 
-			if (shouldUpdateProbes) {
+			const bool freshCapture = lastOcclusionRenderFrame == globals::state->frameCount && lastProbeUpdateCapture != frameCount;
+			if (shouldUpdateProbes && freshCapture) {
 				context->CSSetSamplers(0, (uint)samplers.size(), samplers.data());
 				context->CSSetShaderResources(0, (uint)srvs.size(), srvs.data());
 				context->CSSetUnorderedAccessViews(0, (uint)uavs.size(), uavs.data(), nullptr);
@@ -1235,19 +1256,21 @@ void Skylighting::Prepass()
 				}
 				// Buffer publication can repeat or outlive a skipped dispatch.
 				prevCellID = probeUpdateCellID;
-				if (forcedFullUpdateFrames > 0)
-					forcedFullUpdateFrames--;
-
-				if (updatingIncrementalSlices) {
+				lastProbeUpdateCapture = frameCount;
+				probeUpdatePending = false;
+				probeUpdateFrameCounter = 1;
+				if (forcedFullUpdateFrames > 0 || updatingIncrementalSlices) {
 					probeUpdateCornerMask |= occlusionCornerBit;
 
-					// The occlusion map only covers one XY quadrant per render. Keep this
-					// Z-slice batch active until all quadrants have refreshed, otherwise
-					// slice batches can phase-lock to one quadrant and leave holes.
+					// Recovery and slice progress require all four consumed quadrants.
 					if ((probeUpdateCornerMask & kAllOcclusionCornersMask) == kAllOcclusionCornersMask) {
-						probeUpdateSliceCursor += probeUpdateSliceCount;
-						if (probeUpdateSliceCursor >= probeArrayDims[2])
-							probeUpdateSliceCursor = 0;
+						if (forcedFullUpdateFrames > 0) {
+							forcedFullUpdateFrames -= std::min(forcedFullUpdateFrames, kOcclusionCornerCount);
+						} else {
+							probeUpdateSliceCursor += probeUpdateSliceCount;
+							if (probeUpdateSliceCursor >= probeArrayDims[2])
+								probeUpdateSliceCursor = 0;
+						}
 						probeUpdateCornerMask = 0;
 					}
 				} else {
@@ -1546,6 +1569,9 @@ void Skylighting::RenderOcclusion()
 		if (HasPendingReset())
 			return;
 
+		if (lastOcclusionRenderFrame == globals::state->frameCount)
+			return;
+
 		const uint occlusionUpdateInterval = GetOcclusionUpdateInterval(settings);
 		const bool shouldUpdateOcclusion = ShouldRunPeriodicUpdate(occlusionUpdateFrameCounter, occlusionUpdateInterval, needsOcclusionRefresh);
 
@@ -1632,6 +1658,7 @@ void Skylighting::RenderOcclusion()
 		occlusionSHBasis4Pi = EvaluateDirectionalSHBasis4Pi(float3{ OcclusionDir.x, OcclusionDir.y, OcclusionDir.z });
 		needsOcclusionRefresh = false;
 		OcclusionTransform = reinterpret_cast<RE::BSParticleShaderRainEmitter*>(&rainCapture)->occlusionProjection;
+		lastOcclusionRenderFrame = globals::state->frameCount;
 	}
 }
 

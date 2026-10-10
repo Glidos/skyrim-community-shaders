@@ -117,8 +117,7 @@ int main()
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("negative: got -1", result.stderr)
 
-    def test_retired_sampling_setting_preserves_defaults_and_user_overrides(self) -> None:
-        include = os.environ["CSX_JSON_INCLUDE"]
+    def settings_fixture(self) -> str:
         start = self.source.index("NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(")
         serialization = self.source[start:self.source.index(")", start) + 1]
         prelude = self.prelude.replace("; };", """;
@@ -141,6 +140,11 @@ int main()
             "void Skylighting::SaveSettings(",
             "json Skylighting::CapturePerformanceSettingsState(",
         ))
+        return ("#include <nlohmann/json.hpp>\nusing json = nlohmann::json;\n" + prelude + "\n" +
+                self.normalizer + "\n" + serialization + "\n" + methods + "\n")
+
+    def test_retired_sampling_setting_preserves_defaults_and_user_overrides(self) -> None:
+        include = os.environ["CSX_JSON_INCLUDE"]
         driver = r'''
 int main()
 {
@@ -206,8 +210,49 @@ int main()
 }
 '''
         result = self.compile_and_run(
-            "#include <nlohmann/json.hpp>\nusing json = nlohmann::json;\n" + prelude + "\n" +
-            self.normalizer + "\n" + serialization + "\n" + methods + "\n" + driver, include)
+            self.settings_fixture() + driver, include)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_scheduling_reload_preserves_history_and_pending_resets(self) -> None:
+        driver = r'''
+int main()
+{
+    Skylighting feature;
+    json current;
+    feature.SaveSettings(current);
+    const json scheduling = {
+        { "EnableIncrementalProbeUpdates", false }, { "StableSliceCount", 0 },
+        { "EnableReducedUpdateFrequency", false }, { "OcclusionUpdateInterval", 4 },
+        { "ProbeUpdateInterval", 8 }
+    };
+    for (const auto& [key, value] : scheduling.items()) {
+        current[key] = value;
+        feature.resetQueued = false;
+        feature.LoadSettings(current);
+        if (feature.resetQueued)
+            return 1;
+        feature.resetQueued = true;
+        feature.LoadSettings(current);
+        if (!feature.resetQueued)
+            return 2;
+    }
+    const json structural = {
+        { "MaxZenith", 0.7f }, { "MinDiffuseVisibility", 0.25f },
+        { "MinSpecularVisibility", 0.35f }, { "ProbeFieldSize", 16384.0f },
+        { "ProbeGridQuality", 2 }, { "EnableSkylighting", false },
+        { "IncludeMarkedRoofOccluders", false }
+    };
+    for (const auto& [key, value] : structural.items()) {
+        current[key] = value;
+        feature.resetQueued = false;
+        feature.LoadSettings(current);
+        if (!feature.resetQueued)
+            return 3;
+    }
+    std::cout << "Scheduling reloads retain history and pending resets; structural edits invalidate it\n";
+}
+'''
+        result = self.compile_and_run(self.settings_fixture() + driver, os.environ["CSX_JSON_INCLUDE"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 

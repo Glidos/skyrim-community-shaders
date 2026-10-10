@@ -439,10 +439,17 @@ struct Fixture
 	void Ready()
 	{
 		feature.ResetSkylighting();
-		feature.needsOcclusionRefresh = false;
+		Capture();
 		feature.settings.EnableIncrementalProbeUpdates = false;
 		feature.settings.OcclusionUpdateInterval = 3;
 		feature.settings.ProbeUpdateInterval = 6;
+	}
+	void Capture(uint advance = 1)
+	{
+		++state.frameCount;
+		feature.frameCount += advance;
+		feature.lastOcclusionRenderFrame = state.frameCount;
+		feature.needsOcclusionRefresh = false;
 	}
 	void Publish(bool inWorld = true) { published = feature.GetCommonBufferData(inWorld); }
 };
@@ -478,7 +485,7 @@ try {
 		Require(f.feature.needsOcclusionRefresh && !f.published.Enabled, "render reset must revoke published probes until fresh capture");
 		f.feature.Prepass();
 		Require(f.context.dispatchCount == 0, "reloaded probes must not dispatch before fresh capture");
-		f.feature.needsOcclusionRefresh = false;
+		f.Capture();
 		f.Publish();
 		f.feature.Prepass();
 		Require(f.published.Enabled == (outcome == 0), "fresh capture must only expose successfully compiled probes");
@@ -491,8 +498,10 @@ try {
 		f.feature.shadowAvailable = true;
 		f.feature.forcedFullUpdateFrames = 0;
 		f.feature.probeUpdateFrameCounter = 1;
+		f.feature.probeUpdatePending = false;
 		if (route == 1) {
 			f.feature.settings.EnableIncrementalProbeUpdates = true;
+			f.feature.activeSliceCount = f.feature.settings.StableSliceCount;
 			f.feature.probeUpdateCornerMask = GetOcclusionCornerBit(f.feature.frameCount);
 		}
 		f.Publish();
@@ -618,7 +627,7 @@ try {
 		f.feature.QueueResetSkylighting();
 		f.feature.EarlyPrepass();
 		Require(!f.published.Enabled && !f.feature.probeUpdateBufferEnabled && f.state.updates == 1, "early reset must invalidate already-published probe data");
-		f.feature.needsOcclusionRefresh = false;
+		f.Capture();
 		f.feature.Prepass();
 		Require(f.context.dispatchCount == 0, "fresh capture must not authorize dispatch with stale probe constants");
 		f.Publish();
@@ -685,7 +694,7 @@ try {
 		Require(f.confidence.uavObject.uints == std::array<UINT, 4>{ 0, 0, 0, 0 }, "confidence and jitter must reset");
 		Require(f.mask.uavObject.uints[0] == UINT32_MAX, "shadow history must start fully lit");
 		Require(f.visibility.uavObject.floats == std::array<float, 4>{ 1, 1, 1, 1 }, "visibility must start fully lit");
-		Require(f.feature.forceProbeUpdateThisFrame && f.feature.forcedFullUpdateFrames == 1, "rebuild must force a full probe update");
+		Require(f.feature.forceProbeUpdateThisFrame && f.feature.forcedFullUpdateFrames == Skylighting::kProbeHistoryWarmupUpdates, "rebuild must force a full probe update");
 		Require(f.feature.probeUpdateFrameCounter == 0 && f.feature.occlusionUpdateFrameCounter == 0, "rebuild must restart cadence");
 		Require(f.feature.probeUpdateSliceCursor == 0 && f.feature.probeUpdateCornerMask == 0, "rebuild must restart the slice sweep");
 		++scenarios;
@@ -773,22 +782,30 @@ try {
 	{
 		Fixture f;
 		f.Ready();
+		f.feature.forcedFullUpdateFrames = 0;
 		const float cellSize = f.feature.settings.ProbeFieldSize / f.feature.probeArrayDims[0];
 		Util::eye.x = 2 * cellSize;
 		f.Publish();
 		Require(f.published.Enabled && f.published.ValidMargin[0] == -2, "first publication must carry the newly exposed probe margin");
 		f.Publish();
-		Require(f.published.ValidMargin[0] == -2 && f.feature.forcedFullUpdateFrames == 1, "repeated HDR publication must retain movement and full-update debt");
+		Require(f.published.ValidMargin[0] == -2 && f.feature.forcedFullUpdateFrames == 4, "repeated HDR publication must retain the movement sweep");
 		f.feature.Prepass();
 		Require(f.context.dispatchCount == 1 && f.context.dispatchedSlices == 96, "first valid dispatch must update the entire probe depth");
-		Require(f.feature.prevCellID.x == 2 && f.feature.forcedFullUpdateFrames == 0, "only dispatch may commit the probe location and rebuild debt");
+		Require(f.feature.prevCellID.x == 2 && f.feature.forcedFullUpdateFrames == 4, "one quadrant commits movement but cannot finish recovery");
+		for (uint corner = 1; corner < 4; ++corner) {
+			f.Capture();
+			f.Publish();
+			Require(f.published.ProbeUpdateSliceCount == 96, "movement recovery must cover the complete grid");
+			f.feature.Prepass();
+		}
 		f.Publish();
-		Require(f.published.ValidMargin[0] == 0 && !f.feature.forceProbeUpdateThisFrame, "completed update must retire movement debt");
+		Require(f.published.ValidMargin[0] == 0 && !f.feature.forceProbeUpdateThisFrame, "all four quadrants must retire movement debt");
 		for (uint frame = 1; frame <= 6; ++frame) {
+			f.Capture();
 			f.Publish();
 			f.feature.Prepass();
 		}
-		Require(f.context.dispatchCount == 2, "stable updates must retain the configured six-frame cadence");
+		Require(f.context.dispatchCount == 5, "stable updates must retain the configured six-frame cadence");
 		++scenarios;
 	}
 	for (uint unavailable = 0; unavailable < 4; ++unavailable) {
@@ -805,11 +822,11 @@ try {
 		if (unavailable == 3)
 			f.visibility.srv.value = nullptr;
 		f.feature.Prepass();
-		Require(f.context.dispatchCount == 0 && f.feature.forcedFullUpdateFrames == 1 && f.feature.prevCellID.x == 0, "unavailable pass inputs must preserve all outstanding update debt");
+		Require(f.context.dispatchCount == 0 && f.feature.forcedFullUpdateFrames == Skylighting::kProbeHistoryWarmupUpdates && f.feature.prevCellID.x == 0, "unavailable pass inputs must preserve all outstanding update debt");
 		if (unavailable != 1) {
 			Require(!f.published.Enabled && f.state.updates == 1, "late input loss must disable the published buffer before unbinding probes");
 			f.Publish();
-			Require(!f.published.Enabled && f.feature.forcedFullUpdateFrames == 1, "unavailable buffer queries must not retire rebuild debt");
+			Require(!f.published.Enabled && f.feature.forcedFullUpdateFrames == Skylighting::kProbeHistoryWarmupUpdates, "unavailable buffer queries must not retire rebuild debt");
 		}
 		f.feature.probeUpdateCompute.value = &f.compute;
 		globals::d3d::context = &f.context;
@@ -818,7 +835,7 @@ try {
 		f.Publish();
 		Require(f.published.Enabled && f.published.ValidMargin[0] == -1, "recovery must preserve the pending movement margin");
 		f.feature.Prepass();
-		Require(f.context.dispatchCount == 1 && !f.feature.forcedFullUpdateFrames, "recovered resources must complete one full update");
+		Require(f.context.dispatchCount == 1 && f.feature.forcedFullUpdateFrames == Skylighting::kProbeHistoryWarmupUpdates, "resource recovery must consume one quadrant without ending warmup");
 		++scenarios;
 	}
 	{
@@ -841,13 +858,13 @@ try {
 		f.Publish();
 		f.feature.needsOcclusionRefresh = false;
 		f.feature.Prepass();
-		Require(f.context.dispatchCount == 0 && f.feature.forcedFullUpdateFrames == 1, "a later capture cannot authorize dispatch with a disabled published buffer");
+		Require(f.context.dispatchCount == 0 && f.feature.forcedFullUpdateFrames == Skylighting::kProbeHistoryWarmupUpdates, "a later capture cannot authorize dispatch with a disabled published buffer");
 		f.Publish(false);
 		f.feature.Prepass();
 		Require(f.context.dispatchCount == 0, "reflection publication must not authorize a world probe update");
 		f.Publish();
 		f.feature.Prepass();
-		Require(f.context.dispatchCount == 1 && !f.feature.forcedFullUpdateFrames, "fresh world publication must authorize the pending rebuild");
+		Require(f.context.dispatchCount == 1 && f.feature.forcedFullUpdateFrames == Skylighting::kProbeHistoryWarmupUpdates, "fresh world publication must authorize the first recovery quadrant");
 		++scenarios;
 	}
 	{
@@ -859,6 +876,138 @@ try {
 		f.feature.SetupRenderTargetResources();
 		Require(!f.feature.queuedResetSkylighting && !f.feature.needsOcclusionRefresh, "same-device target replacement must not introduce scene invalidation");
 		Require(f.context.clearCount == clears && f.probes.uavObject.floats[0] == 1.25f && !f.feature.forcedFullUpdateFrames, "same-device replacement must preserve world-space histories and update cadence");
+		++scenarios;
+	}
+	for (uint depth : { 64u, 96u, 128u }) {
+		for (uint slices : { 1u, 11u, 13u, 128u }) {
+			Fixture f;
+			f.Ready();
+			f.feature.probeArrayDims[2] = depth;
+			f.feature.settings.EnableIncrementalProbeUpdates = true;
+			f.feature.settings.StableSliceCount = slices;
+			for (uint sample = 0; sample < Skylighting::kProbeHistoryWarmupUpdates; ++sample) {
+				f.Capture();
+				f.Publish();
+				Require(f.published.ProbeUpdateSliceStart == 0 && f.published.ProbeUpdateSliceCount == depth, "reset recovery must remain full-grid while stationary");
+				f.feature.Prepass();
+				const auto remaining = f.feature.forcedFullUpdateFrames;
+				f.Publish();
+				f.feature.Prepass();
+				Require(f.context.dispatchCount == sample + 1 && f.feature.forcedFullUpdateFrames == remaining, "duplicate publication and prepass must not consume a capture twice");
+			}
+			Require(!f.feature.forcedFullUpdateFrames, "fifteen quadrant sweeps must finish reset recovery");
+			f.feature.settings.EnableReducedUpdateFrequency = false;
+			const uint count = std::min(slices, depth);
+			std::vector<uint> coverage(depth);
+			for (uint capture = 0; capture < 4 * ((depth + count - 1) / count); ++capture) {
+				f.Capture();
+				f.Publish();
+				const uint start = f.published.ProbeUpdateSliceStart;
+				const uint end = start + f.published.ProbeUpdateSliceCount;
+				Require(end > start && end <= depth, "every tail batch must remain within its probe grid");
+				for (uint z = start; z < end; ++z)
+					coverage[z] |= GetOcclusionCornerBit(f.feature.frameCount);
+				const auto dispatches = f.context.dispatchCount;
+				f.feature.Prepass();
+				Require(f.context.dispatchCount == dispatches + 1, "each fresh slice quadrant must be dispatched");
+			}
+			Require(std::all_of(coverage.begin(), coverage.end(), [](uint mask) { return mask == 15; }), "every slice must consume all four quadrants");
+			++scenarios;
+		}
+	}
+	{
+		Fixture f;
+		f.Ready();
+		f.Publish();
+		for (uint repeat = 0; repeat < 8; ++repeat) {
+			f.Capture(4);
+			f.Publish();
+			f.feature.Prepass();
+		}
+		Require(f.feature.forcedFullUpdateFrames == Skylighting::kProbeHistoryWarmupUpdates, "repeated quadrants cannot exhaust reset recovery");
+		for (uint sample = 0; sample < 8; ++sample) {
+			f.Capture();
+			f.Publish();
+			f.feature.Prepass();
+		}
+		const uint remaining = f.feature.forcedFullUpdateFrames;
+		Require(remaining == Skylighting::kProbeHistoryWarmupUpdates - 8, "two complete sweeps must be retired");
+		for (bool enabled : { true, false, true }) {
+			f.feature.settings.EnableIncrementalProbeUpdates = enabled;
+			f.feature.settings.StableSliceCount = 0;
+			Util::eye.x += f.feature.settings.ProbeFieldSize / f.feature.probeArrayDims[0];
+			for (uint missed = 0; missed < 8; ++missed) {
+				++f.state.frameCount;
+				f.Publish();
+				f.feature.Prepass();
+			}
+			Require(f.feature.forcedFullUpdateFrames == remaining, "movement, mode edits and missing captures cannot shorten reset recovery");
+		}
+		for (uint sample = 0; sample < remaining; ++sample) {
+			f.Capture();
+			f.Publish();
+			Require(f.published.ProbeUpdateSliceCount == 96, "interrupted recovery must resume full-grid updates");
+			f.feature.Prepass();
+		}
+		f.Publish();
+		Require(!f.feature.forcedFullUpdateFrames && f.published.ProbeUpdateSliceCount == 1, "recovery must finish into the newly bounded slice schedule");
+		const auto clears = f.context.clearCount;
+		f.probes.uavObject.floats.fill(7);
+		for (uint sample = 0; sample < 2; ++sample) {
+			f.Capture();
+			f.Publish();
+			f.feature.Prepass();
+		}
+		f.feature.settings.StableSliceCount = 32;
+		f.Publish();
+		Require(f.feature.probeUpdateSliceCursor == 0 && f.feature.probeUpdateCornerMask == 0, "new slice budget must restart partial quadrant coverage");
+		Require(f.context.clearCount == clears && f.probes.uavObject.floats[0] == 7, "schedule changes must retain lighting history");
+		for (uint sample = 0; sample < 4; ++sample) {
+			f.Capture();
+			f.Publish();
+			f.feature.Prepass();
+			Require(f.feature.probeUpdateSliceCursor == (sample == 3 ? 32u : 0u), "enlarged batches need their own complete quadrant sweep");
+		}
+		++scenarios;
+	}
+	{
+		Fixture f;
+		f.Ready();
+		f.Publish();
+		const auto publishedCapture = f.feature.probeUpdateCapture;
+		f.Capture();
+		f.feature.Prepass();
+		Require(f.feature.probeUpdateCapture != publishedCapture && f.state.updates == 1 && f.context.dispatchCount == 1, "late captures must publish their constants before dispatch");
+		++f.state.frameCount;
+		f.Publish();
+		f.feature.Prepass();
+		Require(f.context.dispatchCount == 1, "old captures must not be consumed in a later frame");
+		f.feature.frameCount = UINT32_MAX;
+		f.Capture();
+		f.Publish();
+		f.feature.Prepass();
+		Require(f.context.dispatchCount == 2 && f.feature.lastProbeUpdateCapture == 0u, "capture counter wrap must remain usable");
+		++scenarios;
+	}
+	{
+		Fixture f;
+		f.Ready();
+		f.feature.forcedFullUpdateFrames = 0;
+		f.feature.settings.OcclusionUpdateInterval = 6;
+		f.feature.settings.ProbeUpdateInterval = 13;
+		f.Publish();
+		f.feature.Prepass();
+		Require(f.context.dispatchCount == 1, "fixture must start with a consumed full-grid capture");
+		for (uint elapsed = 1; elapsed <= 36; ++elapsed) {
+			if (elapsed % 6 == 0)
+				f.Capture();
+			else
+				++f.state.frameCount;
+			f.Publish();
+			f.feature.Prepass();
+			f.feature.Prepass();
+			Require(f.context.dispatchCount == 1 + elapsed / 18, "due work must consume the next capture without cadence aliasing or duplicate-frame acceleration");
+		}
 		++scenarios;
 	}
 	std::cout << scenarios << " production lifecycle scenarios passed\n";

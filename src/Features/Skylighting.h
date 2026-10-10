@@ -142,6 +142,9 @@ public:
 	REX::W32::XMFLOAT4X4 OcclusionTransform;
 	float4 OcclusionDir;
 	uint frameCount = 0;
+	std::optional<uint32_t> lastOcclusionRenderFrame;
+	std::optional<uint> lastProbeUpdateCapture;
+	uint probeUpdateCapture = 0;
 	float3 prevCellID = { 0, 0, 0 };
 	float3 probeUpdateCellID = { 0, 0, 0 };
 	float4 occlusionSHBasis4Pi = { 3.5449078f, 0, 0, 0 };
@@ -149,9 +152,14 @@ public:
 	uint probeUpdateSliceCount = 128;
 	uint probeUpdateSliceCursor = 0;
 	uint probeUpdateCornerMask = 0;
-	uint forcedFullUpdateFrames = 1;
+	uint activeSliceCount = 0;
+	// Fifteen confidence samples require fifteen complete quadrant sweeps.
+	static constexpr uint kProbeHistoryWarmupUpdates = 60;
+	uint forcedFullUpdateFrames = kProbeHistoryWarmupUpdates;
 	bool forceProbeUpdateThisFrame = true;
 	uint probeUpdateFrameCounter = 0;
+	std::optional<uint32_t> probeScheduleFrame;
+	bool probeUpdatePending = true;
 	uint occlusionUpdateFrameCounter = 0;
 
 	/** @brief Queues a render-thread history rebuild without touching graphics resources. */
