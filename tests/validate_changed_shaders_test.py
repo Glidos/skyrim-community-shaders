@@ -18,6 +18,39 @@ SPEC.loader.exec_module(VALIDATOR)
 
 
 class ValidateChangedShadersTests(unittest.TestCase):
+    def test_shader_configs_and_generator_force_full_validation(self) -> None:
+        configs = [
+            ".github/configs/shader-validation.yaml",
+            ".github/configs/shader-validation-vr.yaml",
+            ".github/configs/runtime-upscaling-compute-shaders.yaml",
+            ".github/configs/runtime-foveated-compute-shaders-vr.yaml",
+            ".github/configs/generate-shader-configs.ps1",
+        ]
+        for config in configs:
+            self.assertTrue((ROOT / config).is_file(), config)
+            for path in (config, "./" + config, config.replace("/", "\\")):
+                with self.subTest(path=path):
+                    files, reason = VALIDATOR.classify_changes([
+                        "package/Shaders/Lighting.hlsl", path,
+                    ])
+                    self.assertIsNone(files)
+                    self.assertIn("full validation", reason)
+
+    def test_nonbuild_configs_preserve_incremental_shader_selection(self) -> None:
+        metadata = [
+            ".github/configs/README.md",
+            ".github/configs/fomod-metadata.yaml",
+            ".github/configs/project.yaml",
+            ".github/configs/runtime-upscaling-compute-shaders.yaml.bak",
+        ]
+        files, _ = VALIDATOR.classify_changes(metadata)
+        self.assertEqual(files, [])
+        files, _ = VALIDATOR.classify_changes([
+            *metadata, "package/Shaders/Lighting.hlsl",
+            "features/Screen Space Shadows/Shaders/SSS/Trace.hlsl",
+        ])
+        self.assertEqual(files, ["Lighting.hlsl", "SSS/Trace.hlsl"])
+
     def test_command_option_accepts_both_supported_forms(self) -> None:
         self.assertEqual(
             VALIDATOR._command_option(["compiler", "--output-dir", "cache"], "--output-dir"),

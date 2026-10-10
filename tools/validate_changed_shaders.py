@@ -20,9 +20,10 @@ Two ways to supply the change set:
 Safety: validation is only narrowed when it is provably safe. Any of the
 following forces a FULL run:
 
-* a validation config (``.github/configs/**``), CMake, or submodule change
-  (``.gitmodules`` or a gitlink bump under ``extern/``), because these can alter
-  the entry-point/define set itself;
+* a shader validation or runtime config (``.github/configs/shader-validation*.yaml``
+  or ``.github/configs/runtime-*.yaml``), its ``generate-shader-configs.ps1``
+  generator, CMake, or a submodule change (``.gitmodules`` or a gitlink bump
+  under ``extern/``), because these can alter the entry-point/define set itself;
 * a changed shader path that does not map into the AIO shader tree.
 
 hlslkit applies a second layer of the same safety net: if any path we pass is
@@ -56,7 +57,8 @@ _FEATURE_PREFIX = re.compile(r"^features/[^/]+/Shaders/(.+)$")
 
 # Changes that invalidate the dependency-graph assumption and force a full run.
 _FULL_TRIGGERS = (
-    re.compile(r"^\.github/configs/"),
+    re.compile(r"^\.github/configs/(?:shader-validation|runtime-)[^/]*\.yaml$"),
+    re.compile(r"^\.github/configs/generate-shader-configs\.ps1$"),
     re.compile(r"^CMakeLists\.txt$"),
     re.compile(r"^CMakePresets\.json$"),
     re.compile(r"^cmake/"),
