@@ -307,6 +307,11 @@ public:
 
 	bool frameAnnotations = false;
 
+	/** @brief Frame-stable capture gate keeping per-draw Begin/End events paired. */
+	bool drawAnnotationsActive = false;
+	/** @brief Refreshes the draw gate at player-view entry from the preference and attached tools. */
+	void RefreshDrawAnnotations();
+
 	// Pass D3DCOMPILE_PARTIAL_PRECISION to fxc. With explicit min16float types this is
 	// mostly belt-and-braces in SM5, but it lets the compiler downgrade unmarked float
 	// ops to FP16 where it can prove safety. On by default; toggle off when reversing

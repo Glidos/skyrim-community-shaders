@@ -13,6 +13,7 @@
 #include <d3dcompiler.h>
 #include <limits>
 #include <mutex>
+#include <string_view>
 
 namespace Util
 {
@@ -249,7 +250,12 @@ namespace Util
 				std::numeric_limits<uint64_t>::max() - a_destination;
 			a_destination += std::min(elapsed, remaining);
 		};
+		if (!FilePath || !*FilePath || !ProgramType || !Program || !*Program)
+			return nullptr;
 		auto device = globals::d3d::device;
+		if (!device || !globals::state || !globals::shaderCache)
+			return nullptr;
+		const bool developerMode = globals::state->IsDeveloperMode();
 
 		CustomInclude include(L"Data\\Shaders", FilePath);
 
@@ -267,7 +273,7 @@ namespace Util
 
 		if (REL::Module::IsVR())
 			macros.push_back({ "VR", "" });
-		if (globals::state->IsDeveloperMode()) {
+		if (developerMode) {
 			macros.push_back({ "D3DCOMPILE_SKIP_OPTIMIZATION", "" });
 			macros.push_back({ "D3DCOMPILE_DEBUG", "" });
 		}
@@ -297,7 +303,7 @@ namespace Util
 		macros.push_back({ nullptr, nullptr });
 
 		// Compiler setup
-		uint32_t flags = !globals::state->IsDeveloperMode() ? (D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3) : D3DCOMPILE_DEBUG;
+		uint32_t flags = !developerMode ? (D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3) : D3DCOMPILE_DEBUG;
 		if (globals::state->enablePartialPrecision.load(std::memory_order_relaxed))
 			flags |= D3DCOMPILE_PARTIAL_PRECISION;
 		if (globals::state->enableAvoidFlowControl.load(std::memory_order_relaxed))
@@ -308,41 +314,47 @@ namespace Util
 		if (globals::shaderCache->IsDiskCache())
 			flags |= D3DCOMPILE_SKIP_VALIDATION;
 
-		winrt::com_ptr<ID3DBlob> shaderBlob;
-		winrt::com_ptr<ID3DBlob> shaderErrors;
+		auto compile = [&]() -> winrt::com_ptr<ID3DBlob> {
+			winrt::com_ptr<ID3DBlob> shaderBlob;
+			winrt::com_ptr<ID3DBlob> shaderErrors;
 
-		if (!std::filesystem::exists(FilePath)) {
-			logger::error("Failed to compile shader; {} does not exist", str);
-			return nullptr;
-		}
-		logger::debug("Compiling {} with {}", str, DefinesToString(macros));
-		const uint64_t compilationBegin = a_timing ? queryQpc() : 0;
-		const HRESULT compilationResult = D3DCompileFromFile(
-			FilePath,
-			macros.data(),
-			&include,
-			Program,
-			ProgramType,
-			flags,
-			0,
-			shaderBlob.put(),
-			shaderErrors.put());
-		if (a_timing) {
-			accumulateElapsed(
-				a_timing->bytecodeCompilationQpcTicks,
-				compilationBegin,
-				queryQpc());
-		}
-		if (FAILED(compilationResult)) {
-			logger::warn("Shader compilation failed:\n\n{}", shaderErrors ? static_cast<char*>(shaderErrors->GetBufferPointer()) : "Unknown error");
-			return nullptr;
-		}
-		if (shaderErrors) {
-			std::string warnings(static_cast<char*>(shaderErrors->GetBufferPointer()), shaderErrors->GetBufferSize());
-			if (!warnings.empty() && warnings.back() == '\0')
-				warnings.pop_back();
-			logger::debug("[{}] Shader logs:\n{}", str, warnings);
-		}
+			if (!std::filesystem::exists(FilePath)) {
+				logger::error("Failed to compile shader; {} does not exist", str);
+				return nullptr;
+			}
+			logger::debug("Compiling {} with {}", str, DefinesToString(macros));
+			const uint64_t compilationBegin = a_timing ? queryQpc() : 0;
+			const HRESULT compilationResult = D3DCompileFromFile(
+				FilePath,
+				macros.data(),
+				&include,
+				Program,
+				ProgramType,
+				flags,
+				0,
+				shaderBlob.put(),
+				shaderErrors.put());
+			if (a_timing) {
+				accumulateElapsed(
+					a_timing->bytecodeCompilationQpcTicks,
+					compilationBegin,
+					queryQpc());
+			}
+			if (FAILED(compilationResult)) {
+				auto errorText = shaderErrors ? std::string_view(static_cast<const char*>(shaderErrors->GetBufferPointer()), shaderErrors->GetBufferSize()) : std::string_view("Unknown error");
+				if (!errorText.empty() && errorText.back() == '\0')
+					errorText.remove_suffix(1);
+				logger::warn("Shader compilation failed:\n\n{}", errorText);
+				return nullptr;
+			}
+			if (shaderErrors) {
+				std::string warnings(static_cast<char*>(shaderErrors->GetBufferPointer()), shaderErrors->GetBufferSize());
+				if (!warnings.empty() && warnings.back() == '\0')
+					warnings.pop_back();
+				logger::debug("[{}] Shader logs:\n{}", str, warnings);
+			}
+			return shaderBlob;
+		};
 
 		auto nameCompiledShader = [&](ID3D11DeviceChild* shader) {
 			SetResourceName(
@@ -355,44 +367,50 @@ namespace Util
 
 		HRESULT hr = S_OK;
 		winrt::com_ptr<ID3D11DeviceChild> regShader;
-		const uint64_t objectCreationBegin = a_timing ? queryQpc() : 0;
-		if (!_stricmp(ProgramType, "ps_5_0")) {
-			winrt::com_ptr<ID3D11PixelShader> shader;
-			hr = device->CreatePixelShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, shader.put());
-			if (SUCCEEDED(hr))
-				regShader.attach(shader.detach());
-		} else if (!_stricmp(ProgramType, "vs_5_0")) {
-			winrt::com_ptr<ID3D11VertexShader> shader;
-			hr = device->CreateVertexShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, shader.put());
-			if (SUCCEEDED(hr))
-				regShader.attach(shader.detach());
-		} else if (!_stricmp(ProgramType, "hs_5_0")) {
-			winrt::com_ptr<ID3D11HullShader> shader;
-			hr = device->CreateHullShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, shader.put());
-			if (SUCCEEDED(hr))
-				regShader.attach(shader.detach());
-		} else if (!_stricmp(ProgramType, "ds_5_0")) {
-			winrt::com_ptr<ID3D11DomainShader> shader;
-			hr = device->CreateDomainShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, shader.put());
-			if (SUCCEEDED(hr))
-				regShader.attach(shader.detach());
-		} else if (!_stricmp(ProgramType, "cs_5_0") || !_stricmp(ProgramType, "cs_4_0")) {
-			winrt::com_ptr<ID3D11ComputeShader> shader;
-			hr = device->CreateComputeShader(shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize(), nullptr, shader.put());
-			if (SUCCEEDED(hr))
-				regShader.attach(shader.detach());
-		} else {
-			return nullptr;
-		}
-		if (a_timing) {
-			accumulateElapsed(
-				a_timing->d3dObjectCreationQpcTicks,
-				objectCreationBegin,
-				queryQpc());
-		}
+		auto createShader = [&](ID3DBlob* blob) {
+			regShader = nullptr;
+			const uint64_t objectCreationBegin = a_timing ? queryQpc() : 0;
+			if (!_stricmp(ProgramType, "ps_5_0")) {
+				winrt::com_ptr<ID3D11PixelShader> shader;
+				hr = device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, shader.put());
+				if (SUCCEEDED(hr))
+					regShader.attach(shader.detach());
+			} else if (!_stricmp(ProgramType, "vs_5_0")) {
+				winrt::com_ptr<ID3D11VertexShader> shader;
+				hr = device->CreateVertexShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, shader.put());
+				if (SUCCEEDED(hr))
+					regShader.attach(shader.detach());
+			} else if (!_stricmp(ProgramType, "hs_5_0")) {
+				winrt::com_ptr<ID3D11HullShader> shader;
+				hr = device->CreateHullShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, shader.put());
+				if (SUCCEEDED(hr))
+					regShader.attach(shader.detach());
+			} else if (!_stricmp(ProgramType, "ds_5_0")) {
+				winrt::com_ptr<ID3D11DomainShader> shader;
+				hr = device->CreateDomainShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, shader.put());
+				if (SUCCEEDED(hr))
+					regShader.attach(shader.detach());
+			} else if (!_stricmp(ProgramType, "cs_5_0") || !_stricmp(ProgramType, "cs_4_0")) {
+				winrt::com_ptr<ID3D11ComputeShader> shader;
+				hr = device->CreateComputeShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, shader.put());
+				if (SUCCEEDED(hr))
+					regShader.attach(shader.detach());
+			} else {
+				return false;
+			}
+			if (a_timing) {
+				accumulateElapsed(
+					a_timing->d3dObjectCreationQpcTicks,
+					objectCreationBegin,
+					queryQpc());
+			}
+			return SUCCEEDED(hr) && bool(regShader);
+		};
 
-		if (FAILED(hr) || !regShader) {
-			logger::error("Failed to create shader object for {}:{} (HRESULT 0x{:08X})", str, Program, static_cast<uint32_t>(hr));
+		const StandaloneShaderRequest request{ FilePath, macros, ProgramType, Program, flags, developerMode };
+		if (!globals::shaderCache->CompileStandaloneShaderCached(request, compile, createShader)) {
+			if (FAILED(hr))
+				logger::error("Failed to create shader object for {}:{} (HRESULT 0x{:08X})", str, Program, static_cast<uint32_t>(hr));
 			return nullptr;
 		}
 

@@ -2926,7 +2926,7 @@ void ScreenshotFeature::ScreenshotWorkerLoop(std::shared_ptr<ScreenshotWorkerSta
 	auto reportFailure = [a_state](std::string_view message) {
 		logger::error("{}", message);
 		if (a_state->notifyAllowed.load(std::memory_order_acquire))
-			ShowInGameNotification("Screenshot failed - see CommunityShaders.log");
+			ShowInGameNotification("Screenshot failed - see CSX.log");
 	};
 
 	while (true) {
@@ -3412,7 +3412,7 @@ void ScreenshotFeature::ScreenshotWorkerLoop(std::shared_ptr<ScreenshotWorkerSta
 		} catch (const std::exception& e) {
 			logger::error("Screenshot worker failed with an exception: {}", e.what());
 			if (a_state->notifyAllowed.load(std::memory_order_acquire))
-				ShowInGameNotification("Screenshot failed - see CommunityShaders.log");
+				ShowInGameNotification("Screenshot failed - see CSX.log");
 		} catch (...) {
 			reportFailure("Screenshot worker failed with an unknown exception.");
 		}
@@ -3932,7 +3932,7 @@ void ScreenshotFeature::ObserveAcceptedVRSubmit(
 			capturePending.store(false, std::memory_order_release);
 			if (screenshotApi)
 				screenshotApi->OnSourceTerminal(failedRequestId, "failed", "unsafe_output_path");
-			ShowInGameNotification("Screenshot failed - see CommunityShaders.log");
+			ShowInGameNotification("Screenshot failed - see CSX.log");
 			return;
 		} catch (...) {
 			logger::error("Failed to prepare the VR screenshot output path.");
@@ -3941,7 +3941,7 @@ void ScreenshotFeature::ObserveAcceptedVRSubmit(
 			capturePending.store(false, std::memory_order_release);
 			if (screenshotApi)
 				screenshotApi->OnSourceTerminal(failedRequestId, "failed", "unsafe_output_path");
-			ShowInGameNotification("Screenshot failed - see CommunityShaders.log");
+			ShowInGameNotification("Screenshot failed - see CSX.log");
 			return;
 		}
 		completedScreenshot.ownsQueueSlot = std::exchange(activeCapture.ownsQueueSlot, false);
@@ -3980,7 +3980,7 @@ void ScreenshotFeature::ObserveAcceptedVRSubmit(
 		if (!QueueScreenshot(std::move(completedScreenshot))) {
 			if (!completedRequestId.empty() && screenshotApi)
 				screenshotApi->OnSourceTerminal(completedRequestId, "failed", "artifact_queue_failed");
-			ShowInGameNotification("Screenshot failed - see CommunityShaders.log");
+			ShowInGameNotification("Screenshot failed - see CSX.log");
 		}
 	}
 }
@@ -4036,7 +4036,7 @@ void ScreenshotFeature::OnBeforePresent(IDXGISwapChain* a_swapChain)
 	if (!queued) {
 		if (!requestId.empty())
 			screenshotApi->OnSourceTerminal(requestId, "failed", "desktop_stage_failed");
-		ShowInGameNotification("Screenshot failed - see CommunityShaders.log");
+		ShowInGameNotification("Screenshot failed - see CSX.log");
 	}
 }
 

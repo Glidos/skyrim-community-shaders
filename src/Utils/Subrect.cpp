@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <imgui.h>
+#include <limits>
 
 namespace
 {
@@ -101,9 +102,26 @@ namespace Util::Subrect
 		if (a_json.contains("CropH"))
 			currentUV.h = a_json["CropH"];
 
+		const auto selection = a_json.find("SelectedPresetIndex");
+		int requestedPresetIndex = -1;
+		if (selection != a_json.end() && selection->is_number_integer()) {
+			const double value = selection->get<double>();
+			if (value >= 0 && value <= std::numeric_limits<int>::max())
+				requestedPresetIndex = selection->get<int>();
+		}
+		int filteredPresetIndex = requestedPresetIndex;
 		if (a_json.contains("CropPresets") && a_json["CropPresets"].is_array()) {
 			presets.clear();
+			filteredPresetIndex = -1;
+			std::size_t sourceIndex = 0;
 			for (auto& entry : a_json["CropPresets"]) {
+				const bool wasSelected = requestedPresetIndex >= 0 && sourceIndex == static_cast<std::size_t>(requestedPresetIndex);
+				++sourceIndex;
+				if (!entry.is_object())
+					continue;
+				// The saved index belongs to the original list before invalid entries are removed.
+				if (wasSelected)
+					filteredPresetIndex = static_cast<int>(presets.size());
 				Preset preset;
 				preset.name = entry.value("name", "Unknown");
 				if (entry.contains("uv")) {
@@ -116,8 +134,8 @@ namespace Util::Subrect
 		EnsureDefaultPreset();
 		ClampCurrentUV();
 
-		if (a_json.contains("SelectedPresetIndex")) {
-			selectedPresetIndex = a_json["SelectedPresetIndex"];
+		if (selection != a_json.end()) {
+			selectedPresetIndex = filteredPresetIndex;
 			if (selectedPresetIndex >= 0 && selectedPresetIndex < static_cast<int>(presets.size())) {
 				ApplyPreset(selectedPresetIndex);
 			} else {

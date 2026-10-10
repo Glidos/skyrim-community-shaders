@@ -6,7 +6,8 @@ Each runtime archive must contain one ``ShaderCache`` whose managed pack contain
 supported compatibility variants. The staged result installs the AIO
 unconditionally and uses one manual FOMOD page to select a runtime.
 
-No game version, DLL, marker, settings file, or mod-manager state is inspected.
+The supplied package must contain a nonempty plugin DLL. Runtime selection
+uses no installed game version, DLL, marker, settings file, or mod-manager state.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ MODULE_CONFIG_FILE = "ModuleConfig.xml"
 INFO_FILE = "info.xml"
 CACHE_INFO_FILE = "Info.ini"
 CORE_BUILD_MANIFEST = Path("SKSE/Plugins/CSX.BuildManifest.json")
+PLUGIN_DLL = Path("SKSE/Plugins/CommunityShaders.dll")
 SHADER_CACHE_ABI_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 RUNTIME_FLAG = "CSXRuntime"
@@ -258,6 +260,17 @@ def build_info(version: str) -> ET.ElementTree:
         ET.SubElement(root, tag).text = value
     ET.indent(root, space="  ")
     return ET.ElementTree(root)
+
+
+def validate_core_plugin(core: Path) -> None:
+    """Require the shipped plugin before staging and after copying the core."""
+    plugin = core / PLUGIN_DLL
+    try:
+        if plugin.is_file() and plugin.stat().st_size > 0:
+            return
+    except OSError as exc:
+        raise SystemExit(f"cannot inspect core plugin DLL: {plugin}") from exc
+    raise SystemExit(f"missing or empty core plugin DLL: {plugin}")
 
 
 def core_shader_cache_abi(core: Path) -> str:
@@ -543,6 +556,7 @@ def validate_staged_package(
     core = output / CORE_DIRECTORY
     if not core.is_dir():
         raise SystemExit("staged FOMOD is missing its AIO Core directory")
+    validate_core_plugin(core)
     shader_cache_abi = core_shader_cache_abi(core)
     variants = selected_cache_variants(include_se_ae)
     for variant in CACHE_VARIANTS:
@@ -599,6 +613,7 @@ def stage_package(
             )
 
     runtime_roots = {RUNTIME_SE_AE: se_cache, RUNTIME_VR: vr_cache}
+    validate_core_plugin(core)
     shader_cache_abi = core_shader_cache_abi(core)
     sources: dict[CacheVariant, Path] = {}
     for variant in selected_cache_variants(include_se_ae):

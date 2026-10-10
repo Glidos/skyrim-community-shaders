@@ -173,7 +173,7 @@ Use a JSON validator to ensure your override files have valid syntax:
 
 CSX logs override discovery and application:
 
--   Check `CommunityShaders.log` for override-related messages
+-   Check `CSX.log` for override-related messages
 -   Look for "Discovered X override files" and "Applied X override(s)" messages
 
 ## Examples

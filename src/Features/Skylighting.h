@@ -8,7 +8,14 @@ struct Skylighting : Feature
 private:
 	static constexpr std::string_view MOD_ID = "139352";
 	bool HasProbeUpdateResources() const;
+	float3 GetProbeCellSize() const;
+	float3 GetProbeCell(float3 a_eyePosition) const;
+	/** @brief Selects a due capture quadrant without consuming pending probe work. */
+	bool PrepareOcclusionCapture();
 	bool probeUpdateBufferEnabled = false;
+	bool probeUpdateShadowDataAvailable = false;
+	/** @brief Clears directional history with valid UAVs and the visibility SRV unbound. */
+	void ClearShadowHistory();
 
 public:
 	virtual bool SupportsVR() override { return true; };
@@ -134,10 +141,17 @@ public:
 	std::atomic_bool queuedResetSkylighting{ true };
 	bool needsOcclusionRefresh = true;
 	std::optional<bool> previousInteriorState;
+	bool shadowHistoryNeedsReset = false;
 	bool inOcclusion = false;
 	REX::W32::XMFLOAT4X4 OcclusionTransform;
 	float4 OcclusionDir;
 	uint frameCount = 0;
+	std::optional<uint32_t> lastOcclusionRenderFrame;
+	std::optional<uint> lastProbeUpdateCapture;
+	std::optional<uint32_t> lastProbeUpdateFrame;
+	uint occlusionCaptureCorner = 0;
+	uint nextOcclusionCorner = 0;
+	uint probeUpdateCapture = 0;
 	float3 prevCellID = { 0, 0, 0 };
 	float3 probeUpdateCellID = { 0, 0, 0 };
 	float4 occlusionSHBasis4Pi = { 3.5449078f, 0, 0, 0 };
@@ -145,10 +159,11 @@ public:
 	uint probeUpdateSliceCount = 128;
 	uint probeUpdateSliceCursor = 0;
 	uint probeUpdateCornerMask = 0;
-	uint forcedFullUpdateFrames = 1;
+	uint activeSliceCount = 0;
+	// Fifteen confidence samples require fifteen complete quadrant sweeps.
+	static constexpr uint kProbeHistoryWarmupUpdates = 60;
+	uint forcedFullUpdateFrames = kProbeHistoryWarmupUpdates;
 	bool forceProbeUpdateThisFrame = true;
-	uint probeUpdateFrameCounter = 0;
-	uint occlusionUpdateFrameCounter = 0;
 
 	/** @brief Queues a render-thread history rebuild without touching graphics resources. */
 	void QueueResetSkylighting(bool rebuild = false);

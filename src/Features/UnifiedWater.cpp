@@ -892,9 +892,9 @@ void UnifiedWater::DrawOverlay()
 		}
 
 		if (snapshot.failed > 0) {
-			ImGui::TextColored(themeSettings.StatusPalette.Error, "ERROR: Water cache generation failed for %d WorldSpaces. Check installation and CommunityShaders.log", snapshot.failed);
+			ImGui::TextColored(themeSettings.StatusPalette.Error, "ERROR: Water cache generation failed for %d WorldSpaces. Check installation and CSX.log", snapshot.failed);
 		} else {
-			ImGui::TextColored(themeSettings.StatusPalette.Error, "ERROR: Generated water caches could not be loaded completely. Check CommunityShaders.log");
+			ImGui::TextColored(themeSettings.StatusPalette.Error, "ERROR: Generated water caches could not be loaded completely. Check CSX.log");
 		}
 
 		ImGui::End();

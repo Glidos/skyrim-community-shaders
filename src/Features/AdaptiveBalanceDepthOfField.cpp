@@ -3,6 +3,7 @@
 #include "Menu/SettingsPage.h"
 
 #include "Globals.h"
+#include "State.h"
 #include "UnderwaterDepthOfField.h"
 #include "Utils/Finite.h"
 #include "Utils/Game.h"
@@ -553,7 +554,7 @@ namespace
 		DepthOfFieldOverrideScope()
 		{
 			const auto& settings = globals::features::adaptiveBrightness.settings.depthOfField;
-			if (!AdaptiveBalanceDepthOfField::IsRuntimeEnabled() ||
+			if (!AdaptiveBalanceDepthOfField::IsRuntimeEnabled() || globals::state->isMapMenuOpen ||
 				(!settings.sceneDof.locked && !settings.underwaterDof.locked))
 				return;
 

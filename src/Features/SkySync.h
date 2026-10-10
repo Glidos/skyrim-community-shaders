@@ -8,6 +8,11 @@
 #include <optional>
 #include <unordered_map>
 
+namespace RE
+{
+	class Setting;
+}
+
 struct SkySync : Feature
 {
 public:
@@ -196,6 +201,7 @@ private:
 
 	inline static RE::NiPoint3* gSunPosition = nullptr;
 	inline static float* gSunGlareSize = nullptr;
+	inline static RE::Setting* gSunAlphaTransTime = nullptr;
 	inline static uint32_t* gMasserSize = nullptr;
 	inline static uint32_t* gSecundaSize = nullptr;
 
@@ -232,6 +238,9 @@ private:
 	void SetSkyRotation(const RE::Sky* sky, RE::TESObjectCELL* cell);
 
 	void ProcessSun(const RE::Sun* sun, float time, float altitude, bool isDayTime);
+
+	/** @brief Hides the sun disc and glare at and outside the native fade boundaries. */
+	static void HideSunOutsideFadeWindow(const RE::Sky* sky);
 
 	void ProcessMoon(const RE::Moon* moon, float time, Caster type, float altitude, bool isDayTime);
 

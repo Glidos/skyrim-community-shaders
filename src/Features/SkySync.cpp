@@ -1,5 +1,6 @@
 #include "SkySync.h"
 #include "Menu/SettingsPage.h"
+#include "RE/S/Setting.h"
 #include "Utils/UI.h"
 
 #include <algorithm>
@@ -190,6 +191,8 @@ void SkySync::DataLoaded()
 	const auto data = RE::TESDataHandler::GetSingleton();
 	if (data && (data->LookupLoadedModByName("DVLaSS.esp"sv) || data->LookupLoadedLightModByName("DVLaSS.esp"sv)))
 		DisableOnConflict("DVLaSS");
+	if (const auto collection = globals::game::gameSettingCollection)
+		gSunAlphaTransTime = collection->GetSetting("fSunAlphaTransTime");
 }
 
 void SkySync::DisableOnConflict(std::string_view conflictName)
@@ -342,6 +345,7 @@ void SkySync::Update(const RE::Sky* sky)
 	const float altitude = worldSpace ? player->GetPositionZ() - worldSpace->GetDefaultWaterHeight() : 0.0f;
 
 	ProcessSun(sun, time, altitude, isDayTime);
+	HideSunOutsideFadeWindow(sky);
 	ProcessMoon(sky->masser, time, Caster::Masser, altitude, isDayTime);
 	ProcessMoon(sky->secunda, time, Caster::Secunda, altitude, isDayTime);
 
@@ -415,13 +419,41 @@ void SkySync::ProcessSun(const RE::Sun* sun, const float time, const float altit
 	intensities[static_cast<int>(Caster::Sun)] = isDayTime ? CalculateVisibility(dir, dist, *gSunGlareSize * SunScaleFactor) : 0.0f;
 }
 
+void SkySync::HideSunOutsideFadeWindow(const RE::Sky* sky)
+{
+	if (!sky || !sky->sun || !sky->currentClimate || !gSunAlphaTransTime || gSunAlphaTransTime->GetType() != RE::Setting::Type::kFloat)
+		return;
+
+	const float transitionHours = gSunAlphaTransTime->GetFloat();
+	if (!std::isfinite(transitionHours) || transitionHours < 0.0f || !std::isfinite(sky->currentGameHour))
+		return;
+
+	// Match the engine's float operations so exact fade boundaries agree.
+	constexpr float HoursPerTimingUnit = 1.0f / 6.0f;
+	auto middleHour = [](const RE::TESClimate::Timing::Interval& interval) {
+		return (interval.end * HoursPerTimingUnit + interval.begin * HoursPerTimingUnit) * 0.5f;
+	};
+	const auto& timing = sky->currentClimate->timing;
+	const float halfTransition = transitionHours * 0.5f;
+	const float fadeInStart = middleHour(timing.sunrise) - halfTransition;
+	const float fadeOutEnd = middleHour(timing.sunset) + halfTransition;
+	const float hour = sky->currentGameHour;
+	if (hour > fadeInStart && hour < fadeOutEnd)
+		return;
+
+	for (const auto& geometry : { sky->sun->sunBase, sky->sun->sunGlare }) {
+		if (const auto property = geometry ? skyrim_cast<RE::BSSkyShaderProperty*>(geometry->GetGeometryRuntimeData().shaderProperty.get()) : nullptr)
+			property->kBlendColor.alpha = 0.0f;
+	}
+}
+
 void SkySync::ProcessMoon(const RE::Moon* moon, const float time, const Caster type, const float altitude, const bool isDayTime)
 {
 	intensities[static_cast<int>(type)] = 0.0f;
 	directions[static_cast<int>(type)] = { 0.0f, 0.0f, 1.0f };
 	rawDirections[static_cast<int>(type)] = { 0.0f, 0.0f, -1.0f };
 
-	if (!moon)
+	if (!moon || !moon->root || !moon->moonMesh)
 		return;
 
 	const auto dir = moon->root->local.rotate.GetVectorY();

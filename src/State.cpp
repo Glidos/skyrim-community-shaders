@@ -53,6 +53,7 @@
 #include "ShaderCache.h"
 #include "TruePBR.h"
 #include "Utils/FileSystem.h"
+#include "Utils/SettingsOverlay.h"
 #include "Utils/SphericalHarmonics.h"
 #include "Utils/WorldLoadTransitionPolicy.h"
 #include "WeatherManager.h"
@@ -593,7 +594,7 @@ void State::Debug()
 		drawCalls[magic_enum::enum_integer(RE::BSShader::Type::Total)]++;
 	}
 
-	if (currentShader && updateShader && frameAnnotations) {
+	if (currentShader && updateShader && drawAnnotationsActive) {
 		// Per-draw annotations must remain capture-only. Dynamic Tracy zones allocate
 		// a source location for every draw and cannot be sustained at this frequency.
 		BeginDrawEvent("Draw: CS {}::{:x}::{}", magic_enum::enum_name(currentShader->shaderType.get()), permutationData.PixelShaderDescriptor, currentShader->fxpFilename);
@@ -1238,7 +1239,6 @@ void State::Load(
 	logger::info("Loading default settings from: {}", defaultConfigFilePath.string());
 	const auto defaultResult = tryLoadConfig(defaultConfigFilePath, settings);
 	bool loadedDefaultFromDisk = defaultResult == Util::FileHelpers::JsonFileReadResult::Success;
-	bool sourceConfigSafeForAutomaticSave = true;
 	if (defaultResult == Util::FileHelpers::JsonFileReadResult::NotFound) {
 		logger::info("No usable default config ({}), generating a new one", defaultConfigFilePath.string());
 		std::fill(enabledClasses, enabledClasses + magic_enum::enum_integer(RE::BSShader::Type::Total) - 1, true);
@@ -1246,21 +1246,17 @@ void State::Load(
 		loadedDefaultFromDisk =
 			tryLoadConfig(defaultConfigFilePath, settings) == Util::FileHelpers::JsonFileReadResult::Success;
 		if (!loadedDefaultFromDisk) {
-			sourceConfigSafeForAutomaticSave = false;
 			logger::warn("Could not persist default settings; continuing with an in-memory baseline");
 			if (!generateFallbackSettingsInMemory())
 				return;
 		}
 	} else if (defaultResult == Util::FileHelpers::JsonFileReadResult::Error) {
-		sourceConfigSafeForAutomaticSave = false;
 		logger::error("Default config is invalid or unreadable; preserving it and using an in-memory baseline: {}", defaultConfigFilePath.string());
 		if (!generateFallbackSettingsInMemory())
 			return;
 	}
 	if (loadedDefaultFromDisk) {
-		const auto result = canonicalizeConfig(defaultConfigFilePath, settings);
-		if (result == SettingsSerialization::CanonicalizationResult::Error)
-			sourceConfigSafeForAutomaticSave = false;
+		canonicalizeConfig(defaultConfigFilePath, settings);
 		SettingsMigrations::MigrateAdaptiveBalanceRootLayer(settings);
 		if (auto adaptiveIt = settings.find(SettingsMigrations::kAdaptiveBalanceSettingsName.data());
 			adaptiveIt != settings.end())
@@ -1275,7 +1271,6 @@ void State::Load(
 			auto presetCompatibility = PresetCompatibility::Evaluate(userSettings, Plugin::VERSION_LABEL);
 			PresetCompatibility::Publish(presetCompatibility);
 			if (!presetCompatibility.ShouldApply()) {
-				sourceConfigSafeForAutomaticSave = false;
 				logger::error(
 					"Rejected user settings without modifying {}: {}",
 					configPath.string(),
@@ -1283,8 +1278,7 @@ void State::Load(
 			} else {
 				if (presetCompatibility.disposition == PresetCompatibility::Disposition::kCompatible)
 					logger::info("Accepted marked preset: {}", presetCompatibility.message);
-				if (canonicalizeConfig(configPath, userSettings) == SettingsSerialization::CanonicalizationResult::Error)
-					sourceConfigSafeForAutomaticSave = false;
+				canonicalizeConfig(configPath, userSettings);
 				const auto adaptiveBalanceIt = userSettings.find(SettingsMigrations::kAdaptiveBalanceSettingsName.data());
 				const auto legacyAdaptiveBrightnessIt =
 					userSettings.find(SettingsMigrations::kLegacyAdaptiveBrightnessSettingsName.data());
@@ -1302,6 +1296,8 @@ void State::Load(
 					adaptiveIt != userSettings.end())
 					SettingsMigrations::MarkExplicitAdaptiveBalanceWaterProfiles(*adaptiveIt);
 				for (const auto& [key, value] : userSettings.items()) {
+					if (Util::Settings::OverlayCoreSettings(settings, key, value))
+						continue;
 					auto existingIt = settings.find(key);
 					if (!userDefinedAdaptiveBalance &&
 						key == SettingsMigrations::kAdaptiveBalanceSettingsName &&
@@ -1325,7 +1321,6 @@ void State::Load(
 			evaluation.currentVersion = std::string{ Plugin::VERSION_LABEL };
 			evaluation.message = "SettingsUser.json is unreadable; defaults remain active and the source file is protected from overwrite.";
 			PresetCompatibility::Publish(std::move(evaluation));
-			sourceConfigSafeForAutomaticSave = false;
 		}
 	}
 
@@ -1424,8 +1419,8 @@ void State::Load(
 			} catch (const std::exception& e) {
 				const auto displayName = feature->GetDisplayName();
 				feature->failedLoadedMessage = feature->failedLoadedMessage.empty() ?
-				                                   (displayName + " failed to load. Check CommunityShaders.log") :
-				                                   (feature->failedLoadedMessage + "\n" + displayName + " failed to load. Check CommunityShaders.log");
+				                                   (displayName + " failed to load. Check CSX.log") :
+				                                   (feature->failedLoadedMessage + "\n" + displayName + " failed to load. Check CSX.log");
 				logger::warn("Error loading setting for feature '{}': {}", feature->GetShortName(), e.what());
 			}
 		}
@@ -1438,15 +1433,7 @@ void State::Load(
 			const auto loadedVersion = versionIt != settings.end() && versionIt->is_string() ?
 			                               versionIt->get<std::string>() :
 			                               std::string{ "<missing or invalid>" };
-			if (sourceConfigSafeForAutomaticSave) {
-				logger::info("Found config for version {}; upgrading to {}", loadedVersion, currentVersion);
-				Save(a_configMode);  // Use original config mode
-			} else {
-				logger::warn(
-					"Found config for version {}, but skipped automatic upgrade to {} because one or more source configs are not safe to rewrite",
-					loadedVersion,
-					currentVersion);
-			}
+			logger::info("Loaded config for version {}; version {} will be written on save", loadedVersion, currentVersion);
 		}
 
 		FeatureIssues::ScanForOrphanedFeatureINIs();
@@ -1695,7 +1682,7 @@ bool State::Save(ConfigMode a_configMode)
 	} catch (...) {
 		return reportFailure(
 			std::format("Failed to collect settings for {} due to an unknown error", configPath.string()),
-			"Settings were not saved because the active values could not be collected. See CommunityShaders.log.");
+			"Settings were not saved because the active values could not be collected. See CSX.log.");
 	}
 
 	std::string writeError;
@@ -1737,7 +1724,7 @@ bool State::Save(ConfigMode a_configMode)
 					"Settings save incomplete after writing {}: failed {}",
 					configPath.string(), failureDetails),
 				std::format(
-					"{} was written, but {} could not be persisted. Changes remain marked unsaved; see CommunityShaders.log.",
+					"{} was written, but {} could not be persisted. Changes remain marked unsaved; see CSX.log.",
 					configName, failureDetails));
 		}
 
@@ -2020,6 +2007,18 @@ void State::ModifyShaderLookup(const RE::BSShader& a_shader, uint& a_vertexDescr
 									   (uint32_t)SIE::ShaderCache::LightingShaderFlags::DefShadow |
 									   (uint32_t)SIE::ShaderCache::LightingShaderFlags::CharacterLight |
 									   (uint32_t)SIE::ShaderCache::LightingShaderFlags::BaseObjectIsSnow);
+				{
+					const uint32_t technique = 0x3F & (a_pixelDescriptor >> 24);
+					if (technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODLand &&
+						technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODLandNoise &&
+						technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODObjects &&
+						technique != (uint32_t)SIE::ShaderCache::LightingShaderTechniques::LODObjectHD)
+						a_pixelDescriptor &= ~((uint32_t)SIE::ShaderCache::LightingShaderFlags::Specular |
+											   (uint32_t)SIE::ShaderCache::LightingShaderFlags::SoftLighting |
+											   (uint32_t)SIE::ShaderCache::LightingShaderFlags::RimLighting |
+											   (uint32_t)SIE::ShaderCache::LightingShaderFlags::BackLighting);
+				}
+
 				if (a_pixelDescriptor & (uint32_t)SIE::ShaderCache::LightingShaderFlags::AdditionalAlphaMask) {
 					a_pixelDescriptor |= (uint32_t)SIE::ShaderCache::LightingShaderFlags::DoAlphaTest;
 					a_pixelDescriptor &= ~(uint32_t)SIE::ShaderCache::LightingShaderFlags::AdditionalAlphaMask;
@@ -2097,6 +2096,14 @@ namespace
 		std::copy(a_title.begin(), a_title.end(), a_buffer.begin());
 		return a_buffer.c_str();
 	}
+}
+
+void State::RefreshDrawAnnotations()
+{
+	drawAnnotationsActive = frameAnnotations &&
+	                        ((pPerf.Get() && pPerf->GetStatus()) ||
+								GetModuleHandleW(L"renderdoc.dll") ||
+								GetModuleHandleW(L"WinPixGpuCapturer.dll"));
 }
 
 void State::BeginDrawEvent(std::string_view title)

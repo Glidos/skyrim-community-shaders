@@ -6,6 +6,12 @@ Use `tools/build-shader-cache.py` for cache generation and
 `tools/build-fomod-package.py` for release AIO assembly. Do not assemble cache
 blobs, metadata, or installer mappings by hand.
 
+The runtime log is `CSX.log` in the game's standard SKSE log directory.
+`Plugin::LOG_NAME`, generated from `PLUGIN_LOG_NAME`, controls its basename;
+the DLL, SKSE identity and settings directory remain `CommunityShaders`.
+The shader-config generator can also discover `CommunityShaders.log` from
+older builds when `CSX.log` is absent, or read an explicit `-LogFile` path.
+
 ## Purpose and scope
 
 The cache distributes compiled DXBC for CSX' engine-managed
@@ -61,6 +67,16 @@ runtime compile state.
 Generated inventories may include `captured_shader_variants`, written by
 `.github/configs/generate-shader-configs.ps1`. The builder verifies that exact
 number of entries before compiling so a truncated capture cannot be packaged.
+When shader lookup keys are consolidated after capture, retain that source
+count and set `normalized_shader_variants` to the resulting unique entry
+count. The builder validates this normalized count and requires it to be
+positive and no greater than the captured count. Normalization must preserve
+all source requests through equivalent keys and defines; it is not a new
+runtime capture. Regenerating from a fresh capture replaces this metadata.
+Lighting pixel inventories omit the specular, soft, rim and back lighting bits
+outside LOD techniques, matching `State::ModifyShaderLookup`; these flags
+remain available to shaders through the per-draw descriptor. Rebuild both
+runtime caches when changing this mapping.
 Both bundled profiles apply `PBR_GRASS=1` and the empty
 `GRASS_OPTIMIZATIONS` macro to RunGrass vertex and pixel stages only. Macro
 values must match the native factory: empty `PBR_GRASS` is a different cache
@@ -78,18 +94,31 @@ Trace/debug logging selects
 the separate developer cache, so release-cache reuse must be tested at Info
 level or above.
 
-This cache does **not** cover feature-specific shaders compiled through
-independent `Util::CompileShader` or direct `D3DCompile*` paths. Those can
-still compile on first use. A new shader path may be added only after it has a
-deterministic cache key and a complete, declared permutation inventory.
+The shipped cache inventory does **not** cover feature-specific shaders
+compiled through `Util::CompileShader` or direct `D3DCompile*` paths.
+`Util::CompileShader` persists successful runtime compilations for later
+reuse, using the existing optimized/developer managed lanes or the loose
+cache when no managed layout is installed. Its identity includes the source
+and includes, actual macros, target, entry point, compiler flags and ABI.
+A partial managed installation never falls back to loose persistence.
+
+Standalone reuse respects disk-cache holds and the skip-unchanged setting.
+Source changes or rejected cached bytecode fall back to compilation; cache
+transitions prevent stale writes. Loose cache reads reject invalid DXBC
+headers and size mismatches. Writes use atomic replacement; a failed
+replacement retains the previous file and does not publish a new manifest
+entry. Compilation and D3D object creation keep separate timing counters. Direct `D3DCompile*` callers remain uncached.
+Adding standalone shaders to the shipped inventory still requires a complete,
+declared permutation inventory.
 
 For grass, this separate path covers `GrassCullingCS`, its DevBench
 `GRASS_DIAGNOSTICS=1` variant, `GrassDepthCS`, and
 `GrassInstanceSignatureVS`. Scene Hi-Z uses `BuildDepthCS`, `ReduceDepthCS`,
 and `TestBoundsCS`; DevBench additionally compiles its clipping/refinement
 A/B, polygon-baseline and diagnostic variants. Production excludes these
-DevBench variants. Setup warms these shaders in memory; the managed cache
-builder cannot package or reload them. Keep their HLSL and includes in the
+DevBench variants. Setup warms these shaders in memory; `Util::CompileShader` callers can
+reuse their runtime-generated records on later launches, but the offline
+managed cache builder does not package them. Keep their HLSL and includes in the
 AIO and validate them through `GrassBatchShader` and the Hi-Z shader suite.
 The existing standalone upscaling and foveated validation inventories likewise
 prove compilation, not inclusion in the managed cache pack.
@@ -354,7 +383,7 @@ the tool refuses linked paths and non-file destinations.
 Capture from the exact runtime/profile being shipped. Disable any installed
 prebuilt shader cache, clear the runtime disk cache, select Debug or Trace log
 level, start the game, and wait until the shader compilation counter reaches
-zero before exiting. Preserve the completed `CommunityShaders.log`, then run:
+zero before exiting. Preserve the completed `CSX.log`, then run:
 
 ```powershell
 .\.github\configs\generate-shader-configs.ps1 `
@@ -636,7 +665,7 @@ For a smoke test, use a clean mod-manager profile, move any existing
 no-cache installer paths. Cover SE and AE separately even though they share the
 desktop cache. For each runtime, test with the companion DLL absent, present
 with the CSX feature enabled, and present with the CSX feature disabled; inspect
-`CommunityShaders.log` for pack validation,
+`CSX.log` for pack validation,
 compatibility selection, fallback compilation, and unexpected invalidation.
 
 ### Generate a VR-only development FOMOD

@@ -105,6 +105,7 @@ namespace globals
 	struct State
 	{
 		bool menuOpen = false;
+		bool isMapMenuOpen = false;
 		bool IsMainOrLoadingMenuOpen() const { return menuOpen; }
 	} stateValue;
 	auto* state = &stateValue;
@@ -274,6 +275,25 @@ void CheckScopedRestoration()
 		assert(SameDepth(underwater.depthOfField, underwaterBefore));
 		assert(REL::autoFocusValues == autofocusBefore);
 	};
+	globals::stateValue.isMapMenuOpen = true;
+	for (unsigned locks = 0; locks < 4; ++locks) {
+		settings.sceneDof.locked = (locks & 1) != 0;
+		settings.underwaterDof.locked = (locks & 2) != 0;
+		const json settingsBefore = settings;
+		for (auto* current : { &scene, &underwater }) {
+			manager.currentBaseData = current;
+			{
+				DepthOfFieldOverrideScope scope;
+				checkRestored();
+				assert(json(settings) == settingsBefore);
+			}
+			checkRestored();
+			assert(json(settings) == settingsBefore);
+		}
+	}
+	globals::stateValue.isMapMenuOpen = false;
+	settings.sceneDof.locked = settings.underwaterDof.locked = true;
+	manager.currentBaseData = &scene;
 	for (bool failInsideHook : { false, true }) {
 		try {
 			DepthOfFieldOverrideScope scope;

@@ -32,8 +32,12 @@ Before running the generation script, you must run each version of Skyrim (SE an
 
 The required log files will be created at:
 
--   **Skyrim SE**: `%USERPROFILE%\Documents\My Games\Skyrim Special Edition\SKSE\CommunityShaders.log`
--   **Skyrim VR**: `%USERPROFILE%\Documents\My Games\Skyrim VR\SKSE\CommunityShaders.log`
+-   **Skyrim SE**: `%USERPROFILE%\Documents\My Games\Skyrim Special Edition\SKSE\CSX.log`
+-   **Skyrim VR**: `%USERPROFILE%\Documents\My Games\Skyrim VR\SKSE\CSX.log`
+
+Automatic detection prefers `CSX.log` and falls back to
+`CommunityShaders.log` when the current filename is absent. Use `-LogFile`
+to select an archived log explicitly.
 
 ### Running the Script
 
@@ -68,7 +72,7 @@ previously observed valid permutations absent from the new modlist.
 
 ```powershell
 .\.github\configs\generate-shader-configs.ps1 `
-    -LogFile "<log-directory>/CommunityShaders.log" `
+    -LogFile "<log-directory>/CSX.log" `
     -OutputDir ".\.github\configs" `
     -OutputName "shader-validation-vr.yaml" `
     -Force

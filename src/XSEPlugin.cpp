@@ -36,6 +36,7 @@
 #include "ScreenshotDevBenchBridge.h"
 #include "ShaderCache.h"
 #include "State.h"
+#include "Utils/FileSystem.h"
 #include "VRAPI/CSpluginapi.h"
 #include "WeatherManager.h"
 
@@ -72,12 +73,12 @@ namespace
 	{
 		auto messaging = SKSE::GetMessagingInterface();
 		if (!messaging) {
-			PushStartupError("SKSE messaging interface unavailable while registering CSX API message listener. Check CommunityShaders.log for details.");
+			PushStartupError("SKSE messaging interface unavailable while registering CSX API message listener. Check CSX.log for details.");
 			return false;
 		}
 
 		if (!messaging->RegisterListener(nullptr, CommunityShadersAPIMessageHandler)) {
-			PushStartupError("Failed to register CSX API message listener. Check CommunityShaders.log for details.");
+			PushStartupError("Failed to register CSX API message listener. Check CSX.log for details.");
 			return false;
 		}
 
@@ -106,13 +107,12 @@ void InitializeLog([[maybe_unused]] spdlog::level::level_enum a_level = spdlog::
 #ifndef NDEBUG
 	auto sink = std::make_shared<spdlog::sinks::msvc_sink_mt>();
 #else
-	auto path = logger::log_directory();
-	if (!path) {
+	const auto path = Util::PathHelpers::GetLogPath();
+	if (path.empty()) {
 		util::report_and_fail("Failed to find standard logging directory"sv);
 	}
 
-	*path /= std::format("{}.log"sv, Plugin::NAME);
-	auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(path->string(), true);
+	auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(path.string(), true);
 #endif
 
 #ifndef NDEBUG

@@ -315,11 +315,11 @@ namespace VRShadowBatch
 		for (const auto& site : kHookSites) {
 			if (!Matches({ reinterpret_cast<const std::uint8_t*>(REL::Offset(site.rva).address()), site.prefix.size() }, site)) {
 				logger::critical("[VR shadow batch] Unexpected hook bytes at SkyrimVR+{:X}; no isolation hooks installed", site.rva);
-				stl::report_and_fail("Incompatible VR shadow batch hook. See CommunityShaders.log.");
+				stl::report_and_fail("Incompatible VR shadow batch hook. See CSX.log.");
 			}
 		}
 		if (!Matches({ reinterpret_cast<const std::uint8_t*>(REL::Offset(kContiguousGroups.rva).address()), kContiguousGroups.prefix.size() }, kContiguousGroups))
-			stl::report_and_fail("Unrecognized VR shadow batch array layout. See CommunityShaders.log.");
+			stl::report_and_fail("Unrecognized VR shadow batch array layout. See CSX.log.");
 
 		struct Hook
 		{
@@ -357,7 +357,7 @@ namespace VRShadowBatch
 		const auto result = Util::detail::AttachDetourTransaction(nullptr, nullptr, Operations{ hooks });
 		if (result.error != NO_ERROR) {
 			logger::critical("[VR shadow batch] Atomic hook installation failed: {}", result.error);
-			stl::report_and_fail("VR shadow batch isolation could not be installed. See CommunityShaders.log.");
+			stl::report_and_fail("VR shadow batch isolation could not be installed. See CSX.log.");
 		}
 		logger::info("[VR shadow batch] Installed lightless shadow-map submission isolation and batch retirement hooks");
 	}

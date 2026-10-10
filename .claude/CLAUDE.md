@@ -87,8 +87,8 @@ hlslkit-compile --shader-dir build/ALL/aio/Shaders/ScreenSpaceGI/ --output-dir b
 # Test feature-specific compute shader
 hlslkit-compile --shader-dir build/ALL/aio/Shaders/LightLimitFix/ClusterBuildingCS.hlsl --output-dir build/ShaderCache --config .github/configs/shader-validation.yaml
 
-# Generate shader defines from game log (requires CommunityShaders.log from game)
-hlslkit-generate-defines --log CommunityShaders.log
+# Generate shader defines from game log (requires CSX.log from game)
+hlslkit-generate-defines --log CSX.log
 
 # Scan for buffer conflicts across features
 hlslkit-buffer-scan --features-dir features/

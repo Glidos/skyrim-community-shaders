@@ -438,7 +438,7 @@ namespace FeatureIssues
 				ShellExecuteA(NULL, "open", logPath.string().c_str(), NULL, NULL, SW_SHOWNORMAL);
 			}
 			if (auto _tt = Util::HoverTooltipWrapper()) {
-				ImGui::Text("Opens the CommunityShaders.log file for manual review.");
+				ImGui::Text("Opens the CSX.log file for manual review.");
 			}
 		}
 

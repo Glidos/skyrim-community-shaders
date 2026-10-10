@@ -136,7 +136,7 @@ bool VRGrassLifetimeFix::TryInstall()
 	const auto result = Util::detail::AttachDetourTransaction(nullptr, nullptr, Operations{});
 	if (result.error != NO_ERROR) {
 		logger::error("[Engine Fixes] VR grass lifetime transaction failed ({}); no partial protection accepted", result.error);
-		stl::report_and_fail("VR grass lifetime hooks could not be installed atomically. See CommunityShaders.log.");
+		stl::report_and_fail("VR grass lifetime hooks could not be installed atomically. See CSX.log.");
 	}
 	installed = true;
 	return true;

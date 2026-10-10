@@ -22,7 +22,9 @@ on:
             - "src/Features/**"
             - "package/Shaders/**"
             - "tests/shaders/**"
-            - ".github/configs/**"
+            - ".github/configs/shader-validation*.yaml"
+            - ".github/configs/runtime-*.yaml"
+            - ".github/configs/generate-shader-configs.ps1"
 
 # Least-privilege defaults; individual jobs override where needed.
 permissions:
@@ -81,7 +83,9 @@ jobs:
                         - 'CMakePresets.json'
                         - 'cmake/**'
                       build_ci:
-                        - '.github/configs/**'
+                        - '.github/configs/shader-validation*.yaml'
+                        - '.github/configs/runtime-*.yaml'
+                        - '.github/configs/generate-shader-configs.ps1'
                       hlsl:
                         - '**.hlsl'
                         - '**.hlsli'

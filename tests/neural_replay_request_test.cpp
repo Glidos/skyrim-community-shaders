@@ -49,7 +49,7 @@ namespace NeuralRendering::Replay
 }
 namespace Util::PathHelpers
 {
-	std::filesystem::path GetLogPath() { return "fixture/CommunityShaders.log"; }
+	std::filesystem::path GetLogPath() { return "fixture/CSX.log"; }
 }
 template <class F>
 json RunOnMainThread(F callback)

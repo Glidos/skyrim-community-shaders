@@ -17,6 +17,8 @@ namespace Plugin
 	};
 
 	inline constexpr auto NAME = "@PROJECT_NAME@"sv;
+	/// Log basename is independent of the stable SKSE plugin identity.
+	inline constexpr auto LOG_NAME = "@PLUGIN_LOG_NAME@"sv;
 	inline constexpr auto DISPLAY_NAME = "Community Shaders Expanded (CSX)"sv;
 	inline constexpr auto FORK_VERSION = "@CSX_BUILD_LABEL@"sv;
 	inline constexpr auto VERSION_LABEL = "@CSX_PLUGIN_VERSION@"sv;

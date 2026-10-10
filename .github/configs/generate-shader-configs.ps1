@@ -28,7 +28,7 @@
     .\generate-shader-configs.ps1 -OutputDir "custom/path" -Force
 
 .EXAMPLE
-    .\generate-shader-configs.ps1 -LogFile "C:\Path\To\CommunityShaders.log" -OutputName "my-validation.yaml"
+    .\generate-shader-configs.ps1 -LogFile "C:\Path\To\CSX.log" -OutputName "my-validation.yaml"
 
 .NOTES
     Prerequisites:
@@ -151,6 +151,17 @@ function Invoke-ShaderConfigGeneration {
     }
 }
 
+# Older builds retain their original filename; explicit -LogFile always takes precedence.
+function Resolve-LogPath {
+    param([string]$SkseDir)
+    $current = Join-Path $SkseDir "CSX.log"
+    $legacy = Join-Path $SkseDir "CommunityShaders.log"
+    if (-not (Test-Path -LiteralPath $current -PathType Leaf) -and (Test-Path -LiteralPath $legacy -PathType Leaf)) {
+        return $legacy
+    }
+    return $current
+}
+
 # Function to find Skyrim installation paths
 function Find-SkyrimPaths {
     $paths = @()
@@ -165,7 +176,7 @@ function Find-SkyrimPaths {
         $paths += @{
             Name = "Skyrim Special Edition"
             Path = $sePath
-            LogPath = Join-Path $sePath "SKSE\CommunityShaders.log"
+            LogPath = Resolve-LogPath (Join-Path $sePath "SKSE")
             ConfigName = "shader-validation.yaml"
             Type = "SE"
         }
@@ -177,7 +188,7 @@ function Find-SkyrimPaths {
         $paths += @{
             Name = "Skyrim VR"
             Path = $vrPath
-            LogPath = Join-Path $vrPath "SKSE\CommunityShaders.log"
+            LogPath = Resolve-LogPath (Join-Path $vrPath "SKSE")
             ConfigName = "shader-validation-vr.yaml"
             Type = "VR"
         }

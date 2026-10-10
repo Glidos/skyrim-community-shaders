@@ -85,6 +85,7 @@ project(
 )
 
 set(CSX_PACKAGE_NAME "CSX")
+set(PLUGIN_LOG_NAME "CSX")
 
 # default install path
 if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
@@ -2209,6 +2210,7 @@ if(BUILD_CONTROLLER_TESTS)
 
     include("${PROJECT_SOURCE_DIR}/tests/virtual_function_hook.cmake")
     include("${PROJECT_SOURCE_DIR}/tests/engine_overflow_guards.cmake")
+    include("${PROJECT_SOURCE_DIR}/tests/hang_guards.cmake")
     include("${PROJECT_SOURCE_DIR}/tests/actor_shape_bounds.cmake")
     include("${PROJECT_SOURCE_DIR}/tests/terrain_variation_mesh.cmake")
     include("${PROJECT_SOURCE_DIR}/tests/fov_settings.cmake")
@@ -2569,6 +2571,31 @@ if(BUILD_CONTROLLER_TESTS)
         PRIVATE "${_fsr_save_reuse_test_dir}"
     )
 
+    set(_sky_fade_window_test_dir
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/sky-fade-window-test"
+    )
+    add_custom_command(
+        OUTPUT "${_sky_fade_window_test_dir}/sky_fade_window_under_test.h"
+        COMMAND
+            "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
+            "-DOUTPUT_DIRECTORY=${_sky_fade_window_test_dir}" -P
+            "${PROJECT_SOURCE_DIR}/tests/extract_sky_fade_window.cmake"
+        DEPENDS
+            src/Features/SkySync.cpp
+            tests/extract_sky_fade_window.cmake
+            tests/extract_source_region.cmake
+        VERBATIM
+    )
+    add_controller_test(sky_fade_window_test SkyFadeWindow tests/sky_fade_window_test.cpp)
+    target_sources(
+        sky_fade_window_test
+        PRIVATE "${_sky_fade_window_test_dir}/sky_fade_window_under_test.h"
+    )
+    target_include_directories(
+        sky_fade_window_test
+        PRIVATE "${_sky_fade_window_test_dir}"
+    )
+
     add_controller_test(
         pbr_material_registry_test
         PBRMaterialRegistry
@@ -2748,6 +2775,39 @@ if(BUILD_CONTROLLER_TESTS)
     set_tests_properties(
         MotionSharpeningRuntimeCompile
         PROPERTIES WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+    )
+    set(_core_settings_test_dir
+        "${CMAKE_CURRENT_BINARY_DIR}/core_settings_test"
+    )
+    set(_core_settings_test_headers
+        "${_core_settings_test_dir}/subrect_settings_types.h"
+        "${_core_settings_test_dir}/subrect_settings_under_test.h"
+    )
+    add_custom_command(
+        OUTPUT ${_core_settings_test_headers}
+        COMMAND
+            "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
+            "-DOUTPUT_DIRECTORY=${_core_settings_test_dir}" -P
+            "${PROJECT_SOURCE_DIR}/tests/extract_core_settings.cmake"
+        DEPENDS
+            src/Utils/Subrect.cpp
+            src/Utils/Subrect.h
+            tests/extract_core_settings.cmake
+        VERBATIM
+    )
+    add_custom_target(
+        core_settings_test_sources
+        DEPENDS ${_core_settings_test_headers}
+    )
+    add_controller_test(core_settings_test CoreSettings tests/core_settings_test.cpp)
+    add_dependencies(core_settings_test core_settings_test_sources)
+    target_include_directories(
+        core_settings_test
+        PRIVATE "${_core_settings_test_dir}"
+    )
+    target_link_libraries(
+        core_settings_test
+        PRIVATE nlohmann_json::nlohmann_json
     )
     add_controller_test(
         motion_sharpening_settings_test
@@ -3566,6 +3626,8 @@ if(BUILD_CONTROLLER_TESTS)
         tests/shader_cache_provenance_test.cpp
     )
     include("${PROJECT_SOURCE_DIR}/tests/shader_cache_variants.cmake")
+    include("${PROJECT_SOURCE_DIR}/tests/shared_shader_compile.cmake")
+    include("${PROJECT_SOURCE_DIR}/tests/shader_content_reuse.cmake")
     add_controller_test(
         shader_compile_identity_test
         ShaderCompileIdentity
@@ -3613,6 +3675,7 @@ if(BUILD_CONTROLLER_TESTS)
     add_controller_test(runtime_toggle_test RuntimeToggle tests/runtime_toggle_test.cpp)
     include("${PROJECT_SOURCE_DIR}/tests/volumetric_lighting_composite.cmake")
     include("${PROJECT_SOURCE_DIR}/tests/shader_include.cmake")
+    include("${PROJECT_SOURCE_DIR}/tests/standalone_shader_cache.cmake")
     add_controller_test(
         vr_depth_culling_enable_policy_test
         VRDepthCullingEnablePolicy

@@ -110,7 +110,7 @@ static const float3 noise3D[32] = {
 
 	uint bitmask = isValid ? outShadowBitmask[probeTexID] : 0xFFFFFFFFu;
 	float shadowSample = 1.0;
-	bool advanceShadowHistory = settings.ShadowDataAvailable == 0;
+	bool advanceShadowHistory = false;
 
 	if (settings.ShadowDataAvailable != 0) {
 		float4 cellCentreCS = mul(FrameBuffer::CameraViewProj[0], float4(cellCentreMS, 1));
@@ -154,7 +154,10 @@ static const float3 noise3D[32] = {
 		}
 	}
 
-	if (advanceShadowHistory) {
+	if (settings.ShadowDataAvailable == 0) {
+		outShadowBitmask[probeTexID] = 0xFFFFFFFFu;
+		outShadowVisibility[probeTexID] = 1.0;
+	} else if (advanceShadowHistory) {
 		// Every accepted sample retires the oldest bit, independent of update cadence.
 		bitmask = (bitmask << 1) | (shadowSample > 0.5 ? 1u : 0u);
 		outShadowBitmask[probeTexID] = bitmask;

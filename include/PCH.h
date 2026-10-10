@@ -102,7 +102,7 @@ namespace stl
 			reinterpret_cast<PVOID*>(&T::func), reinterpret_cast<PVOID>(T::thunk));
 		if (result.error != NO_ERROR) {
 			SKSE::log::critical("[Hooks] Failed to install graphics slot {} (error {}, Detours {})", idx, result.error, result.detourError);
-			stl::report_and_fail("A required graphics hook could not be installed. See CommunityShaders.log.");
+			stl::report_and_fail("A required graphics hook could not be installed. See CSX.log.");
 		}
 		if (result.detourError != NO_ERROR)
 			SKSE::log::warn("[Hooks] Detours failed for graphics slot {} (error {}); using {}", idx, result.detourError,

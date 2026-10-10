@@ -307,7 +307,7 @@ namespace
 			cameraProjection[15] = test.onScreen ? 1.0f : 0.0f;
 			frame->SetVariable("FrameBuffer::CameraViewProj", cameraProjection);
 			frame->Bind(context);
-			shadow.Bind(context, test.shadowLit, test.onScreen);
+			shadow.Bind(context, test.shadowLit, test.shadowAvailable && test.onScreen);
 			ID3D11UnorderedAccessView* views[]{ probes.uav.Get(), accumulation.uav.Get(), history.uav.Get(), visibility.uav.Get() };
 			context->CSSetUnorderedAccessViews(0, 4, views, nullptr);
 			context->CSSetShader(shader.Get(), nullptr, 0);
@@ -347,6 +347,7 @@ namespace
 			{ "offset history and slice-count guard", 3, 2, 3, false, false },
 			{ "tail slice and volume-depth guard", 7, 3, 3, false, false },
 			{ "invalid probe without shadow data", 3, 2, 2, true, false },
+			{ "onscreen probe without shadow resources", 3, 2, 2, false, false, true, false },
 			{ "invalid offscreen probe reset", 3, 2, 2, true, true },
 			{ "valid offscreen history retained", 3, 2, 2, false, true },
 			{ "lit cascade updates offset history", 3, 2, 2, false, true, true, true, 10 },
@@ -365,11 +366,14 @@ namespace
 					expected.accumulation[i] = 0;
 					expected.lighting[i] = { std::sqrt(4.0f * std::numbers::pi_v<float>), 0.0f, 0.0f, 0.0f };
 				}
-				if (!test.shadowAvailable || test.onScreen) {
-					expected.history[i] = (expected.history[i] << 1) | (!test.onScreen || test.shadowLit ? 1u : 0u);
+				if (!test.shadowAvailable) {
+					expected.history[i] = UINT32_MAX;
+					expected.visibility[i] = 1.0f;
+				} else if (test.onScreen) {
+					expected.history[i] = (expected.history[i] << 1) | (test.shadowLit ? 1u : 0u);
 					expected.visibility[i] = static_cast<float>(std::popcount(expected.history[i])) / 32.0f;
 				}
-				if (test.onScreen) {
+				if (test.shadowAvailable && test.onScreen) {
 					const auto cursor = ((expected.accumulation[i] >> 8) + 1u) % 32;
 					expected.accumulation[i] = static_cast<uint16_t>((cursor << 8) | (expected.accumulation[i] & 255u));
 				}
@@ -377,6 +381,33 @@ namespace
 			fixture.Verify(expected, test.name);
 			std::cout << fixture.runtime << test.name << " passed\n";
 		}
+	}
+
+	void CheckShadowOutageRecovery(ProbeFixture& fixture)
+	{
+		SliceCase test{ "one-update shadow outage", 3, 2, 2, false, false, true, false };
+		ProbeState expected;
+		fixture.Reset(expected);
+		fixture.Dispatch(test);
+		for (size_t i = 0; i < volumeElements; ++i) {
+			if (IsSelected(i, test)) {
+				expected.history[i] = UINT32_MAX;
+				expected.visibility[i] = 1.0f;
+			}
+		}
+		fixture.Verify(expected, test.name);
+		test.shadowAvailable = true;
+		fixture.Dispatch(test);
+		for (size_t i = 0; i < volumeElements; ++i) {
+			if (!IsSelected(i, test))
+				continue;
+			expected.history[i] = 0xFFFFFFFEu;
+			expected.visibility[i] = 31.0f / 32.0f;
+			const auto cursor = ((expected.accumulation[i] >> 8) + 1u) % 32;
+			expected.accumulation[i] = static_cast<uint16_t>((cursor << 8) | (expected.accumulation[i] & 255u));
+		}
+		fixture.Verify(expected, "recovered dark sample starts from fully lit history");
+		std::cout << fixture.runtime << "short shadow outage and recovery passed\n";
 	}
 
 	void CheckTemporalConvergence(ProbeFixture& fixture)
@@ -495,6 +526,7 @@ namespace
 	{
 		ProbeFixture fixture(device, context, path, vr);
 		CheckSlices(fixture);
+		CheckShadowOutageRecovery(fixture);
 		CheckTemporalConvergence(fixture);
 		CheckRejectedJitterRecovery(fixture);
 		CheckAccumulationIndependence(fixture);

@@ -51308,8 +51308,19 @@ void Upscaling::FrameLimiter()
 		// Use frame latency waitable object if available for better frame pacing
 		HANDLE waitableObject = GetFrameLatencyWaitableObject();
 
-		// Wait for the next frame presentation slot
-		WaitForSingleObject(waitableObject, INFINITE);
+		// A lost presentation signal must not block the render thread indefinitely.
+		static constexpr DWORD kFrameLatencyWaitTimeoutMs = 1000;
+		DWORD waitResult = WAIT_FAILED;
+		DWORD waitError = ERROR_INVALID_HANDLE;
+		if (waitableObject && waitableObject != INVALID_HANDLE_VALUE) {
+			waitResult = WaitForSingleObject(waitableObject, kFrameLatencyWaitTimeoutMs);
+			waitError = waitResult == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
+		}
+		static std::atomic_bool waitFailureLogged{ false };
+		if (waitResult != WAIT_OBJECT_0 && !waitFailureLogged.exchange(true, std::memory_order_relaxed)) {
+			logger::warn("[Frame Generation] Frame latency wait {} (limit {} ms, result {}, error {}); continuing frame pacing",
+				waitResult == WAIT_TIMEOUT ? "timed out" : "failed", kFrameLatencyWaitTimeoutMs, waitResult, waitError);
+		}
 
 		if (settings.frameLimitMode) {
 			// Fall back to the original timing method

@@ -1509,7 +1509,7 @@ namespace Hooks
 			const auto validationResult = Util::ValidateImmediateContext(globals::d3d::context);
 			if (FAILED(validationResult)) {
 				logger::critical("Renderer immediate-context validation failed: 0x{:08X}", static_cast<uint32_t>(validationResult));
-				stl::report_and_fail("The graphics context cannot support renderer-owned access. See CommunityShaders.log.");
+				stl::report_and_fail("The graphics context cannot support renderer-owned access. See CSX.log.");
 			}
 			logger::info("D3D11 immediate context validated; auxiliary access uses native renderer ownership");
 
