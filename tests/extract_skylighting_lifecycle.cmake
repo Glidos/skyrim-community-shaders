@@ -29,10 +29,10 @@ file(
 )
 
 extract_between("${_source}" "uint ClampStableSliceCount(" "void ApplyOcclusionCornerFrustum(" _probe_policy)
-extract_between("${_source}" "bool ShouldRunPeriodicUpdate(" "void ApplyPlatformDefaults(" _cadence)
+extract_between("${_source}" "bool IsUpdateDue(" "void ApplyPlatformDefaults(" _cadence)
 extract_between("${_source}" "void Skylighting::QueueResetSkylighting(" "void Skylighting::SetPerformanceCostMeasurementEnabled(" _lifecycle)
 extract_between("${_source}" "void Skylighting::ClearShaderCache()" "void Skylighting::CompileComputeShaders()" _reload)
-extract_between("${_source}" "bool Skylighting::HasProbeUpdateResources()" "void Skylighting::PostPostLoad()" _probe_pass)
+extract_between("${_source}" "float3 Skylighting::GetProbeCellSize()" "void Skylighting::PostPostLoad()" _probe_pass)
 extract_between("${_source}" "void Skylighting::SetupResources()" "void Skylighting::SetupRenderTargetResources()" _resources)
 extract_between("${_source}" "void Skylighting::ApplyProbeGridQuality()" "void Skylighting::QueueResetSkylighting(" _grid)
 extract_between("${_source}" "const char* Skylighting::GetPerformanceCostMeasurementWaitText() const" "double Skylighting::GetPerformanceCostMeasurementSettleSeconds(" _wait)

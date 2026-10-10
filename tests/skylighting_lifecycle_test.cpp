@@ -333,6 +333,9 @@ struct Skylighting
 	bool shadowAvailable = false;
 	bool HasCurrentShadowData() const { return shadowAvailable; }
 	bool HasProbeUpdateResources() const;
+	float3 GetProbeCellSize() const;
+	float3 GetProbeCell(float3 a_eyePosition) const;
+	bool PrepareOcclusionCapture();
 	SkylightingCB GetCommonBufferData(bool inWorld);
 	void Prepass();
 	void SetupRenderTargetResources();
@@ -448,11 +451,155 @@ struct Fixture
 	{
 		++state.frameCount;
 		feature.frameCount += advance;
+		feature.occlusionCaptureCorner = feature.nextOcclusionCorner;
 		feature.lastOcclusionRenderFrame = state.frameCount;
 		feature.needsOcclusionRefresh = false;
 	}
+	bool CaptureIfDue()
+	{
+		if (!feature.PrepareOcclusionCapture())
+			return false;
+		feature.lastOcclusionRenderFrame = state.frameCount;
+		feature.needsOcclusionRefresh = false;
+		return true;
+	}
 	void Publish(bool inWorld = true) { published = feature.GetCommonBufferData(inWorld); }
 };
+unsigned CheckCadenceMatrix()
+{
+	unsigned scenarios = 0;
+	for (uint depth : { 64u, 96u, 128u }) {
+		for (bool incremental : { false, true }) {
+			for (uint captureInterval = 1; captureInterval <= 32; ++captureInterval) {
+				for (uint probeInterval = captureInterval; probeInterval <= 32; ++probeInterval) {
+					Fixture f;
+					f.Ready();
+					f.feature.probeArrayDims[0] = f.feature.probeArrayDims[1] = depth * 2;
+					f.feature.probeArrayDims[2] = depth;
+					f.feature.settings.EnableIncrementalProbeUpdates = incremental;
+					f.feature.settings.StableSliceCount = 13;
+					f.feature.settings.OcclusionUpdateInterval = captureInterval;
+					f.feature.settings.ProbeUpdateInterval = probeInterval;
+					for (uint travel = 0; travel < 2; ++travel) {
+						f.feature.ResetSkylighting();
+						for (uint sample = 0; sample < Skylighting::kProbeHistoryWarmupUpdates; ++sample) {
+							++f.state.frameCount;
+							Require(f.CaptureIfDue(), "every reset-recovery frame must bypass capture throttling");
+							Require(!f.CaptureIfDue(), "a rendered frame must not capture twice");
+							f.Publish();
+							Require(f.published.ProbeUpdateSliceCount == depth, "reset recovery must retain full-grid dispatches");
+							const auto dispatches = f.context.dispatchCount;
+							f.feature.Prepass();
+							f.feature.Prepass();
+							Require(f.context.dispatchCount == dispatches + 1, "recovery must consume each new capture exactly once");
+						}
+						Require(!f.feature.forcedFullUpdateFrames, "stationary recovery must complete without camera motion");
+						std::vector<uint> coverage(depth);
+						uint captures = 0;
+						const uint frames = 4 * ((depth + 12) / 13) * probeInterval;
+						for (uint elapsed = 1; elapsed <= frames; ++elapsed) {
+							++f.state.frameCount;
+							captures += f.CaptureIfDue();
+							f.Publish();
+							const auto dispatches = f.context.dispatchCount;
+							const uint corner = f.feature.occlusionCaptureCorner;
+							f.feature.Prepass();
+							if (f.context.dispatchCount == dispatches)
+								continue;
+							const uint end = f.published.ProbeUpdateSliceStart + f.published.ProbeUpdateSliceCount;
+							for (uint z = f.published.ProbeUpdateSliceStart; z < end; ++z)
+								coverage[z] |= GetOcclusionCornerBit(corner);
+						}
+						Require(captures == frames / captureInterval, "configured capture delays must resume after recovery");
+						Require(std::all_of(coverage.begin(), coverage.end(), [](uint mask) { return mask == 15; }), "capture and probe intervals must not starve any quadrant");
+						const auto clears = f.context.clearCount;
+						const uint covered = f.feature.probeUpdateCornerMask;
+						for (bool reduced : { false, true }) {
+							f.feature.settings.EnableReducedUpdateFrequency = reduced;
+							f.Publish();
+							Require(f.context.clearCount == clears && f.feature.probeUpdateCornerMask == covered, "cadence edits must preserve history and partial quadrant coverage");
+						}
+					}
+					++scenarios;
+				}
+			}
+		}
+	}
+	return scenarios;
+}
+
+unsigned CheckDelayedCadenceRecovery()
+{
+	for (uint firstFrame : { 0u, UINT32_MAX - 40u }) {
+		Fixture f;
+		f.Ready();
+		f.state.frameCount = firstFrame;
+		f.feature.frameCount = UINT32_MAX - 1u;
+		f.feature.settings.EnableIncrementalProbeUpdates = true;
+		f.feature.settings.StableSliceCount = 13;
+		f.feature.settings.OcclusionUpdateInterval = 32;
+		f.feature.settings.ProbeUpdateInterval = 32;
+		f.feature.ResetSkylighting();
+		for (uint sample = 0; sample < 2; ++sample) {
+			++f.state.frameCount;
+			Require(f.CaptureIfDue(), "recovery must start without camera motion");
+			f.Publish();
+			f.feature.Prepass();
+		}
+		const uint remaining = f.feature.forcedFullUpdateFrames;
+		const uint covered = f.feature.probeUpdateCornerMask;
+		const uint pendingCorner = f.feature.nextOcclusionCorner;
+		const auto dispatches = f.context.dispatchCount;
+		f.feature.probeUpdateCompute.value = nullptr;
+		for (uint missed = 0; missed < 7; ++missed) {
+			++f.state.frameCount;
+			Require(f.CaptureIfDue(), "unfinished recovery must keep captures available during shader outages");
+			f.Publish();
+			f.feature.Prepass();
+			Require(f.feature.forcedFullUpdateFrames == remaining && f.feature.probeUpdateCornerMask == covered, "missed dispatches must preserve recovery and consumed quadrants");
+			Require(f.context.dispatchCount == dispatches && f.feature.occlusionCaptureCorner == pendingCorner, "unconsumed captures must retry the pending quadrant");
+		}
+		f.feature.probeUpdateCompute.value = &f.compute;
+		for (uint sample = 2; sample < Skylighting::kProbeHistoryWarmupUpdates; ++sample) {
+			++f.state.frameCount;
+			Require(f.CaptureIfDue(), "interrupted recovery must resume across frame-counter wrap");
+			f.Publish();
+			f.feature.Prepass();
+		}
+		Require(!f.feature.forcedFullUpdateFrames, "interrupted recovery must finish after all quadrants are consumed");
+		++f.state.frameCount;
+		Require(!f.CaptureIfDue(), "capture throttling must resume immediately after recovery");
+		f.Publish();
+		const auto recoveredDispatches = f.context.dispatchCount;
+		f.feature.Prepass();
+		Require(f.context.dispatchCount == recoveredDispatches, "old capture must not advance stationary probes");
+		f.feature.settings.EnableIncrementalProbeUpdates = false;
+		Util::eye.x += f.feature.settings.ProbeFieldSize / f.feature.probeArrayDims[0];
+		for (uint corner = 0; corner < 4; ++corner) {
+			++f.state.frameCount;
+			Require(f.CaptureIfDue(), "movement and its recovery sweep must bypass capture throttling");
+			f.Publish();
+			Require(f.published.ProbeUpdateSliceCount == 96, "movement recovery must cover the complete grid");
+			f.feature.Prepass();
+		}
+		Require(!f.feature.forcedFullUpdateFrames && f.context.dispatchCount == recoveredDispatches + 4, "movement recovery must consume exactly one quadrant sweep");
+		++f.state.frameCount;
+		Require(!f.CaptureIfDue(), "movement recovery must return to configured capture delays");
+		f.state.frameCount = UINT32_MAX - 15u;
+		f.feature.lastOcclusionRenderFrame = f.state.frameCount;
+		f.feature.lastProbeUpdateFrame = f.state.frameCount;
+		const auto beforeWrap = f.context.dispatchCount;
+		for (uint elapsed = 1; elapsed <= 32; ++elapsed) {
+			++f.state.frameCount;
+			Require(f.CaptureIfDue() == (elapsed == 32), "capture interval must remain exact across render-frame wrap");
+			f.Publish();
+			f.feature.Prepass();
+			Require(f.context.dispatchCount == beforeWrap + (elapsed == 32 ? 1u : 0u), "probe interval must remain exact across render-frame wrap");
+		}
+	}
+	return 2;
+}
+
 int main()
 try {
 	unsigned scenarios = 0;
@@ -497,12 +644,11 @@ try {
 		f.Ready();
 		f.feature.shadowAvailable = true;
 		f.feature.forcedFullUpdateFrames = 0;
-		f.feature.probeUpdateFrameCounter = 1;
-		f.feature.probeUpdatePending = false;
+		f.feature.lastProbeUpdateFrame = f.state.frameCount;
 		if (route == 1) {
 			f.feature.settings.EnableIncrementalProbeUpdates = true;
 			f.feature.activeSliceCount = f.feature.settings.StableSliceCount;
-			f.feature.probeUpdateCornerMask = GetOcclusionCornerBit(f.feature.frameCount);
+			f.feature.probeUpdateCornerMask = GetOcclusionCornerBit(f.feature.occlusionCaptureCorner);
 		}
 		f.Publish();
 		f.mask.uavObject.uints.fill(0);
@@ -695,7 +841,7 @@ try {
 		Require(f.mask.uavObject.uints[0] == UINT32_MAX, "shadow history must start fully lit");
 		Require(f.visibility.uavObject.floats == std::array<float, 4>{ 1, 1, 1, 1 }, "visibility must start fully lit");
 		Require(f.feature.forceProbeUpdateThisFrame && f.feature.forcedFullUpdateFrames == Skylighting::kProbeHistoryWarmupUpdates, "rebuild must force a full probe update");
-		Require(f.feature.probeUpdateFrameCounter == 0 && f.feature.occlusionUpdateFrameCounter == 0, "rebuild must restart cadence");
+		Require(!f.feature.lastProbeUpdateFrame && !f.feature.lastOcclusionRenderFrame && f.feature.nextOcclusionCorner == 0, "rebuild must restart cadence and quadrant coverage");
 		Require(f.feature.probeUpdateSliceCursor == 0 && f.feature.probeUpdateCornerMask == 0, "rebuild must restart the slice sweep");
 		++scenarios;
 	}
@@ -906,7 +1052,7 @@ try {
 				const uint end = start + f.published.ProbeUpdateSliceCount;
 				Require(end > start && end <= depth, "every tail batch must remain within its probe grid");
 				for (uint z = start; z < end; ++z)
-					coverage[z] |= GetOcclusionCornerBit(f.feature.frameCount);
+					coverage[z] |= GetOcclusionCornerBit(f.feature.occlusionCaptureCorner);
 				const auto dispatches = f.context.dispatchCount;
 				f.feature.Prepass();
 				Require(f.context.dispatchCount == dispatches + 1, "each fresh slice quadrant must be dispatched");
@@ -921,6 +1067,7 @@ try {
 		f.Publish();
 		for (uint repeat = 0; repeat < 8; ++repeat) {
 			f.Capture(4);
+			f.feature.occlusionCaptureCorner = 0;
 			f.Publish();
 			f.feature.Prepass();
 		}
@@ -1010,6 +1157,8 @@ try {
 		}
 		++scenarios;
 	}
+	scenarios += CheckCadenceMatrix();
+	scenarios += CheckDelayedCadenceRecovery();
 	std::cout << scenarios << " production lifecycle scenarios passed\n";
 } catch (const std::exception& error) {
 	std::cerr << error.what() << '\n';

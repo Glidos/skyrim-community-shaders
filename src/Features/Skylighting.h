@@ -8,6 +8,10 @@ struct Skylighting : Feature
 private:
 	static constexpr std::string_view MOD_ID = "139352";
 	bool HasProbeUpdateResources() const;
+	float3 GetProbeCellSize() const;
+	float3 GetProbeCell(float3 a_eyePosition) const;
+	/** @brief Selects a due capture quadrant without consuming pending probe work. */
+	bool PrepareOcclusionCapture();
 	bool probeUpdateBufferEnabled = false;
 	bool probeUpdateShadowDataAvailable = false;
 	/** @brief Clears directional history with valid UAVs and the visibility SRV unbound. */
@@ -144,6 +148,9 @@ public:
 	uint frameCount = 0;
 	std::optional<uint32_t> lastOcclusionRenderFrame;
 	std::optional<uint> lastProbeUpdateCapture;
+	std::optional<uint32_t> lastProbeUpdateFrame;
+	uint occlusionCaptureCorner = 0;
+	uint nextOcclusionCorner = 0;
 	uint probeUpdateCapture = 0;
 	float3 prevCellID = { 0, 0, 0 };
 	float3 probeUpdateCellID = { 0, 0, 0 };
@@ -157,10 +164,6 @@ public:
 	static constexpr uint kProbeHistoryWarmupUpdates = 60;
 	uint forcedFullUpdateFrames = kProbeHistoryWarmupUpdates;
 	bool forceProbeUpdateThisFrame = true;
-	uint probeUpdateFrameCounter = 0;
-	std::optional<uint32_t> probeScheduleFrame;
-	bool probeUpdatePending = true;
-	uint occlusionUpdateFrameCounter = 0;
 
 	/** @brief Queues a render-thread history rebuild without touching graphics resources. */
 	void QueueResetSkylighting(bool rebuild = false);

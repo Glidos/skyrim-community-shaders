@@ -48,6 +48,7 @@ class SkylightingSettingsTests(unittest.TestCase):
                 "constexpr uint kQualityProbeGrid = static_cast<uint>(kProbeGridPresets.size() - 1);",
                 block(source, "uint ClampProbeGridQuality("),
                 block(source, "uint ClampUpdateInterval("),
+                block(source, "uint ClampProbeUpdateIntervalAgainstOcclusion("),
                 block(source, "float ClampProbeFieldSize("),
             ]
         )
@@ -249,6 +250,12 @@ int main()
         if (!feature.resetQueued)
             return 3;
     }
+    current["OcclusionUpdateInterval"] = 99;
+    current["ProbeUpdateInterval"] = 0;
+    feature.resetQueued = false;
+    feature.LoadSettings(current);
+    if (feature.resetQueued || feature.settings.OcclusionUpdateInterval != 32 || feature.settings.ProbeUpdateInterval != 32)
+        return 4;
     std::cout << "Scheduling reloads retain history and pending resets; structural edits invalidate it\n";
 }
 '''
