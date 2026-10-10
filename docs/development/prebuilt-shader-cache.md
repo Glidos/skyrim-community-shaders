@@ -78,18 +78,29 @@ Trace/debug logging selects
 the separate developer cache, so release-cache reuse must be tested at Info
 level or above.
 
-This cache does **not** cover feature-specific shaders compiled through
-independent `Util::CompileShader` or direct `D3DCompile*` paths. Those can
-still compile on first use. A new shader path may be added only after it has a
-deterministic cache key and a complete, declared permutation inventory.
+The shipped cache inventory does **not** cover feature-specific shaders
+compiled through `Util::CompileShader` or direct `D3DCompile*` paths.
+`Util::CompileShader` persists successful runtime compilations for later
+reuse, using the existing optimized/developer managed lanes or the loose
+cache when no managed layout is installed. Its identity includes the source
+and includes, actual macros, target, entry point, compiler flags and ABI.
+A partial managed installation never falls back to loose persistence.
+
+Standalone reuse respects disk-cache holds and the skip-unchanged setting.
+Source changes or rejected cached bytecode fall back to compilation; cache
+transitions prevent stale writes. Compilation and D3D object creation keep
+separate timing counters. Direct `D3DCompile*` callers remain uncached.
+Adding standalone shaders to the shipped inventory still requires a complete,
+declared permutation inventory.
 
 For grass, this separate path covers `GrassCullingCS`, its DevBench
 `GRASS_DIAGNOSTICS=1` variant, `GrassDepthCS`, and
 `GrassInstanceSignatureVS`. Scene Hi-Z uses `BuildDepthCS`, `ReduceDepthCS`,
 and `TestBoundsCS`; DevBench additionally compiles its clipping/refinement
 A/B, polygon-baseline and diagnostic variants. Production excludes these
-DevBench variants. Setup warms these shaders in memory; the managed cache
-builder cannot package or reload them. Keep their HLSL and includes in the
+DevBench variants. Setup warms these shaders in memory; `Util::CompileShader` callers can
+reuse their runtime-generated records on later launches, but the offline
+managed cache builder does not package them. Keep their HLSL and includes in the
 AIO and validate them through `GrassBatchShader` and the Hi-Z shader suite.
 The existing standalone upscaling and foveated validation inventories likewise
 prove compilation, not inclusion in the managed cache pack.

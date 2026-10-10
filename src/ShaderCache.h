@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <deque>
 #include <efsw/efsw.hpp>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -12,6 +13,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <winrt/base.h>
 #include <wrl/client.h>
 
 #include "ShaderCompilationSchedulingPolicy.h"
@@ -20,6 +22,11 @@
 #include "Utils/WinApi.h"
 
 using namespace std::chrono;
+
+namespace Util
+{
+	struct StandaloneShaderRequest;
+}
 
 namespace ShaderConstants
 {
@@ -466,6 +473,12 @@ namespace SIE
 
 		bool IsDiskCache() const;
 		void SetDiskCache(bool value);
+		/** Reuses verified standalone bytecode, retrying source when device creation rejects a hit.
+		 * Callbacks run synchronously; only accepted bytecode with stable source inputs is persisted. */
+		bool CompileStandaloneShaderCached(
+			const Util::StandaloneShaderRequest& a_request,
+			const std::function<winrt::com_ptr<ID3DBlob>()>& a_compile,
+			const std::function<bool(ID3DBlob*)>& a_createShader);
 		void PersistCompiledShaderBlob(
 			ID3DBlob* a_shaderBlob,
 			bool a_developerMode,
@@ -474,7 +487,8 @@ namespace SIE
 			const Util::ContentHash::Hash128& a_compileStateDigest,
 			const Util::ContentHash::Hash128& a_packCompileStateDigest,
 			const Util::ContentHash::Hash128& a_sourceDigest,
-			uint64_t a_diskCacheGeneration);
+			uint64_t a_diskCacheGeneration,
+			bool a_flushManifest = false);
 		void SetSaveLoadDiskPersistenceBlocked(bool a_blocked);
 		void DeleteDiskCache();
 		void ValidateDiskCache();

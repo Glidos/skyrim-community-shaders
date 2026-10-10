@@ -2,11 +2,25 @@
 
 #include <cstdint>
 #include <d3d11.h>
+#include <d3dcommon.h>
+#include <filesystem>
+#include <span>
 #include <utility>
 #include <vector>
 
 namespace Util
 {
+	/** Captured compiler inputs borrowed only for one synchronous standalone request. */
+	struct StandaloneShaderRequest
+	{
+		std::filesystem::path source;
+		std::span<const D3D_SHADER_MACRO> macros;
+		const char* profile = nullptr;
+		const char* entryPoint = "main";
+		uint32_t flags = 0;
+		bool developerMode = false;
+	};
+
 	/** @brief Optional QPC accumulator separating compiler and device creation cost. */
 	struct ShaderCompileTiming
 	{

@@ -3603,6 +3603,7 @@ if(BUILD_CONTROLLER_TESTS)
     add_controller_test(runtime_toggle_test RuntimeToggle tests/runtime_toggle_test.cpp)
     include("${PROJECT_SOURCE_DIR}/tests/volumetric_lighting_composite.cmake")
     include("${PROJECT_SOURCE_DIR}/tests/shader_include.cmake")
+    include("${PROJECT_SOURCE_DIR}/tests/standalone_shader_cache.cmake")
     add_controller_test(
         vr_depth_culling_enable_policy_test
         VRDepthCullingEnablePolicy

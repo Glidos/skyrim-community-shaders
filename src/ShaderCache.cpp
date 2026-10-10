@@ -36,6 +36,7 @@
 #include "Utils/GenerationClaim.h"
 #include "Utils/ShaderCacheManifest.h"
 #include "Utils/ShaderCachePack.h"
+#include "Utils/ShaderCompiler.h"
 #include "Utils/ShaderDefines.h"
 #include "Utils/ShaderInclude.h"
 #include "Utils/ShaderSourceProvenance.h"
@@ -527,6 +528,7 @@ namespace SIE
 		std::atomic<uint64_t> g_manifestWriteCount = 0;
 		std::atomic<uint64_t> g_diskCacheGeneration = 0;
 		std::shared_mutex g_diskCacheMutationMutex;
+		std::mutex g_standaloneCacheIOMutex;
 
 		uint64_t GetDiskCacheGeneration()
 		{
@@ -926,10 +928,11 @@ namespace SIE
 			bool a_developerMode,
 			const std::wstring& a_diskPath,
 			const std::filesystem::path& a_shaderPath,
-			const Util::ContentHash::Hash128& a_compileStateDigest)
+			const Util::ContentHash::Hash128& a_compileStateDigest,
+			std::optional<Util::ContentHash::Hash128> a_sourceDigest = std::nullopt)
 		{
 			try {
-				const auto identity = BuildShaderPackIdentity(a_diskPath, a_shaderPath, a_compileStateDigest);
+				const auto identity = BuildShaderPackIdentity(a_diskPath, a_shaderPath, a_compileStateDigest, a_sourceDigest);
 				if (!identity)
 					return nullptr;
 				std::string error;
@@ -1111,6 +1114,9 @@ namespace SIE
 			uint64_t a_diskCacheGeneration)
 		{
 			std::shared_lock lock{ g_diskCacheMutationMutex };
+			std::unique_lock standaloneLock{ g_standaloneCacheIOMutex, std::defer_lock };
+			if (a_diskPath.starts_with(L"Data/ShaderCache/Standalone/"))
+				standaloneLock.lock();
 			if (a_diskCacheGeneration != GetDiskCacheGeneration()) {
 				logger::debug(
 					"Skipped stale shader-cache write to {} after a cache transition",
@@ -4002,6 +4008,121 @@ namespace SIE
 			AdvanceDiskCacheGeneration();
 	}
 
+	namespace
+	{
+		struct StandaloneCompileKey
+		{
+			std::wstring diskPath;
+			Util::ContentHash::Hash128 packDigest;
+			Util::ContentHash::Hash128 looseDigest;
+		};
+
+		StandaloneCompileKey BuildStandaloneCompileKey(const Util::StandaloneShaderRequest& request)
+		{
+			const auto captured = CaptureGlobalCompileState();
+			const auto inputs = nlohmann::json::array({ "standalone-v1", request.source.lexically_normal().generic_string(),
+														  request.profile, request.entryPoint, request.flags })
+			                        .dump();
+			const auto packDigest = Util::ContentHash::CombineHashes(
+				Util::ShaderDefines::CompileStateDigest(captured.digest, request.macros),
+				Util::ContentHash::HashString(inputs));
+			const auto hash = packDigest.ToHex();
+			const auto diskPath = std::format(L"Data/ShaderCache/Standalone/{}.cso", std::wstring(hash.begin(), hash.end()));
+			const auto compatibility = CSX::Api::GetShaderCompatibilityRequirementSet(
+				GetShaderPackFamily(diskPath), request.source.string());
+			return {
+				diskPath, packDigest,
+				Util::ContentHash::CombineHashes(packDigest, Util::ContentHash::HashString(compatibility.canonical))
+			};
+		}
+	}
+
+	bool ShaderCache::CompileStandaloneShaderCached(
+		const Util::StandaloneShaderRequest& request,
+		const std::function<winrt::com_ptr<ID3DBlob>()>& compile,
+		const std::function<bool(ID3DBlob*)>& createShader)
+	{
+		if (request.source.empty() || !request.profile || !*request.profile ||
+			!request.entryPoint || !*request.entryPoint || !compile || !createShader)
+			return false;
+
+		const auto diskGeneration = GetDiskCacheGeneration();
+		const auto taskGeneration = compilationSet.generation.load(std::memory_order_acquire);
+		std::optional<StandaloneCompileKey> key;
+		winrt::com_ptr<ID3DBlob> cached;
+		std::optional<Util::ContentHash::Hash128> cachedDigest;
+		try {
+			if (IsDiskCacheActive()) {
+				key = BuildStandaloneCompileKey(request);
+				if (IsSkipUnchangedShaders()) {
+					// Standalone resets must see edits even before file-watcher invalidation.
+					cachedDigest = GetShaderContentDigest(request.source, ShaderSourceRoot(), true);
+					std::shared_lock diskLock{ g_diskCacheMutationMutex };
+					// Bytecode and its manifest identity must come from the same publication.
+					std::lock_guard standaloneLock{ g_standaloneCacheIOMutex };
+					if (cachedDigest && diskGeneration == GetDiskCacheGeneration() && IsDiskCacheActive()) {
+						if (auto* store = GetShaderPackStore(request.developerMode)) {
+							cached.attach(LoadShaderBlobFromPack(*store, request.developerMode,
+								key->diskPath, request.source, key->packDigest, cachedDigest));
+						} else if (!ManagedShaderPackLayoutPresent()) {
+							const auto recorded = GetShaderCacheManifest().Get(GetManifestKey(key->diskPath));
+							if (recorded && *recorded == Util::ContentHash::CombineHashes(*cachedDigest, key->looseDigest).ToHex()) {
+								if (FAILED(D3DReadFileToBlob(key->diskPath.c_str(), cached.put()))) {
+									cached = nullptr;
+									logger::debug("Cannot read cached standalone shader {}; compiling from source", request.source.string());
+								}
+							}
+						}
+					}
+				}
+			}
+			if (cached && (diskGeneration != GetDiskCacheGeneration() || IsTaskStale(taskGeneration) ||
+							  !IsDiskCacheActive() || cachedDigest != GetShaderContentDigest(request.source, ShaderSourceRoot(), true)))
+				cached = nullptr;
+		} catch (const std::exception& error) {
+			cached = nullptr;
+			key.reset();
+			logger::warn("Standalone shader cache lookup failed for {}; compiling from source: {}", request.source.string(), error.what());
+		} catch (...) {
+			cached = nullptr;
+			key.reset();
+			logger::warn("Standalone shader cache lookup failed for {}; compiling from source", request.source.string());
+		}
+		if (cached) {
+			if (createShader(cached.get())) {
+				logger::debug("Loaded standalone shader from cache: {}", request.source.string());
+				return true;
+			}
+			logger::warn("Cached standalone shader was rejected by D3D; recompiling {}", request.source.string());
+		}
+
+		winrt::com_ptr<ID3DBlob> blob;
+		const auto sourceDigest = Util::ShaderSourceProvenance::CompileWithStableDigest(
+			[&](bool) {
+				return key && IsDiskCacheActive() ?
+			               GetShaderContentDigest(request.source, ShaderSourceRoot(), true) :
+			               std::nullopt;
+			},
+			[&] { blob = compile(); return bool(blob); },
+			[&](std::exception_ptr) {
+				logger::warn("Cannot verify standalone shader source {}; retaining bytecode in memory", request.source.string());
+			});
+		if (!blob || !createShader(blob.get()))
+			return false;
+
+		if (key && sourceDigest && !IsTaskStale(taskGeneration)) {
+			try {
+				PersistCompiledShaderBlob(blob.get(), request.developerMode, key->diskPath,
+					request.source, key->looseDigest, key->packDigest, *sourceDigest, diskGeneration, true);
+			} catch (const std::exception& error) {
+				logger::warn("Cannot persist standalone shader {}; retaining it in memory: {}", request.source.string(), error.what());
+			} catch (...) {
+				logger::warn("Cannot persist standalone shader {}; retaining it in memory", request.source.string());
+			}
+		}
+		return true;
+	}
+
 	void ShaderCache::PersistCompiledShaderBlob(
 		ID3DBlob* a_shaderBlob,
 		bool a_developerMode,
@@ -4010,7 +4131,8 @@ namespace SIE
 		const Util::ContentHash::Hash128& a_compileStateDigest,
 		const Util::ContentHash::Hash128& a_packCompileStateDigest,
 		const Util::ContentHash::Hash128& a_sourceDigest,
-		uint64_t a_diskCacheGeneration)
+		uint64_t a_diskCacheGeneration,
+		bool a_flushManifest)
 	{
 		if (!a_shaderBlob ||
 			!acceptDeferredDiskWrites.load(std::memory_order_acquire) ||
@@ -4019,7 +4141,7 @@ namespace SIE
 
 		const bool managedPack = GetShaderPackStore(a_developerMode) != nullptr;
 		if (!managedPack && !saveLoadDiskPersistenceBlocked.load(std::memory_order_acquire)) {
-			SaveShaderBlobToDisk(
+			const bool saved = SaveShaderBlobToDisk(
 				a_shaderBlob,
 				a_developerMode,
 				a_diskPath,
@@ -4028,6 +4150,8 @@ namespace SIE
 				a_packCompileStateDigest,
 				a_sourceDigest,
 				a_diskCacheGeneration);
+			if (saved && a_flushManifest)
+				FlushShaderCacheManifest();
 			return;
 		}
 
