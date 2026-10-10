@@ -221,7 +221,8 @@ namespace
 		BeginFrame(false);
 		Draw(vr);
 		RequireLocationPairs();
-		Require(controls.size() == 4 && text.empty(), "Info exposes policy controls or extra widgets");
+		Require(controls.size() == 6 && text == std::vector<std::string>{ "Culling Method" },
+			"Normal logging must expose both culling methods");
 		Require(!controls[1].disabled && !controls[3].disabled, "Default location sliders should be enabled");
 		Require(vr.settings.clampCalls == 0, "Drawing unchanged Info settings modified settings");
 
@@ -259,28 +260,29 @@ namespace
 		Require(!vr.nativeEnabled && vr.nativeExtent == 42.0f, "Interior retained exterior engine values");
 	}
 
-	void TestDebugSelectionSurvivesInfo()
+	void TestMethodSelectionIndependentOfLogging()
 	{
 		VR vr;
 		BeginFrame(true);
 		Draw(vr);
 		RequireLocationPairs();
 		Require(controls.size() == 6 && text == std::vector<std::string>{ "Culling Method" },
-			"Debug should expose exactly Advanced and Legacy policy controls");
+			"Both logging modes should expose Advanced and Legacy controls");
 		Require(controls[4].kind == "radio" && controls[4].label == "Advanced (Default)" && controls[4].selected &&
 					controls[5].kind == "radio" && controls[5].label == "Legacy" && !controls[5].selected,
-			"Debug policy labels or default selection are incorrect");
+			"Culling method labels or default selection are incorrect");
 
-		BeginFrame(true);
+		BeginFrame(false);
 		radioClick = "Legacy";
 		Draw(vr);
 		Require(vr.settings.DepthCullingLegacyMode && vr.GetDepthCullingMode() == VRDepthCullingTemporal::Mode::Legacy &&
 					VRDepthCullingTemporal::publishedMode == VRDepthCullingTemporal::Mode::Legacy,
-			"Debug Legacy click did not publish the production mode");
+			"Normal logging Legacy click did not publish the production mode");
 		const auto publications = VRDepthCullingTemporal::modePublications;
 		BeginFrame(false);
 		Draw(vr);
-		Require(controls.size() == 4 && text.empty(), "Info exposed the selected Legacy policy controls");
+		Require(controls.size() == 6 && !controls[4].selected && controls[5].selected,
+			"Normal logging must retain visible Legacy selection");
 		Require(vr.settings.DepthCullingLegacyMode && vr.GetDepthCullingMode() == VRDepthCullingTemporal::Mode::Legacy &&
 					VRDepthCullingTemporal::publishedMode == VRDepthCullingTemporal::Mode::Legacy &&
 					VRDepthCullingTemporal::modePublications == publications,
@@ -289,19 +291,19 @@ namespace
 		BeginFrame(true);
 		Draw(vr);
 		Require(!controls[4].selected && controls[5].selected, "Returning to Debug lost the persisted Legacy selection");
-		BeginFrame(true);
+		BeginFrame(false);
 		radioClick = "Advanced (Default)";
 		Draw(vr);
 		Require(!vr.settings.DepthCullingLegacyMode && vr.GetDepthCullingMode() == VRDepthCullingTemporal::Mode::Balanced &&
 					VRDepthCullingTemporal::publishedMode == VRDepthCullingTemporal::Mode::Balanced,
-			"Debug Advanced click did not restore the default policy");
+			"Normal logging Advanced click did not restore the default policy");
 	}
 }
 
 int main()
 {
 	TestInfoControlsAndIndependentEdits();
-	TestDebugSelectionSurvivesInfo();
+	TestMethodSelectionIndependentOfLogging();
 	std::puts("Depth culling production UI tests passed");
 	return 0;
 }

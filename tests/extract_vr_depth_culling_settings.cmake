@@ -23,7 +23,7 @@ extract_between("${_header}"
     _settings
 )
 extract_between("${_source}"
-    "\tvoid DrawDepthCullingSettings("
+    "\tvoid DrawDepthCullingSettings(VR& a_vr, const char* a_id)\n\t{"
     "\n}\n\nvoid VR::DrawPerformanceSettings("
     _draw
 )

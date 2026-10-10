@@ -1100,7 +1100,8 @@ void VR::DrawOverlay()
 namespace
 {
 	void DrawControllerInputInstructions();
-	void DrawGeneralVRSettings();
+	void DrawControlsSettings();
+	void DrawDepthCullingSettings(VR& a_vr, const char* a_id);
 	void DrawMenuSettings();
 	void DrawMouseSettings();
 	void DrawStereoSettings();
@@ -1128,13 +1129,12 @@ void VR::DrawSettings()
 	if (pendingFovTabSelection)
 		MenuUI::SettingsPage::Select("VR", "fov");
 	MenuUI::SettingsPage page("VR", {
-										{ "general", "General", "Choose navigation and visibility behavior.", "Navigation and visibility", true, true, "Set up view and interaction" },
-										{ "layout", "Menu", "Choose headset menu placement and presentation.", "Headset placement and scale", true, true, nullptr },
-										{ "input", "Input", "Refine pointer speed and controller interaction.", "Pointer response and instructions", true, true, "Refine interaction" },
-										{ "fov", "FOV", "Choose the area to render, then refine its edges.", "Foveated area and edges", true, true, nullptr },
+										{ "fov", "FOV", "Choose the area to render, then refine its edges.", "Foveated area and edges", true, true, "Set up rendering" },
 										{ "fov-effects", "FOV effects", "Choose which effects use the shared FOV mask.", "Effect coverage and detail budgets", true, true, nullptr },
-										{ "stereo", "Stereo", "Refine the appearance shared between your eyes.", "Shared stereo appearance", true, true, "Balance stereo appearance" },
-										{ "bindings", "Bindings", "Choose controller shortcuts.", "Controller shortcuts", openVRInfo.isCompatible, true, "Refine input" },
+										{ "depth-culling", "Depth culling", "Choose visibility checks for exterior and interior objects.", "Object visibility and culling method", true, true, "Balance visibility and appearance" },
+										{ "stereo", "Stereo", "Refine the appearance shared between your eyes.", "Shared stereo appearance", true, true, nullptr },
+										{ "layout", "Menu", "Choose menu placement, presentation and desktop behaviour.", "Headset placement and desktop settings", true, true, "Set up interaction" },
+										{ "controls", "Controls", "Choose navigation, pointer response and controller shortcuts.", "Navigation, pointer and shortcuts", true, true, nullptr, nullptr, nullptr, openVRInfo.isCompatible },
 										{ "diagnostics", "Diagnostics", "Inspect headset and controller diagnostics.", "Headset and controller state", true, false, nullptr },
 									});
 
@@ -1142,19 +1142,12 @@ void VR::DrawSettings()
 	if (!menu)
 		return;
 
-	// General Settings Tab
-	if (page.Is("general")) {
-		{
-			DrawGeneralVRSettings();
-		}
-	}
-
 	if (page.Is("layout"))
 		DrawMenuSettings();
-	if (page.Is("input")) {
-		DrawMouseSettings();
-		DrawControllerInputInstructions();
-	}
+	if (page.Is("controls"))
+		DrawControlsSettings();
+	if (page.Is("depth-culling"))
+		DrawDepthCullingSettings(*this, "DepthCullingSettings");
 
 	if (page.Is("fov")) {
 		{
@@ -1175,16 +1168,6 @@ void VR::DrawSettings()
 		}
 	}
 
-	// Key Bindings Tab
-	if (openVRInfo.isCompatible) {
-		if (page.Is("bindings")) {
-			{
-				DrawKeyBindings();
-			}
-		}
-	}
-
-	// Debug Tab (existing debug functionality)
 	if (page.Is("diagnostics")) {
 		{
 			DrawDebugSection();
@@ -1378,28 +1361,26 @@ namespace
 			ImGui::EndTable();
 		}
 
-		if (globals::state && globals::state->IsDeveloperMode()) {
-			ImGui::TextUnformatted("Culling Method");
-			auto mode = a_vr.GetDepthCullingMode();
-			if (ImGui::BeginTable("##TemporalPolicy", 2, ImGuiTableFlags_SizingStretchSame)) {
-				ImGui::TableNextColumn();
-				if (Util::Widgets::RadioButton("Advanced (Default)", mode == VRDepthCullingTemporal::Mode::Balanced)) {
-					mode = VRDepthCullingTemporal::Mode::Balanced;
-					a_vr.SetDepthCullingMode(mode);
-				}
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted("Recover objects that may become visible as you move your head. Keeps this selection after leaving Debug mode.");
-				}
-				ImGui::TableNextColumn();
-				if (Util::Widgets::RadioButton("Legacy", mode == VRDepthCullingTemporal::Mode::Legacy)) {
-					mode = VRDepthCullingTemporal::Mode::Legacy;
-					a_vr.SetDepthCullingMode(mode);
-				}
-				if (auto _tt = Util::HoverTooltipWrapper()) {
-					ImGui::TextUnformatted("Use native visibility without temporal recovery. Leaving Debug mode keeps Legacy; save settings to keep it after restart.");
-				}
-				ImGui::EndTable();
+		ImGui::TextUnformatted("Culling Method");
+		auto mode = a_vr.GetDepthCullingMode();
+		if (ImGui::BeginTable("##TemporalPolicy", 2, ImGuiTableFlags_SizingStretchSame)) {
+			ImGui::TableNextColumn();
+			if (Util::Widgets::RadioButton("Advanced (Default)", mode == VRDepthCullingTemporal::Mode::Balanced)) {
+				mode = VRDepthCullingTemporal::Mode::Balanced;
+				a_vr.SetDepthCullingMode(mode);
 			}
+			if (auto _tt = Util::HoverTooltipWrapper()) {
+				ImGui::TextUnformatted("Recover objects that may become visible as you move your head. Save settings to keep this selection after restart.");
+			}
+			ImGui::TableNextColumn();
+			if (Util::Widgets::RadioButton("Legacy", mode == VRDepthCullingTemporal::Mode::Legacy)) {
+				mode = VRDepthCullingTemporal::Mode::Legacy;
+				a_vr.SetDepthCullingMode(mode);
+			}
+			if (auto _tt = Util::HoverTooltipWrapper()) {
+				ImGui::TextUnformatted("Use native visibility without temporal recovery. Save settings to keep this selection after restart.");
+			}
+			ImGui::EndTable();
 		}
 
 		if (changed) {
@@ -1767,17 +1748,17 @@ namespace
 		}
 	}
 
-	void DrawGeneralVRSettings()
+	void DrawControlsSettings()
 	{
-		auto& vr = globals::features::vr;
-		DrawCSMenuNavigationSettings();
-		DrawKeepDesktopWindowFocusedForVRMenuSetting();
-		DrawStabilizeRenderScaleDesktopMirrorSetting();
-		ImGui::Separator();
-		MenuUI::SectionHeading("Visibility");
-		{
-			DrawDepthCullingSettings(vr, "GeneralSettings");
+		if (!globals::features::vr.openVRInfo.isCompatible) {
+			ImGui::TextDisabled("Controller controls require a compatible VR runtime.");
+			return;
 		}
+		DrawCSMenuNavigationSettings();
+		DrawMouseSettings();
+		if (ImGui::CollapsingHeader("Controller shortcuts"))
+			DrawKeyBindings();
+		DrawControllerInputInstructions();
 	}
 
 	void DrawMenuLayoutUnlockSetting()
@@ -1791,12 +1772,10 @@ namespace
 		}
 	}
 
-	void DrawMenuSettings()
+	void DrawHeadsetMenuSettings()
 	{
 		auto& vr = globals::features::vr;
 		auto& settings = vr.settings;
-		if (!CanConfigureMenuLayout())
-			return;
 		MenuUI::SectionHeading("Headset placement");
 		{
 			DrawMenuLayoutUnlockSetting();
@@ -1865,6 +1844,16 @@ namespace
 				ImGui::Text("In-scene draws into submitted eye textures and may appear in desktop VR mirrors.");
 			}
 		}
+	}
+
+	void DrawMenuSettings()
+	{
+		if (!CanConfigureMenuLayout())
+			return;
+		DrawHeadsetMenuSettings();
+		MenuUI::SectionHeading("Desktop");
+		DrawKeepDesktopWindowFocusedForVRMenuSetting();
+		DrawStabilizeRenderScaleDesktopMirrorSetting();
 	}
 
 	void DrawMouseSettings()

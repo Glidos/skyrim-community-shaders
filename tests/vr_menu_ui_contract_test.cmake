@@ -32,8 +32,26 @@ assert_section_contains(
 assert_section_contains(
     "if (!CanConfigureMenuLayout())"
     "Util::Widgets::SliderFloat(\"Mouse Speed\""
-    "DrawMenuLayoutUnlockSetting();"
+    "DrawHeadsetMenuSettings();"
     "VR settings UI"
+)
+assert_section_contains(
+    "void DrawHeadsetMenuSettings()\n\t{"
+    "void DrawMenuSettings()\n\t{"
+    "DrawMenuLayoutUnlockSetting();"
+    "headset layout controls"
+)
+assert_section_contains(
+    "void DrawMenuSettings()\n\t{"
+    "void DrawMouseSettings()\n\t{"
+    "DrawKeepDesktopWindowFocusedForVRMenuSetting();"
+    "desktop menu controls"
+)
+assert_section_contains(
+    "void DrawMenuSettings()\n\t{"
+    "void DrawMouseSettings()\n\t{"
+    "DrawStabilizeRenderScaleDesktopMirrorSetting();"
+    "desktop mirror controls"
 )
 assert_section_contains(
     "float VR::GetEffectiveMenuScale() const"

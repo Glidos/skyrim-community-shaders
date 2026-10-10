@@ -66,7 +66,7 @@ namespace
 			ImGui::TextUnformatted("Hide Performance Overlay:");
 			ImGui::SameLine();
 			Util::DrawButtonCombo(vrSettings.VROverlayCloseKeys, true);
-			ImGui::TextDisabled("Configure these actions under VR > Bindings.");
+			ImGui::TextDisabled("Configure these actions under VR > Controls > Controller shortcuts.");
 			return;
 		}
 

@@ -385,7 +385,7 @@ void SettingsTabRenderer::RenderKeybindingsTab(
 		"Neural Rendering Toggle Key:", settings.NeuralRenderingToggleKey,
 		state.settingNeuralRenderingToggleKey, "Change##NeuralRenderingToggle");
 	if (auto tooltip = Util::HoverTooltipWrapper())
-		ImGui::TextUnformatted("Toggle NR without losing settings. Off removes NR rendering cost. Requires the NR DLL; unbound by default. Controller bindings: VR > Bindings.");
+		ImGui::TextUnformatted("Toggle NR without losing settings. Off removes NR rendering cost. Requires the NR DLL; unbound by default. Controller bindings: VR > Controls > Controller shortcuts.");
 
 	Util::InputComboWidget(
 		"Skip Compilation Key:",

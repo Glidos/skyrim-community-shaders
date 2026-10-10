@@ -408,8 +408,9 @@ void ScreenSpaceGI::DrawSettings()
 	if (!page.Is("overview") && !page.Is("performance") && !page.Is("profiling")) {
 		if (!ShadersOK())
 			Util::Text::Error("Compute shaders failed to compile!");
-		Util::Widgets::Checkbox("Advanced options", &showAdvanced);
 	}
+	if (page.Is("coverage") || page.Is("quality") || page.Is("look") || page.Is("indirect") || page.Is("smoothing"))
+		Util::Widgets::Checkbox("Advanced options", &showAdvanced);
 	if (page.Is("coverage") && !isVR) {
 		auto guard = Util::DisableGuard(!settings.Enabled);
 		Util::Widgets::Checkbox("Vanilla SSAO", &settings.EnableVanillaSSAO);
