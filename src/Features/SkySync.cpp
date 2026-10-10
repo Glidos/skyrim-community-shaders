@@ -453,7 +453,7 @@ void SkySync::ProcessMoon(const RE::Moon* moon, const float time, const Caster t
 	directions[static_cast<int>(type)] = { 0.0f, 0.0f, 1.0f };
 	rawDirections[static_cast<int>(type)] = { 0.0f, 0.0f, -1.0f };
 
-	if (!moon)
+	if (!moon || !moon->root || !moon->moonMesh)
 		return;
 
 	const auto dir = moon->root->local.rotate.GetVectorY();
