@@ -31,6 +31,7 @@ file(
 extract_between("${_source}" "uint ClampStableSliceCount(" "void ApplyOcclusionCornerFrustum(" _probe_policy)
 extract_between("${_source}" "bool ShouldRunPeriodicUpdate(" "void ApplyPlatformDefaults(" _cadence)
 extract_between("${_source}" "void Skylighting::QueueResetSkylighting(" "void Skylighting::SetPerformanceCostMeasurementEnabled(" _lifecycle)
+extract_between("${_source}" "void Skylighting::ClearShaderCache()" "void Skylighting::CompileComputeShaders()" _reload)
 extract_between("${_source}" "bool Skylighting::HasProbeUpdateResources()" "void Skylighting::PostPostLoad()" _probe_pass)
 extract_between("${_source}" "void Skylighting::SetupResources()" "void Skylighting::SetupRenderTargetResources()" _resources)
 extract_between("${_source}" "void Skylighting::ApplyProbeGridQuality()" "void Skylighting::QueueResetSkylighting(" _grid)
@@ -39,5 +40,5 @@ extract_between("${_source}" "const char* Skylighting::GetPerformanceCostMeasure
 extract_between("${_source}" "void Skylighting::SetupRenderTargetResources()" "\n\tdelete texOcclusion;" _target_policy)
 file(
     WRITE "${OUTPUT_DIRECTORY}/skylighting_lifecycle_under_test.h"
-    "${_probe_policy}\n${_cadence}\n${_lifecycle}\n${_probe_pass}\n${_resources}\n${_grid}\n${_wait}\n${_target_policy}\n(void)renderer;\n}\n"
+    "${_probe_policy}\n${_cadence}\n${_reload}\n${_lifecycle}\n${_probe_pass}\n${_resources}\n${_grid}\n${_wait}\n${_target_policy}\n(void)renderer;\n}\n"
 )

@@ -1025,6 +1025,7 @@ bool Skylighting::HasCurrentShadowData() const
 
 void Skylighting::ClearShaderCache()
 {
+	QueueResetSkylighting();
 	probeUpdateCompute = nullptr;
 
 	CompileComputeShaders();

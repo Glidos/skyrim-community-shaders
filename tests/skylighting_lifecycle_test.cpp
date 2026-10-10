@@ -337,7 +337,14 @@ struct Skylighting
 	void ApplyProbeGridQuality();
 	const char* GetPerformanceCostMeasurementWaitText() const;
 	unsigned compilations = 0;
-	void CompileComputeShaders() { ++compilations; }
+	std::function<void()> compile;
+	void ClearShaderCache();
+	void CompileComputeShaders()
+	{
+		++compilations;
+		if (compile)
+			compile();
+	}
 	Texture3D* texProbeArray = nullptr;
 	Texture3D* texAccumFramesArray = nullptr;
 	Texture3D* texShadowBitmask = nullptr;
@@ -435,6 +442,42 @@ struct Fixture
 int main()
 try {
 	unsigned scenarios = 0;
+	for (unsigned outcome = 0; outcome < 3; ++outcome) {
+		Fixture f;
+		f.Ready();
+		f.Publish();
+		Require(f.published.Enabled, "fixture must start with usable probe history");
+		const auto clears = f.context.clearCount;
+		f.feature.compile = [&] {
+			Require(f.feature.HasPendingReset(), "shader reload must invalidate history before compiling");
+			Require(!f.feature.probeUpdateCompute, "shader reload must release the old compute shader");
+			if (outcome == 2)
+				throw std::runtime_error("injected shader compilation failure");
+			if (outcome == 0)
+				f.feature.probeUpdateCompute.value = &f.compute;
+		};
+		bool threw = false;
+		try {
+			f.feature.ClearShaderCache();
+		} catch (const std::runtime_error& e) {
+			Require(std::string(e.what()) == "injected shader compilation failure", "shader reload must only propagate the injected compile failure");
+			threw = true;
+		}
+		Require(threw == (outcome == 2), "shader reload must preserve compilation failure behavior");
+		Require(f.feature.compilations == 1 && f.feature.HasPendingReset(), "every reload outcome must retain queued invalidation");
+		Require(f.context.clearCount == clears && f.context.dispatchCount == 0, "shader reload must leave GPU history work to the render thread");
+		f.feature.EarlyPrepass();
+		Require(f.context.clearCount == clears + 4 && !f.feature.HasPendingReset(), "render thread must clear the invalidated history");
+		Require(f.feature.needsOcclusionRefresh && !f.published.Enabled, "render reset must revoke published probes until fresh capture");
+		f.feature.Prepass();
+		Require(f.context.dispatchCount == 0, "reloaded probes must not dispatch before fresh capture");
+		f.feature.needsOcclusionRefresh = false;
+		f.Publish();
+		f.feature.Prepass();
+		Require(f.published.Enabled == (outcome == 0), "fresh capture must only expose successfully compiled probes");
+		Require(f.context.dispatchCount == (outcome == 0 ? 1u : 0u), "failed shader reloads must keep probe dispatch disabled");
+		++scenarios;
+	}
 	for (unsigned failure = 1; failure <= 16; ++failure) {
 		Fixture f;
 		f.OwnResources();
