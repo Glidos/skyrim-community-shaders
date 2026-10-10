@@ -49559,6 +49559,7 @@ bool Upscaling::EncodeSubmitStageVRInputs(ID3D11Resource* colorSource, ID3D11Res
 			const bool usePeripheryTAAPath = IsPeripheryTAAPathActive(upscaleMethod);
 			std::array<FoveatedEncodeRegion, 2> regions{};
 			if (GetFoveatedEncodeRegions(inputWidthPerEye, inputHeight, outputWidthPerEye, outputHeight, upscaleMethod, usePeripheryTAAProfile, usePeripheryTAAPath, regions)) {
+				CS_GPU_PASS("FoveatedRender::EncodeUpscalingTextures");
 				bool allDispatched = true;
 				for (uint32_t eye = 0; eye < 2; ++eye) {
 					if ((eyeMask & (1u << eye)) == 0)
@@ -66717,6 +66718,7 @@ void Upscaling::Upscale()
 				const bool usePeripheryTAAPath = IsPeripheryTAAPathActive(upscaleMethod);
 				std::array<FoveatedEncodeRegion, 2> regions{};
 				if (GetFoveatedEncodeRegions(eyeWidthIn, eyeHeightIn, eyeWidthOut, eyeHeightOut, upscaleMethod, usePeripheryTAAProfile, usePeripheryTAAPath, regions)) {
+					CS_GPU_PASS("FoveatedRender::EncodeUpscalingTextures");
 					for (uint32_t eye = 0; eye < 2; ++eye) {
 						dispatchEyeEncode(eye, regions[eye].minX, regions[eye].minY, regions[eye].maxX, regions[eye].maxY);
 					}

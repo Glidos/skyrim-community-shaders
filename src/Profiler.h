@@ -18,7 +18,12 @@
 class Profiler
 {
 public:
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	// Repeated draw scopes need more query slots than the unique pass catalog.
+	static constexpr uint32_t kMaxTimers = 512;
+#else
 	static constexpr uint32_t kMaxTimers = 128;
+#endif
 	static constexpr uint32_t kMaxDetailTimers = 64;
 	static constexpr uint32_t kFrameLatency = 3;
 	static constexpr uint32_t kHistorySize = 300;

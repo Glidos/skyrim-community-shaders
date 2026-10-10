@@ -122,6 +122,8 @@ void Profiler::Initialize(ID3D11Device* device, ID3D11DeviceContext* a_context, 
 		D3D11_QUERY_DESC disjointDesc{};
 		disjointDesc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
 		device->CreateQuery(&disjointDesc, frame.disjoint.put());
+		if (frame.disjoint)
+			Util::SetResourceName(frame.disjoint.get(), "Profiler::Disjoint");
 		if (flatTiming) {
 			D3D11_QUERY_DESC desc{ D3D11_QUERY_TIMESTAMP, 0 };
 			device->CreateQuery(&desc, frame.wholeFrameBegin.put());
@@ -139,6 +141,10 @@ void Profiler::Initialize(ID3D11Device* device, ID3D11DeviceContext* a_context, 
 			tsDesc.Query = D3D11_QUERY_TIMESTAMP;
 			device->CreateQuery(&tsDesc, timer.begin.put());
 			device->CreateQuery(&tsDesc, timer.end.put());
+			if (timer.begin)
+				Util::SetResourceName(timer.begin.get(), "Profiler::Pass Begin");
+			if (timer.end)
+				Util::SetResourceName(timer.end.get(), "Profiler::Pass End");
 		}
 		frame.cpuTimers.reserve(kMaxTimers);
 		ResetFrameState(frame);

@@ -17,8 +17,7 @@ namespace Util
 	// Naming is observed here without linking the game's resource implementation.
 	void SetResourceName(ID3D11DeviceChild* resource, const char* format, ...)
 	{
-		if (!resource || (!std::string_view(format).starts_with("Profiler::Detail") &&
-							 !std::string_view(format).starts_with("Profiler::WholeFrame")))
+		if (!resource || !std::string_view(format).starts_with("Profiler::"))
 			throw std::runtime_error("profiler query missing shared resource naming");
 		if (std::exchange(failNextQueryName, false))
 			throw std::bad_alloc();

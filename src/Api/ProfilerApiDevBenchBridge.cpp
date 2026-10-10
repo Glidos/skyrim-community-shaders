@@ -6,11 +6,15 @@
 #	include "Api/ProfilerService.h"
 #	include "Api/ServiceFoundation.h"
 #	include "BuildProvenance.h"
+#	include "Globals.h"
+#	include "Profiler.h"
 
 #	include <DevBenchAPI.h>
 #	include <nlohmann/json.hpp>
 
+#	include <algorithm>
 #	include <atomic>
+#	include <cmath>
 #	include <exception>
 #	include <functional>
 #	include <limits>
@@ -31,6 +35,8 @@ namespace
 	using CSX::ProfilerAPI::Status;
 	using CSX::ProfilerAPI::TimerDescriptor001;
 	using CSX::ProfilerAPI::TimingDomain;
+	constexpr std::uint32_t kDevBenchSchemaRevision = 4;
+	constexpr std::uint32_t kExportTimerLimit = 128;
 	std::atomic_bool g_registered{ false };
 	std::mutex g_terminalEventMutex;
 	std::set<std::uint64_t> g_reportedTerminalCaptures;
@@ -38,7 +44,7 @@ namespace
 	CSX::Api::ServiceFoundation& Foundation()
 	{
 		static CSX::Api::ServiceFoundation foundation({ CSX::ProfilerAPI::ServiceName,
-			CSX::ProfilerAPI::ServiceMajor, CSX::ProfilerAPI::SourceServiceMinor, CSX::ProfilerAPI::SourceSchemaRevision });
+			CSX::ProfilerAPI::ServiceMajor, CSX::ProfilerAPI::SourceServiceMinor, kDevBenchSchemaRevision });
 		static std::once_flag metadataInitialized;
 		std::call_once(metadataInitialized, [&] {
 			foundation.SetServerMetadataProvider([] {
@@ -83,18 +89,106 @@ namespace
 
 	json ProgressJson(const CaptureProgress001& a_progress)
 	{
-		return {
+		json result{
 			{ "captureId", a_progress.captureId },
 			{ "state", CaptureStateName(a_progress.state) },
 			{ "requestedFrames", a_progress.requestedFrames },
 			{ "submittedFrames", a_progress.submittedFrames },
 			{ "resolvedFrames", a_progress.resolvedFrames },
 		};
+		result["quality"] = { { "available", false }, { "gpuComplete", false }, { "cpuComplete", false } };
+		if (globals::profiler) {
+			const auto progress = globals::profiler->GetBoundedCaptureProgress();
+			if (progress.sessionId == a_progress.captureId && progress.sessionId != 0) {
+				const bool completed = a_progress.state == CaptureState::kCompleted &&
+				                       a_progress.requestedFrames != 0 &&
+				                       a_progress.submittedFrames == a_progress.requestedFrames &&
+				                       a_progress.resolvedFrames == a_progress.requestedFrames;
+				result["quality"] = {
+					{ "available", true }, { "maxGpuScopesPerFrame", Profiler::kMaxTimers },
+					{ "invalidGpuFrames", progress.invalidGpuFrames },
+					{ "invalidCpuFrames", progress.invalidCpuFrames },
+					{ "gpuComplete", completed && progress.invalidGpuFrames == 0 },
+					{ "cpuComplete", completed && progress.invalidCpuFrames == 0 }
+				};
+			}
+		}
+		return result;
 	}
 
 	json ApiFailure(Status a_status)
 	{
 		return { { "_apiError", StatusName(a_status) }, { "_apiStatus", static_cast<std::uint32_t>(a_status) } };
+	}
+
+	json TimerJson(std::uint32_t a_index, const TimerDescriptor001& a_timer)
+	{
+		return { { "index", a_index }, { "name", a_timer.name ? a_timer.name : "" },
+			{ "hasGpu", a_timer.hasGpu != 0 }, { "hasCpu", a_timer.hasCpu != 0 },
+			{ "activeGpu", a_timer.activeGpu != 0 }, { "activeCpu", a_timer.activeCpu != 0 },
+			{ "gpu", { { "ms", a_timer.gpuMs }, { "topLevelMs", a_timer.gpuTopLevelMs },
+						 { "averageMs", a_timer.gpuAverageMs }, { "p95Ms", a_timer.gpuP95Ms },
+						 { "p99Ms", a_timer.gpuP99Ms }, { "historyCount", a_timer.gpuHistoryCount } } },
+			{ "cpu", { { "ms", a_timer.cpuMs }, { "averageMs", a_timer.cpuAverageMs },
+						 { "p95Ms", a_timer.cpuP95Ms }, { "p99Ms", a_timer.cpuP99Ms },
+						 { "historyCount", a_timer.cpuHistoryCount } } } };
+	}
+
+	json ExportCapture(const CSX::ProfilerAPI::Interface001& a_api, const json& a_args)
+	{
+		const auto captureId = a_args.at("captureId").get<std::uint64_t>();
+		CaptureProgress001 progress;
+		const auto status = a_api.GetCaptureProgress(a_api.context, captureId, &progress);
+		if (status != Status::kSuccess)
+			return ApiFailure(status);
+		if (progress.state != CaptureState::kCompleted && progress.state != CaptureState::kCancelled)
+			return ApiFailure(Status::kBusy);
+
+		const auto count = a_api.GetCaptureTimerCount(a_api.context, captureId);
+		const auto offset = a_args.value("offset", 0u);
+		const auto limit = a_args.value("limit", kExportTimerLimit);
+		if (offset > count)
+			return ApiFailure(Status::kInvalidArgument);
+		const auto end = offset + std::min(limit, count - offset);
+		json timers = json::array();
+		for (auto index = offset; index < end; ++index) {
+			TimerDescriptor001 timer;
+			const auto timerStatus = a_api.GetCaptureTimerDescriptor(a_api.context, captureId, index, &timer);
+			if (timerStatus != Status::kSuccess)
+				return ApiFailure(timerStatus);
+			auto entry = TimerJson(index, timer);
+			for (const auto domain : { TimingDomain::kCpu, TimingDomain::kGpu }) {
+				const auto key = domain == TimingDomain::kCpu ? "cpu" : "gpu";
+				const auto samples = domain == TimingDomain::kCpu ? timer.cpuHistoryCount : timer.gpuHistoryCount;
+				if (samples > Profiler::kHistorySize)
+					return ApiFailure(Status::kInternalError);
+				json history = json::array();
+				for (std::uint32_t ordinal = 0; ordinal < samples; ++ordinal) {
+					float value = 0.0f;
+					const auto sampleStatus = a_api.GetCaptureHistorySample(a_api.context, captureId, index, domain, ordinal, &value);
+					if (sampleStatus != Status::kSuccess)
+						return ApiFailure(sampleStatus);
+					if (!std::isfinite(value) || value < 0.0f)
+						return ApiFailure(Status::kInternalError);
+					history.push_back(value);
+				}
+				entry[key]["available"] = samples != 0;
+				entry[key]["samplesMs"] = std::move(history);
+				if (samples == 0) {
+					for (const auto metric : { "ms", "averageMs", "p95Ms", "p99Ms" })
+						entry[key][metric] = nullptr;
+					if (domain == TimingDomain::kGpu)
+						entry[key]["topLevelMs"] = nullptr;
+				}
+			}
+			timers.push_back(std::move(entry));
+		}
+		return { { "schema", "csx-profiler-capture-export-v1" }, { "captureId", captureId },
+			{ "timingSemantics", "gpu_cpu_self_time" }, { "unit", "ms" },
+			{ "historyOrder", "oldest_to_newest" }, { "historyHasEngineFrameIds", false },
+			{ "progress", ProgressJson(progress) }, { "catalogCount", count },
+			{ "offset", offset }, { "returnedCount", timers.size() },
+			{ "nextOffset", end < count ? json(end) : json(nullptr) }, { "timers", std::move(timers) } };
 	}
 
 	json ReadSnapshot(const CSX::ProfilerAPI::Interface001& a_api)
@@ -158,7 +252,7 @@ namespace
 		const bool known = action == "registry" || action == "snapshot" || action == "timers" || action == "history" ||
 		                   action == "set_enabled" || action == "clear_history" || action == "start_capture" ||
 		                   action == "capture_status" || action == "cancel_capture" || action == "events" || action == "acknowledge_events" ||
-		                   cpuView || action == "request_capture";
+		                   cpuView || action == "request_capture" || action == "capture_export";
 		if (!known)
 			return Foundation().MakeError(a_args, "unknown_action", "action is not supported", "validation", false, "action");
 
@@ -168,13 +262,14 @@ namespace
 				{ "service", CSX::ProfilerAPI::ServiceName },
 				{ "major", CSX::ProfilerAPI::ServiceMajor },
 				{ "minor", CSX::ProfilerAPI::SourceServiceMinor },
-				{ "schemaRevision", CSX::ProfilerAPI::SourceSchemaRevision },
+				{ "schemaRevision", kDevBenchSchemaRevision },
+				{ "nativeInterfaceSchemaRevision", CSX::ProfilerAPI::SourceSchemaRevision },
 				{ "timingSemantics", "gpu_cpu_self_time" },
 				{ "capabilities", CSX::ProfilerAPI::ServiceCapabilities | CSX::ProfilerAPI::kCapabilityIndependentCpu },
 				{ "mainThreadAffine", true },
 				{ "registryMainThreadAffine", false },
 				{ "capture", { { "minimumFrames", 1 }, { "maximumFrames", 300 }, { "singleActiveSession", true }, { "requiresEnabled", true } } },
-				{ "actions", json::array({ "registry", "snapshot", "timers", "history", "set_enabled", "clear_history", "start_capture", "capture_status", "cancel_capture", "events", "acknowledge_events", "request_capture", "cpu_snapshot", "cpu_timers", "cpu_history" }) },
+				{ "actions", json::array({ "registry", "snapshot", "timers", "history", "set_enabled", "clear_history", "start_capture", "capture_status", "cancel_capture", "events", "acknowledge_events", "request_capture", "cpu_snapshot", "cpu_timers", "cpu_history", "capture_export" }) },
 			};
 			return response;
 		}
@@ -194,8 +289,14 @@ namespace
 
 		if ((action == "start_capture") && (!a_args.contains("frameCount") || !a_args["frameCount"].is_number_unsigned()))
 			return Foundation().MakeError(a_args, "invalid_field", "frameCount must be an unsigned integer", "validation", false, "frameCount");
-		if ((action == "capture_status" || action == "cancel_capture") && (!a_args.contains("captureId") || !a_args["captureId"].is_number_unsigned()))
+		if ((action == "capture_status" || action == "cancel_capture" || action == "capture_export") && (!a_args.contains("captureId") || !a_args["captureId"].is_number_unsigned()))
 			return Foundation().MakeError(a_args, "invalid_field", "captureId must be an unsigned integer", "validation", false, "captureId");
+		if (action == "capture_export") {
+			if (a_args["captureId"].get<std::uint64_t>() == 0 ||
+				(a_args.contains("offset") && (!a_args["offset"].is_number_unsigned() || a_args["offset"].get<std::uint64_t>() > std::numeric_limits<std::uint32_t>::max())) ||
+				(a_args.contains("limit") && (!a_args["limit"].is_number_unsigned() || a_args["limit"].get<std::uint64_t>() == 0 || a_args["limit"].get<std::uint64_t>() > kExportTimerLimit)))
+				return Foundation().MakeError(a_args, "invalid_field", "capture_export requires a positive captureId, uint32 offset and limit 1-128", "validation", false);
+		}
 		if (cpuView && a_args.contains("captureId"))
 			return Foundation().MakeError(a_args, "invalid_field", "independent CPU views do not accept captureId", "validation", false, "captureId");
 		if (action == "request_capture") {
@@ -227,6 +328,8 @@ namespace
 				const auto status = sourceApi->RequestCapture(sourceApi->paired.context, sources);
 				return status == Status::kSuccess ? json{ { "requested", true }, { "mode", mode } } : ApiFailure(status);
 			}
+			if (action == "capture_export")
+				return ExportCapture(*api, a_args);
 			if (action == "snapshot")
 				return ReadSnapshot(*api);
 			if (action == "timers" || action == "cpu_timers") {
@@ -251,10 +354,7 @@ namespace
 					const std::string name = timer.name ? timer.name : "";
 					if (!prefix.empty() && !name.starts_with(prefix))
 						continue;
-					timers.push_back({ { "index", index }, { "name", name }, { "hasGpu", timer.hasGpu != 0 }, { "hasCpu", timer.hasCpu != 0 },
-						{ "activeGpu", timer.activeGpu != 0 }, { "activeCpu", timer.activeCpu != 0 },
-						{ "gpu", { { "ms", timer.gpuMs }, { "topLevelMs", timer.gpuTopLevelMs }, { "averageMs", timer.gpuAverageMs }, { "p95Ms", timer.gpuP95Ms }, { "p99Ms", timer.gpuP99Ms }, { "historyCount", timer.gpuHistoryCount } } },
-						{ "cpu", { { "ms", timer.cpuMs }, { "averageMs", timer.cpuAverageMs }, { "p95Ms", timer.cpuP95Ms }, { "p99Ms", timer.cpuP99Ms }, { "historyCount", timer.cpuHistoryCount } } } });
+					timers.push_back(TimerJson(index, timer));
 				}
 				json response{ { "captureId", captureId == 0 ? json(nullptr) : json(captureId) }, { "catalogCount", count }, { "returnedCount", timers.size() }, { "prefix", prefix }, { "timers", std::move(timers) } };
 				if (cpuView)
@@ -279,8 +379,11 @@ namespace
 					float value = 0.0f;
 					const auto sampleStatus = cpuView ? sourceApi->GetCpuHistorySample(api->context, timerIndex, sample, &value) : captureId != 0 ? api->GetCaptureHistorySample(api->context, captureId, timerIndex, domain, sample, &value) :
 					                                                                                                                                api->GetHistorySample(api->context, timerIndex, domain, sample, &value);
-					if (sampleStatus == Status::kSuccess)
-						samples.push_back(value);
+					if (sampleStatus != Status::kSuccess)
+						return ApiFailure(sampleStatus);
+					if (!std::isfinite(value) || value < 0.0f)
+						return ApiFailure(Status::kInternalError);
+					samples.push_back(value);
 				}
 				json response{ { "captureId", captureId == 0 ? json(nullptr) : json(captureId) }, { "timerIndex", timerIndex }, { "name", timer.name ? timer.name : "" }, { "domain", domainName }, { "historyCount", count }, { "offset", offset }, { "samplesMs", std::move(samples) } };
 				if (cpuView)
@@ -367,14 +470,14 @@ namespace CSX::Api::ProfilerApiDevBenchBridge
 			return;
 		}
 		const char* descriptor = R"({
-			"description":"Versioned CSX profiler API with paired snapshots and bounded captures, plus an independent CPU view. All timer values and histories are self time. snapshot/timers/history preserve their paired-frame semantics. cpu_snapshot/cpu_timers/cpu_history publish at each CPU capture frame boundary without waiting for GPU queries; use their own capturedFrameCount and publicationCount, and separate catalog indices. CPU views retain the last publication while idle and do not accept captureId. request_capture queues one next-frame request for mode cpu, gpu or both; requests combine, so another consumer or a bounded capture can require both sources. CPU-only requests issue no GPU timestamps unless another consumer requests GPU work. All inspection is non-mutating. Bounded captures and the legacy communityshaders.profiler tool remain unchanged.",
+			"description":"Versioned CSX profiler API with paired snapshots and bounded captures, plus an independent CPU view. All timer values and histories are self time. snapshot/timers/history preserve their paired-frame semantics. cpu_snapshot/cpu_timers/cpu_history publish at each CPU capture frame boundary without waiting for GPU queries; use their own capturedFrameCount and publicationCount, and separate catalog indices. CPU views retain the last publication while idle and do not accept captureId. request_capture queues one next-frame request for mode cpu, gpu or both; requests combine, so another consumer or a bounded capture can require both sources. CPU-only requests issue no GPU timestamps unless another consumer requests GPU work. capture_export returns a bounded page of both CPU/GPU histories from one completed or cancelled capture; offset/limit select up to 128 timers, nextOffset continues the frozen catalog. Missing histories have null statistics. Progress quality distinguishes resolved frames from complete timings; invalid GPU frames prohibit self-time comparison. All inspection is non-mutating. Bounded captures and the legacy communityshaders.profiler tool remain unchanged.",
 			"inputSchema":{"type":"object","required":["contractMajor","clientId","commandId","action"],"properties":{
 				"contractMajor":{"type":"integer","const":1},"clientId":{"type":"string","minLength":1,"maxLength":128},
 				"commandId":{"type":"string","minLength":1,"maxLength":128},"expectedBuildId":{"type":"string"},
-				"action":{"type":"string","enum":["registry","snapshot","timers","history","set_enabled","clear_history","start_capture","capture_status","cancel_capture","events","acknowledge_events","request_capture","cpu_snapshot","cpu_timers","cpu_history"]},
+				"action":{"type":"string","enum":["registry","snapshot","timers","history","set_enabled","clear_history","start_capture","capture_status","cancel_capture","events","acknowledge_events","request_capture","cpu_snapshot","cpu_timers","cpu_history","capture_export"]},
 				"mode":{"type":"string","enum":["cpu","gpu","both"],"default":"both","description":"Sources requested by request_capture for one next frame; concurrent requests combine."},
 				"prefix":{"type":"string"},"timerIndex":{"type":"integer","minimum":0},"domain":{"type":"string","enum":["gpu","cpu"],"description":"Timing domain for self-time history samples."},
-				"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":300},"enabled":{"type":"boolean"},
+				"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":300,"description":"History samples or export timer page size; capture_export accepts at most 128 timers."},"enabled":{"type":"boolean"},
 				"frameCount":{"type":"integer","minimum":1,"maximum":300},"clearHistory":{"type":"boolean"},"captureId":{"type":"integer","minimum":1},
 				"afterEventId":{"type":"integer","minimum":0},"throughEventId":{"type":"integer","minimum":0}
 			}}

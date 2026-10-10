@@ -10,8 +10,8 @@ namespace Util
 {
 	void SetResourceName(ID3D11DeviceChild* resource, const char* format, ...)
 	{
-		if (!resource || !std::string_view(format).starts_with("Profiler::Detail"))
-			throw std::runtime_error("detail query lacks a resource name");
+		if (!resource || !std::string_view(format).starts_with("Profiler::"))
+			throw std::runtime_error("profiler query lacks a resource name");
 	}
 }
 
