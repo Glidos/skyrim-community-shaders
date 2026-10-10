@@ -21,8 +21,10 @@
 #include "Menu/Fonts.h"
 #include "RE/B/BSOpenVR.h"
 #include "RE/B/BarterMenu.h"
+#include "RE/D/DialogueMenu.h"
 #include "RE/M/MapMenu.h"
 #include "RE/R/RaceSexMenu.h"
+#include "RE/S/StatsMenu.h"
 #include "RE/U/UIMessageQueue.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -53,6 +55,7 @@
 #include "Utils/D3DContextProtection.h"
 #include "Utils/FileSystem.h"
 #include "Utils/Game.h"
+#include "Utils/MenuLookup.h"
 #include "Utils/NormalizedCoordinates.h"
 #include "Utils/OpenCompositeInterop.h"
 #include "Utils/UI.h"
@@ -5678,7 +5681,7 @@ Outer boundary, shape, eye positions and feathering are inherited from FOV only.
 		auto ui = globals::game::ui;
 		return g_vrLoadingMenuOpenFromEvent.load(std::memory_order_acquire) ||
 		       (state && state->isLoadingMenuOpen) ||
-		       (ui && ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME));
+		       Util::IsMenuOpen<RE::LoadingMenu>(ui);
 	}
 
 	bool IsLoadingMenuPhysicallyOpen()
@@ -7048,7 +7051,7 @@ Outer boundary, shape, eye positions and feathering are inherited from FOV only.
 		auto state = globals::state;
 		auto ui = globals::game::ui;
 		return (state && state->isMainMenuOpen) ||
-		       (ui && ui->IsMenuOpen(RE::MainMenu::MENU_NAME));
+		       Util::IsMenuOpen<RE::MainMenu>(ui);
 	}
 
 	bool IsMainOrLoadingMenuContextActive()
@@ -7080,21 +7083,21 @@ Outer boundary, shape, eye positions and feathering are inherited from FOV only.
 
 	bool IsRaceSexMenuContextActive(RE::UI* a_ui)
 	{
-		return a_ui && a_ui->IsMenuOpen(RE::RaceSexMenu::MENU_NAME);
+		return Util::IsMenuOpen<RE::RaceSexMenu>(a_ui);
 	}
 
 	bool IsStatsMenuContextActive()
 	{
 		auto* ui = globals::game::ui;
 		return g_vrStatsMenuOpenFromEvent.load(std::memory_order_acquire) ||
-		       (ui && ui->IsMenuOpen("StatsMenu"));
+		       Util::IsMenuOpen<RE::StatsMenu>(ui);
 	}
 
 	bool IsDialogueMenuContextActive()
 	{
 		auto* ui = globals::game::ui;
 		return g_vrDialogueMenuOpenFromEvent.load(std::memory_order_acquire) ||
-		       (ui && ui->IsMenuOpen("Dialogue Menu"));
+		       Util::IsMenuOpen<RE::DialogueMenu>(ui);
 	}
 
 	void TrackVRFastTravelInteractionMenuLifecycle(const RE::MenuOpenCloseEvent* a_event)
@@ -7535,8 +7538,14 @@ Outer boundary, shape, eye positions and feathering are inherited from FOV only.
 		if (!a_ui)
 			return false;
 
-		for (const auto menuName : kSkyrimPresentationMenuNames) {
-			if (a_ui->IsMenuOpen(menuName))
+		static const auto menuNames = [] {
+			std::array<RE::BSFixedString, std::size(kSkyrimPresentationMenuNames)> names;
+			for (size_t index = 0; index < names.size(); ++index)
+				names[index] = kSkyrimPresentationMenuNames[index];
+			return names;
+		}();
+		for (const auto& menuName : menuNames) {
+			if (Util::IsMenuOpen(a_ui, menuName))
 				return true;
 		}
 
