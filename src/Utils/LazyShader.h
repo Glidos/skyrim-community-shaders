@@ -3,6 +3,7 @@
 #include "Utils/D3D.h"
 #include "Utils/Format.h"
 
+#include <initializer_list>
 #include <vector>
 #include <winrt/base.h>
 
@@ -45,6 +46,21 @@ namespace Util
 					Util::SetResourceName(shader.get(), a_name);
 			}
 			return shader.get();
+		}
+
+		/** @brief Accepts fixed macros without allocating on a cached or failed request. */
+		ShaderT* Get(
+			const wchar_t* a_path,
+			std::initializer_list<std::pair<const char*, const char*>> a_defines,
+			const char* a_target,
+			const char* a_entry = "main",
+			const char* a_name = nullptr,
+			ShaderCompileTiming* a_timing = nullptr)
+		{
+			if (shader || failed)
+				return shader.get();
+			return Get(a_path, std::vector<std::pair<const char*, const char*>>(a_defines),
+				a_target, a_entry, a_name, a_timing);
 		}
 
 		/** @brief Drops the cached shader and failure latch. */

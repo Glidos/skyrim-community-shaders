@@ -255,22 +255,10 @@ void VolumetricShadows::CopyShadowLightData()
 		return;
 	}
 
-	auto* downsampleMip0 = downsampleShadowMip0CS.Get(
-		L"Data\\Shaders\\VolumetricShadows\\DownsampleShadowCS.hlsl",
-		{ { "DOWNSAMPLE_SHADOW_MIP0", nullptr } }, "cs_5_0", "main",
-		"VolumetricShadows::DownsampleMip0CS");
-	auto* downsampleMip1 = downsampleShadowMip1CS.Get(
-		L"Data\\Shaders\\VolumetricShadows\\DownsampleShadowCS.hlsl",
-		{ { "DOWNSAMPLE_SHADOW_MIP1", nullptr } }, "cs_5_0", "main",
-		"VolumetricShadows::DownsampleMip1CS");
-	auto* blurHorizontal = blurShadowHorizontalCS.Get(
-		L"Data\\Shaders\\VolumetricShadows\\BlurShadowCS.hlsl",
-		{ { "BLUR_HORIZONTAL", nullptr } }, "cs_5_0", "main",
-		"VolumetricShadows::BlurHorizontalCS");
-	auto* blurVertical = blurShadowVerticalCS.Get(
-		L"Data\\Shaders\\VolumetricShadows\\BlurShadowCS.hlsl",
-		{ { "BLUR_VERTICAL", nullptr } }, "cs_5_0", "main",
-		"VolumetricShadows::BlurVerticalCS");
+	auto* downsampleMip0 = downsampleShadowMip0CS.get();
+	auto* downsampleMip1 = downsampleShadowMip1CS.get();
+	auto* blurHorizontal = blurShadowHorizontalCS.get();
+	auto* blurVertical = blurShadowVerticalCS.get();
 	if (!downsampleMip0 || !downsampleMip1 || !blurHorizontal || !blurVertical) {
 		SetSharedShadowMapSRV(context, shadowView);
 		SafeRelease(shadowView);
