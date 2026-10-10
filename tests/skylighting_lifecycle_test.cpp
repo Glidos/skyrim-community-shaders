@@ -323,12 +323,15 @@ struct Skylighting
 {
 #include "skylighting_buffer_under_test.h"
 	bool probeUpdateBufferEnabled = false;
+	bool probeUpdateShadowDataAvailable = false;
+	void ClearShadowHistory();
 	bool loaded = true;
 	void* resourceDevice = nullptr;
 	Texture2D* texOcclusion = nullptr;
 	View<ID3D11ComputeShader> probeUpdateCompute;
 	View<ID3D11SamplerState> comparisonSampler;
-	bool HasCurrentShadowData() const { return false; }
+	bool shadowAvailable = false;
+	bool HasCurrentShadowData() const { return shadowAvailable; }
 	bool HasProbeUpdateResources() const;
 	SkylightingCB GetCommonBufferData(bool inWorld);
 	void Prepass();
@@ -380,6 +383,7 @@ struct Fixture
 	Texture3D probes, confidence, mask, visibility, occlusion;
 	RecordingState state;
 	Renderer renderer;
+	Deferred deferred;
 	RE::Sky sky;
 	ID3D11ComputeShader compute;
 	ID3D11SamplerState sampler;
@@ -398,6 +402,9 @@ struct Fixture
 		globals::state = &state;
 		globals::game::renderer = &renderer;
 		globals::game::sky = &sky;
+		globals::deferred = &deferred;
+		deferred.directionalShadowLights = &occlusion;
+		renderer.data.depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM].depthSRV = &occlusion.srvObject;
 		feature.texOcclusion = &occlusion;
 		feature.probeUpdateCompute.value = &compute;
 		feature.comparisonSampler.value = &sampler;
@@ -476,6 +483,63 @@ try {
 		f.feature.Prepass();
 		Require(f.published.Enabled == (outcome == 0), "fresh capture must only expose successfully compiled probes");
 		Require(f.context.dispatchCount == (outcome == 0 ? 1u : 0u), "failed shader reloads must keep probe dispatch disabled");
+		++scenarios;
+	}
+	for (unsigned route = 0; route < 6; ++route) {
+		Fixture f;
+		f.Ready();
+		f.feature.shadowAvailable = true;
+		f.feature.forcedFullUpdateFrames = 0;
+		f.feature.probeUpdateFrameCounter = 1;
+		if (route == 1) {
+			f.feature.settings.EnableIncrementalProbeUpdates = true;
+			f.feature.probeUpdateCornerMask = GetOcclusionCornerBit(f.feature.frameCount);
+		}
+		f.Publish();
+		f.mask.uavObject.uints.fill(0);
+		f.visibility.uavObject.floats.fill(0.0f);
+		f.probes.uavObject.floats.fill(7.0f);
+		f.confidence.uavObject.uints.fill(0x0913u);
+		const auto clears = f.context.clearCount;
+		f.context.pixelResources[50] = f.probes.srv.get();
+		f.context.pixelResources[53] = f.visibility.srv.get();
+		f.feature.shadowAvailable = false;
+		if (route == 2)
+			f.state.isMapMenuOpen = true;
+		if (route == 5)
+			f.visibility.uav.value = nullptr;
+		if (route != 4)
+			f.Publish();
+		if (route != 3)
+			f.feature.Prepass();
+		Require(f.feature.shadowHistoryNeedsReset, "observed shadow loss must survive skipped passes and buffer publication");
+		Require(!f.published.ShadowDataAvailable, "shadow loss must revoke shader availability even after publication");
+		Require(f.context.clearCount == clears && f.context.dispatchCount == 0, "outage observation must preserve the probe update schedule");
+		f.state.isMapMenuOpen = false;
+		f.feature.shadowAvailable = true;
+		if (route == 5) {
+			f.Publish();
+			f.feature.Prepass();
+			Require(f.feature.shadowHistoryNeedsReset && f.context.clearCount == clears, "missing recovery UAV must retain the pending clear");
+			f.visibility.uav.value = &f.visibility.uavObject;
+		}
+		if (route != 4)
+			f.Publish();
+		f.context.duringClear = [&] {
+			Require(!f.context.pixelResources[53], "recovery must unbind visibility before clearing its history");
+		};
+		f.feature.Prepass();
+		Require(f.context.clearCount == clears + 2 && !f.feature.shadowHistoryNeedsReset, "recovery must clear both complete shadow volumes once");
+		Require(f.context.dispatchCount == 0 && f.published.ShadowDataAvailable, "recovery must publish lit fallback even without a scheduled dispatch");
+		Require(f.mask.uavObject.uints == std::array<UINT, 4>{ UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX }, "recovery must discard all old directional samples");
+		Require(f.visibility.uavObject.floats == std::array<float, 4>{ 1, 1, 1, 1 }, "recovery must initialize directional visibility to fully lit");
+		Require(f.probes.uavObject.floats == std::array<float, 4>{ 7, 7, 7, 7 } && f.confidence.uavObject.uints == std::array<UINT, 4>{ 0x0913, 0x0913, 0x0913, 0x0913 }, "shadow recovery must retain ambient SH and packed accumulation");
+		Require(f.context.pixelResources[50] == f.probes.srv.get() && f.context.pixelResources[53] == f.visibility.srv.get(), "recovery must restore probe consumer bindings");
+		if (route == 4)
+			Require(f.state.updates == 2, "late loss and recovery must each refresh their published availability");
+		f.Publish();
+		f.feature.Prepass();
+		Require(f.context.clearCount == clears + 2, "stable shadow availability must not repeatedly clear history");
 		++scenarios;
 	}
 	for (unsigned failure = 1; failure <= 16; ++failure) {

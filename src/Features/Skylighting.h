@@ -9,6 +9,9 @@ private:
 	static constexpr std::string_view MOD_ID = "139352";
 	bool HasProbeUpdateResources() const;
 	bool probeUpdateBufferEnabled = false;
+	bool probeUpdateShadowDataAvailable = false;
+	/** @brief Clears directional history with valid UAVs and the visibility SRV unbound. */
+	void ClearShadowHistory();
 
 public:
 	virtual bool SupportsVR() override { return true; };
@@ -134,6 +137,7 @@ public:
 	std::atomic_bool queuedResetSkylighting{ true };
 	bool needsOcclusionRefresh = true;
 	std::optional<bool> previousInteriorState;
+	bool shadowHistoryNeedsReset = false;
 	bool inOcclusion = false;
 	REX::W32::XMFLOAT4X4 OcclusionTransform;
 	float4 OcclusionDir;

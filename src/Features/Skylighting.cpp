@@ -566,6 +566,18 @@ void Skylighting::ResetSkylighting()
 	// Resetting the packed state restarts both SH confidence and shadow jitter.
 	context->ClearUnorderedAccessViewUint(texAccumFramesArray->uav.get(), clearZero);
 
+	ClearShadowHistory();
+
+	ResetProbeUpdateWindow(*this);
+	forcedFullUpdateFrames = 1;
+	forceProbeUpdateThisFrame = true;
+	probeUpdateFrameCounter = 0;
+	occlusionUpdateFrameCounter = 0;
+}
+
+void Skylighting::ClearShadowHistory()
+{
+	auto context = globals::d3d::context;
 	// New probes stay fully lit until accepted samples replace their history.
 	// Clearing to zero would make the first valid sample appear only 1/32 visible.
 	UINT clearLit[4] = { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX };
@@ -574,11 +586,7 @@ void Skylighting::ResetSkylighting()
 	float clearVisibility[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
 	context->ClearUnorderedAccessViewFloat(texShadowVisibility->uav.get(), clearVisibility);
 
-	ResetProbeUpdateWindow(*this);
-	forcedFullUpdateFrames = 1;
-	forceProbeUpdateThisFrame = true;
-	probeUpdateFrameCounter = 0;
-	occlusionUpdateFrameCounter = 0;
+	shadowHistoryNeedsReset = false;
 }
 
 void Skylighting::SetPerformanceCostMeasurementEnabled(bool a_enabled)
@@ -1077,6 +1085,10 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 	if (!IsRuntimeActive())
 		return data;
 
+	const bool shadowDataAvailable = HasCurrentShadowData();
+	if (!shadowDataAvailable)
+		shadowHistoryNeedsReset = true;
+
 	if (UpdateInteriorState() || HasPendingReset() || needsOcclusionRefresh || !HasProbeUpdateResources())
 		return data;
 
@@ -1119,6 +1131,7 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 	}
 
 	probeUpdateBufferEnabled = true;
+	probeUpdateShadowDataAvailable = shadowDataAvailable;
 	return {
 		.OcclusionViewProj = OcclusionTransform,
 		.OcclusionSHBasis4Pi = occlusionSHBasis4Pi,
@@ -1135,13 +1148,19 @@ Skylighting::SkylightingCB Skylighting::GetCommonBufferData(bool a_inWorld)
 		.MinSpecularVisibility = settings.MinSpecularVisibility,
 		.ProbeUpdateSliceStart = probeUpdateSliceStart,
 		.ProbeUpdateSliceCount = probeUpdateSliceCount,
-		.ShadowDataAvailable = HasCurrentShadowData() ? 1u : 0u
+		.ShadowDataAvailable = shadowDataAvailable ? 1u : 0u
 	};
 }
 
 void Skylighting::Prepass()
 {
 	auto context = globals::d3d::context;
+	const bool shadowDataAvailable = HasCurrentShadowData();
+	if (!shadowDataAvailable)
+		shadowHistoryNeedsReset = true;
+	// Resource availability may change after the world constants were published.
+	if (context && probeUpdateBufferEnabled && shadowDataAvailable != probeUpdateShadowDataAvailable)
+		globals::state->UpdateFeatureData(true);
 	if (!IsRuntimeActive() || UpdateInteriorState() || HasPendingReset() || needsOcclusionRefresh ||
 		globals::state->isMapMenuOpen || !HasProbeUpdateResources() || !probeUpdateBufferEnabled) {
 		// A loading event may invalidate history after the world buffer was uploaded.
@@ -1162,9 +1181,13 @@ void Skylighting::Prepass()
 		context->PSSetShaderResources(50, 1, nullPixelSRVs.data());
 		context->PSSetShaderResources(53, 1, nullPixelSRVs.data() + 1);
 
+		// Recovery must clear every slice even when the probe dispatch is skipped.
+		if (shadowDataAvailable && shadowHistoryNeedsReset)
+			ClearShadowHistory();
+
 		ID3D11ShaderResourceView* directionalShadowLightsSRV = nullptr;
 		ID3D11ShaderResourceView* cascadeDepthSRV = nullptr;
-		if (HasCurrentShadowData()) {
+		if (shadowDataAvailable) {
 			directionalShadowLightsSRV = globals::deferred->directionalShadowLights->srv.get();
 			auto& cascadeDepthStencil = globals::game::renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kSHADOWMAPS_ESRAM];
 			cascadeDepthSRV = cascadeDepthStencil.depthSRV;
