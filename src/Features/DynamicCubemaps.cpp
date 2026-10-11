@@ -1079,15 +1079,15 @@ void DynamicCubemaps::SetupResources()
 			envReflectionsTextureBC6H->CreateSRV(bc6hSRVDesc);
 		}
 
-		updateCubemapCB = new ConstantBuffer(ConstantBufferDesc<UpdateCubemapCB>(), "DynamicCubemaps::UpdateCubemapCB");
+		updateCubemapCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<UpdateCubemapCB>(), "DynamicCubemaps::UpdateCubemapCB");
 	}
 
 	{
-		bc6hEncodeCB = new ConstantBuffer(ConstantBufferDesc<BC6HEncodeCB>(), "DynamicCubemaps::BC6HEncodeCB");
+		bc6hEncodeCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<BC6HEncodeCB>(), "DynamicCubemaps::BC6HEncodeCB");
 	}
 
 	{
-		spmapCB = new ConstantBuffer(ConstantBufferDesc<SpecularMapFilterSettingsCB>(), "DynamicCubemaps::SpmapCB");
+		spmapCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<SpecularMapFilterSettingsCB>(), "DynamicCubemaps::SpmapCB");
 	}
 
 	{

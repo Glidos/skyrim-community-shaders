@@ -1,6 +1,7 @@
 #pragma once
 
 #include <bit>
+#include <memory>
 
 #include "Buffer.h"
 #include "Utils/LazyShader.h"
@@ -32,7 +33,7 @@ public:
 	STATIC_ASSERT_ALIGNAS_16(SpecularMapFilterSettingsCB);
 
 	Util::LazyShader<ID3D11ComputeShader> specularIrradianceCS;
-	ConstantBuffer* spmapCB = nullptr;
+	std::unique_ptr<ConstantBuffer> spmapCB;
 	Texture2D* envTexture = nullptr;
 	Texture2D* envReflectionsTexture = nullptr;
 	ID3D11UnorderedAccessView* uavArray[8];
@@ -57,7 +58,7 @@ public:
 	Util::LazyShader<ID3D11ComputeShader> updateCubemapReflectionsCS;
 	Util::LazyShader<ID3D11ComputeShader> updateCubemapFakeReflectionsCS;
 
-	ConstantBuffer* updateCubemapCB = nullptr;
+	std::unique_ptr<ConstantBuffer> updateCubemapCB;
 
 	Util::LazyShader<ID3D11ComputeShader> inferCubemapCS;
 	Util::LazyShader<ID3D11ComputeShader> inferCubemapReflectionsCS;
@@ -120,7 +121,7 @@ public:
 	STATIC_ASSERT_ALIGNAS_16(BC6HEncodeCB);
 
 	Util::LazyShader<ID3D11ComputeShader> bc6hEncodeCS;
-	ConstantBuffer* bc6hEncodeCB = nullptr;
+	std::unique_ptr<ConstantBuffer> bc6hEncodeCB;
 
 	ID3D11ShaderResourceView* envTextureArraySRV = nullptr;
 	ID3D11ShaderResourceView* envReflectionsTextureArraySRV = nullptr;
