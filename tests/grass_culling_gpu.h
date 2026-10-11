@@ -11,6 +11,7 @@ void RunCullingShader(bool vr)
 	auto code = Compile(L"features/Grass Optimizations/Shaders/GrassOptimizations/GrassCullingCS.hlsl", "cs_5_0", defines);
 	ComPtr<ID3D11ShaderReflection> reflection;
 	Check(D3DReflect(code->GetBufferPointer(), code->GetBufferSize(), IID_PPV_ARGS(reflection.GetAddressOf())));
+	ValidateWindLayout(reflection.Get(), "NativeGeometry", vr);
 	ComPtr<ID3D11ComputeShader> shader;
 	Check(device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, shader.GetAddressOf()));
 	Util::SetResourceName(shader.Get(), "GrassTest::CullCS");

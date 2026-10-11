@@ -1,3 +1,4 @@
+#include "Features/GrassOptimizations/GrassPolicy.h"
 #include "Utils/DepthPyramidPolicy.h"
 #include "Utils/ShaderInclude.h"
 #include "d3d11_shader_test.h"
@@ -55,6 +56,19 @@ namespace
 		return bytecode;
 	}
 
+	void ValidateWindLayout(ID3D11ShaderReflection* reflection, const char* bufferName, bool vr)
+	{
+		const auto wind = GrassPolicy::WindVectorOffset(vr) * sizeof(float);
+		const std::array<std::pair<const char*, size_t>, 3> fields{ { { "WindVector", wind }, { "WindTimer", wind + 3 * sizeof(float) }, { "PreviousWindTimer", wind + 7 * sizeof(float) } } };
+		const auto buffer = reflection->GetConstantBufferByName(bufferName);
+		for (const auto& [name, offset] : fields) {
+			D3D11_SHADER_VARIABLE_DESC variable{};
+			Check(buffer->GetVariableByName(name)->GetDesc(&variable));
+			Require(variable.StartOffset == offset && variable.Size == (offset == wind ? 3u : 1u) * sizeof(float),
+				"Native wind layout differs from the CPU constants");
+		}
+	}
+
 	void ValidateGrassVariants()
 	{
 		for (bool vr : { false, true })
@@ -84,6 +98,7 @@ namespace
 						Check(reflection->GetResourceBindingDescByName("GrassInstanceExtras", &binding));
 						Require(binding.BindPoint == 2, "Batch fade changed register");
 						D3D11_SHADER_VARIABLE_DESC world{}, previous{};
+						ValidateWindLayout(reflection.Get(), "PerGeometry", vr);
 						auto geometry = reflection->GetConstantBufferByName("PerGeometry");
 						Check(geometry->GetVariableByName("World")->GetDesc(&world));
 						Check(geometry->GetVariableByName("PreviousWorld")->GetDesc(&previous));

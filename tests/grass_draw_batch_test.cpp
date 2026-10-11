@@ -5,9 +5,57 @@
 #include <stdexcept>
 #include <thread>
 #include <vector>
+namespace
+{
+	void CheckWindHistory()
+	{
+		const auto require = [](bool condition) {
+			if (!condition)
+				throw std::runtime_error("Grass rendered wind history changed across passes or representatives");
+		};
+		GrassPolicy::WindHistory history;
+		require(history.Previous(100, 10.f) == 10.f);
+		// Preparation without submission cannot become the next frame's history.
+		require(history.Previous(101, 11.f) == 11.f);
+		history.Commit(101, 11.f);
+		require(history.Previous(102, 12.f) == 11.f);
+		history.Commit(102, 12.f);
+		require(history.Previous(102, 12.f) == 11.f);
+		history.Commit(102, 12.5f);
+		require(history.Previous(102, 12.5f) == 11.f);
+		require(history.Previous(103, 13.f) == 12.f);
+
+		GrassPolicy::FrameQueue<int> queue;
+		std::array<int, 2> cells{};
+		for (uint32_t frame = 103; frame < 113; ++frame) {
+			require(queue.Claim(frame, &cells[frame % 2]));
+			const auto phase = float(frame - 90);
+			require(history.Previous(frame, phase) == phase - 1);
+			history.Commit(frame, phase);
+			// Repreparing after a same-frame cache reset must retain the original previous phase.
+			require(history.Previous(frame, phase) == phase - 1);
+		}
+		require(history.Previous(115, 25.f) == 25.f);
+		history.Commit(115, 25.f);
+		require(history.Previous(116, 26.f) == 25.f);
+		history.Commit(116, std::numeric_limits<float>::quiet_NaN());
+		require(history.Previous(117, 27.f) == 27.f);
+
+		GrassPolicy::WindHistory wrapped;
+		require(wrapped.Previous(UINT32_MAX, 30.f) == 30.f);
+		wrapped.Commit(UINT32_MAX, 30.f);
+		require(wrapped.Previous(0, 31.f) == 30.f);
+		wrapped.Commit(0, 31.f);
+		require(wrapped.Previous(0, 31.f) == 30.f);
+		require(wrapped.Previous(1, 32.f) == 31.f);
+		require(wrapped.Previous(3, 34.f) == 34.f);
+	}
+}
+
 int main()
 {
 	try {
+		CheckWindHistory();
 		const auto require = [](bool condition) {if(!condition)throw std::runtime_error("Grass settings policy failed"); };
 		GrassFrustum::Matrix identity{};
 		for (size_t i = 0; i < 4; ++i) identity[i * 5] = 1;
@@ -170,7 +218,7 @@ int main()
 			settings.*field = -1;
 			require(!settings.Valid());
 		}
-		std::cout << "Grass bounded settings and threshold ordering passed\n";
+		std::cout << "Grass rendered wind history, bounded settings and threshold ordering passed\n";
 		return 0;
 	} catch (const std::exception& error) {
 		std::cerr << error.what() << '\n';

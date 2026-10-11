@@ -3,6 +3,7 @@
 #include "Features/GrassOptimizations/GrassRuntime.h"
 
 #include <array>
+#include <bit>
 #include <cstring>
 #include <iostream>
 #include <new>
@@ -19,6 +20,64 @@ namespace
 		std::memcpy(bytes, &pointer, sizeof(pointer));
 		std::memcpy(bytes + 0x08, &count, sizeof(count));
 		std::memcpy(bytes + 0x10, &count, sizeof(count));
+	}
+
+	struct NativeSetupFixture
+	{
+		static inline bool vr = false;
+		static inline float current = 10.f, previous = 0.f;
+		static inline uint32_t calls = 0;
+
+		static void Setup(RE::BSShader*, RE::BSRenderPass* pass, uint32_t flags)
+		{
+			auto& data = GrassRuntime::GetPropertyData(static_cast<RE::BSGrassShaderProperty*>(pass->shaderProperty), vr);
+			previous = flags & 0x10 ? current : std::bit_cast<float>(data.windTimer);
+			if (!(flags & 0x10))
+				data.windTimer = std::bit_cast<uint32_t>(current);
+			++calls;
+			if (flags & 0x20)
+				throw std::runtime_error("Synthetic native setup failure");
+		}
+	};
+
+	void CheckWindPreservation(RE::BSGrassShaderProperty* property, bool vr)
+	{
+		NativeSetupFixture::vr = vr;
+		RE::BSRenderPass pass{};
+		pass.shaderProperty = property;
+		auto& data = GrassRuntime::GetPropertyData(property, vr);
+		const uint32_t saved = std::bit_cast<uint32_t>(9.f);
+		for (uint32_t flags : { 0u, 0x10u, 0x20u }) {
+			data.windTimer = saved;
+			const auto calls = NativeSetupFixture::calls;
+			bool threw = false;
+			try {
+				GrassRuntime::PrepareGeometryWithoutAdvancingWind(nullptr, &pass, flags, NativeSetupFixture::Setup, vr);
+			} catch (const std::runtime_error&) {
+				threw = true;
+			}
+			if (data.windTimer != saved || NativeSetupFixture::calls != calls + 1 || threw != bool(flags & 0x20) ||
+				NativeSetupFixture::previous != (flags & 0x10 ? 10.f : 9.f))
+				throw std::runtime_error("Speculative setup consumed native wind history or suppressed setup");
+		}
+		data.windTimer = saved;
+		NativeSetupFixture::Setup(nullptr, &pass, 0);
+		for (int repeat = 0; repeat < 2; ++repeat)
+			GrassRuntime::PrepareGeometryWithoutAdvancingWind(nullptr, &pass, 0, NativeSetupFixture::Setup, vr);
+		if (data.windTimer != std::bit_cast<uint32_t>(10.f))
+			throw std::runtime_error("Speculative setup undid the real draw's native history update");
+		for (float previous : { 0.f, 9.f })
+			for (uint32_t flags : { 0u, 0x10u, 0x20u }) {
+				bool threw = false;
+				try {
+					GrassRuntime::PrepareGeometryWithoutAdvancingWind(nullptr, &pass, flags, NativeSetupFixture::Setup, vr, std::bit_cast<uint32_t>(previous));
+				} catch (const std::runtime_error&) {
+					threw = true;
+				}
+				if (data.windTimer != std::bit_cast<uint32_t>(10.f) || threw != bool(flags & 0x20) ||
+					NativeSetupFixture::previous != (flags & 0x10 ? 10.f : previous))
+					throw std::runtime_error("Restoring the original draw lost its previous wind or advanced native history");
+			}
 	}
 
 	void CheckLayout(bool vr, std::size_t nativeOffset)
@@ -72,6 +131,7 @@ namespace
 		BorrowArray(native->lightData.lights, lights);
 		if (!matches())
 			throw std::runtime_error("Restored grass property state failed to match");
+		CheckWindPreservation(reinterpret_cast<RE::BSGrassShaderProperty*>(bytes.data()), vr);
 		// The fixture borrows stack fades and must not invoke the game's allocator.
 		std::memset(bytes.data() + nativeOffset, 0, sizeof(RE::BSTArray<float>));
 		std::memset(&native->lightData.lights, 0, sizeof(RE::BSTArray<RE::BSLight*>));
@@ -83,7 +143,7 @@ int main()
 	try {
 		CheckLayout(false, 0x160);
 		CheckLayout(true, 0x178);
-		std::cout << "SE/AE and VR grass layouts, animated cache reuse and property invalidation passed\n";
+		std::cout << "SE/AE and VR grass layouts, native wind preservation, animated cache reuse and property invalidation passed\n";
 		return 0;
 	} catch (const std::exception& error) {
 		std::cerr << error.what() << '\n';

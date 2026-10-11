@@ -43,6 +43,7 @@ namespace
 		uint32_t instances = 0, slices = 0;
 		bool batching = true;
 		std::atomic_bool compatible{ true };
+		GrassPolicy::WindHistory windHistory;  // Render-thread owned; visibility only selects the representative.
 	};
 	struct Lifetime
 	{
@@ -1631,7 +1632,7 @@ void GrassBucketRenderer::Impl::CullSlices(const Bucket& bucket, float radius, u
 	bucketLo.fill(std::numeric_limits<float>::max());
 	bucketHi.fill(std::numeric_limits<float>::lowest());
 	bool bucketKnown = !bucket.runs.empty();
-	const size_t windOffset = eyes == 2 ? 132 : 68, scaleOffset = eyes == 2 ? 148 : 84;
+	const size_t windOffset = GrassPolicy::WindVectorOffset(eyes == 2), scaleOffset = eyes == 2 ? 148 : 84;
 	const float wind = .4f * std::abs(geometryCPU[windOffset + 2]) * std::hypot(geometryCPU[windOffset], geometryCPU[windOffset + 1]);
 	std::array<GrassFrustum::Matrix, 2> world{};
 	for (uint32_t eye = 0; eye < eyes; ++eye)
@@ -1712,7 +1713,7 @@ bool GrassBucketRenderer::Impl::MainDepthBound() const
 
 void GrassBucketRenderer::Impl::PrepareCulling(RE::BSRenderPass* pass, RE::BSShader* shader, uint32_t flags, GrassRuntime::SetupGeometry setup)
 {
-	if (cullingPrepared || failed || !frameSettings.Enabled || !setup || !HasBatchShader() || !MainDepthBound())
+	if (cullingPrepared || failed || !frameSettings.Enabled || !setup || !geometryCPUValid || !HasBatchShader() || !MainDepthBound())
 		return;
 	D3D11_VIEWPORT viewport{};
 	UINT count = 1;
@@ -1732,9 +1733,10 @@ void GrassBucketRenderer::Impl::PrepareCulling(RE::BSRenderPass* pass, RE::BSSha
 	}
 	frameSlices.clear();
 	const auto savedOrigin = currentOrigin;
+	const auto previousWind = std::bit_cast<uint32_t>(geometryCPU[GrassPolicy::WindVectorOffset(globals::game::isVR) + 7]);
 	{
 		const SKSE::stl::scope_exit restore([&]() noexcept {
-			setup(shader, pass, flags);
+			GrassRuntime::PrepareGeometryWithoutAdvancingWind(shader, pass, flags, setup, globals::game::isVR, previousWind);
 			currentOrigin = savedOrigin;
 			geometryCPUValid = false;
 			if (auto bound = *globals::game::currentVertexShader; bound && bound->constantBuffers[2].data) {
@@ -1770,7 +1772,7 @@ void GrassBucketRenderer::Impl::PrepareCulling(RE::BSRenderPass* pass, RE::BSSha
 			prototype.sceneLights = member->lights.empty() ? nullptr : member->lights.data();
 			prototype.numLights = uint8_t(member->lights.size());
 			MakeNativeVisible(representative);
-			setup(shader, &prototype, flags);
+			GrassRuntime::PrepareGeometryWithoutAdvancingWind(shader, &prototype, flags, setup, globals::game::isVR);
 			currentOrigin = member->origin;
 			geometryCPUValid = false;
 			if (auto bound = *globals::game::currentVertexShader; bound && bound->constantBuffers[2].data) {
@@ -1794,9 +1796,10 @@ bool GrassBucketRenderer::Impl::DrawBucket(Bucket& bucket, Outcome& outcome)
 		return false;
 	const auto eyes = globals::game::isVR ? 2u : 1u;
 	const auto& saved = bucket.plan.geometry;
-	const size_t wind = eyes == 2 ? 132 : 68, scale = eyes == 2 ? 148 : 84;
+	const size_t wind = GrassPolicy::WindVectorOffset(eyes == 2), scale = eyes == 2 ? 148 : 84;
+	// Previous wind is batch-owned; native setup exposes pass-dependent history.
 	if (!std::equal(geometryCPU.begin(), geometryCPU.begin() + eyes * 48, saved.begin()) ||
-		!std::equal(geometryCPU.begin() + wind, geometryCPU.begin() + wind + 3, saved.begin() + wind) ||
+		!std::equal(geometryCPU.begin() + wind, geometryCPU.begin() + wind + 4, saved.begin() + wind) ||
 		!std::equal(geometryCPU.begin() + scale, geometryCPU.begin() + scale + 3, saved.begin() + scale) ||
 		geometryCPU[wind + 11] != saved[wind + 11] || geometryCPU[wind + 15] != saved[wind + 15])
 		return false;
@@ -1805,8 +1808,10 @@ bool GrassBucketRenderer::Impl::DrawBucket(Bucket& bucket, Outcome& outcome)
 			source.generation != source.lifetime->generation.load(std::memory_order_acquire))
 			return false;
 	outcome = Outcome::Batched;
-	if (!bucket.plan.empty)
+	if (!bucket.plan.empty) {
 		EmitDraws(bucket);
+		bucket.sources.front().queue->windHistory.Commit(frame, saved[wind + 3]);
+	}
 #ifdef DEVBENCH_BRIDGE_ENABLED
 	if (diagnostics.load(std::memory_order_relaxed)) {
 		++batches;
@@ -1873,6 +1878,11 @@ bool GrassBucketRenderer::Impl::PrepareBucket(Bucket& bucket)
 		return GRASS_DRAW_REJECT(Layout);
 	if (!geometryCPUValid)
 		return GRASS_DRAW_REJECT(GeometryConstants);
+	const size_t wind = GrassPolicy::WindVectorOffset(eyes == 2);
+	if (!std::isfinite(geometryCPU[wind + 3]))
+		return GRASS_DRAW_REJECT(GeometryConstants);
+	// Every pass reuses the last rendered batch phase, never a representative's native history.
+	geometryCPU[wind + 7] = representative.queue->windHistory.Previous(frame, geometryCPU[wind + 3]);
 	uint32_t prefix = 0;
 	CullSlices(bucket, radius, eyes, prefix);
 	bucket.plan.geometry = geometryCPU;

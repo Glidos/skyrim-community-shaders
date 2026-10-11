@@ -58,6 +58,37 @@ namespace GrassPolicy
 		return CullCapacity{ std::max(current.instances, std::bit_ceil(static_cast<uint32_t>(instances))),
 			std::max(current.slots, static_cast<uint32_t>(slots)) };
 	}
+	/** @brief Float offset of the native wind vector in flat or stereo geometry constants. */
+	constexpr uint32_t WindVectorOffset(bool vr) { return (vr ? 33u : 17u) * 4; }
+
+	/** @brief Track rendered wind independently of the cell selected to represent a batch. */
+	struct WindHistory
+	{
+		uint64_t renderedFrame = UINT64_MAX;
+		float renderedTimer = 0, previousTimer = 0;
+
+		/** @brief Reuse consecutive rendered history; reset motion after a gap. */
+		float Previous(uint32_t frame, float currentTimer) const
+		{
+			if (renderedFrame == frame)
+				return previousTimer;
+			return renderedFrame <= UINT32_MAX && frame - uint32_t(renderedFrame) == 1 ? renderedTimer : currentTimer;
+		}
+		/** @brief Advance once after submission, preserving the previous phase for later passes. */
+		void Commit(uint32_t frame, float currentTimer)
+		{
+			if (!std::isfinite(currentTimer)) {
+				renderedFrame = UINT64_MAX;
+				return;
+			}
+			if (renderedFrame == frame)
+				return;
+			previousTimer = Previous(frame, currentTimer);
+			renderedTimer = currentTimer;
+			renderedFrame = frame;
+		}
+	};
+
 	/** @brief Native visibility workers queue one representative before rendering starts. */
 	template <class Shape>
 	struct FrameQueue

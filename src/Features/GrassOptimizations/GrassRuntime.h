@@ -1,10 +1,13 @@
 #pragma once
 
 #include <RE/B/BSGrassShaderProperty.h>
+#include <RE/B/BSRenderPass.h>
 #include <REL/Relocation.h>
+#include <SKSE/Impl/PCH.h>
 
 #include <algorithm>
 #include <cstddef>
+#include <optional>
 #include <span>
 
 namespace GrassRuntime
@@ -24,6 +27,7 @@ namespace GrassRuntime
 		RE::BSShaderProperty::RenderPassArray shadowPasses;
 	};
 	static_assert(offsetof(PropertyData, wavePeriod) == 0x24);
+	static_assert(offsetof(PropertyData, windTimer) == 0x28);
 	static_assert(offsetof(PropertyData, lightData) == 0x38);
 	static_assert(sizeof(PropertyData) == 0x70);
 
@@ -44,5 +48,17 @@ namespace GrassRuntime
 	inline const PropertyData& GetPropertyData(const RE::BSGrassShaderProperty* property, bool vr)
 	{
 		return GetPropertyData(const_cast<RE::BSGrassShaderProperty*>(property), vr);
+	}
+
+	/** @brief Preserve native wind history; an optional raw phase restores the original draw's previous-wind constant. */
+	inline void PrepareGeometryWithoutAdvancingWind(RE::BSShader* shader, RE::BSRenderPass* pass,
+		uint32_t flags, SetupGeometry setup, bool vr, std::optional<uint32_t> previousWind = std::nullopt)
+	{
+		auto& data = GetPropertyData(static_cast<RE::BSGrassShaderProperty*>(pass->shaderProperty), vr);
+		const auto saved = data.windTimer;
+		const SKSE::stl::scope_exit restore([&]() noexcept { data.windTimer = saved; });
+		if (previousWind)
+			data.windTimer = *previousWind;
+		setup(shader, pass, flags);
 	}
 }
