@@ -135,6 +135,7 @@ struct Upscaling
 		kFSR
 	};
 	bool foveatedDispatch = true;
+	bool foveatedMaskBinocularGapVisualization = false;
 	bool IsFoveatedVendorDispatchEnabled(UpscaleMethod) const { return foveatedDispatch; }
 	bool IsPeripheryTAAEnabled(UpscaleMethod) const;
 	struct Settings
@@ -243,18 +244,46 @@ void CheckFoveationTransactions()
 			renderer.resetSucceeds = succeeds;
 			FoveationConfigurationRequest request;
 			request.fovOnlyCenterScale = 0.6f;
+			request.maskBinocularGapVisualization = true;
 			const auto response = ApplyFoveationConfiguration(upscaling, request, "foveation_configure", true);
 			Require(response.at("ok") == succeeds && response.at("settingsChanged") == succeeds &&
 						response.at("mutationApplied") == succeeds,
 				"API receipts must reflect accepted or rolled-back FOV settings");
 			Require(succeeds ? upscaling.settings.foveatedCenterArea == 0.6f : upscaling.settings == previous,
 				"Failed API transitions must roll back all FOV controls and inherited NR coverage");
+			Require(upscaling.foveatedMaskBinocularGapVisualization == succeeds && response.at("previewChanged") == succeeds,
+				"Mixed preview and geometry changes must commit or roll back atomically");
 			Require(response.at("neuralRendering").at("fovScale") == upscaling.settings.foveatedCenterArea,
 				"API status must describe the actual retained geometry");
 			if (!succeeds)
 				Require(response.at("effectiveNotBeforeFrame").is_null() && response.at("measurementSafeFromFrame").is_null(),
 					"Rejected geometry has no effective or measurement-ready frame");
 		}
+	}
+	renderer = {};
+	Upscaling preview;
+	SetFovOnlySetup(preview);
+	preview.settings.neuralRenderingEnabled = true;
+	NeuralRendering::NormalizeRenderingCoverage(preview.settings, true);
+	const auto saved = preview.settings;
+	renderer.quarantined = true;
+	renderer.resetSucceeds = false;
+	for (bool check : { true, false }) {
+		FoveationConfigurationRequest diagnostic;
+		diagnostic.maskBinocularGapVisualization = check;
+		Require(diagnostic.HasAnyControl(), "Both true and false are explicit preview requests");
+		const auto response = ApplyFoveationConfiguration(preview, diagnostic, "foveation_configure", true);
+		Require(response.at("ok") == true && response.at("mutationApplied") == true && response.at("noOp") == false &&
+					response.at("previewChanged") == true && response.at("settingsChanged") == false && preview.settings == saved &&
+					preview.foveatedMaskBinocularGapVisualization == check,
+			"Standalone preview changes must retain every calibrated and saved setting");
+		Require(!response.at("historyResetRequested").get<bool>() && !response.at("frameScopedStateInvalidated").get<bool>() &&
+					!response.at("neuralSettingsTransitionAttempted").get<bool>() && preview.historyResets == 0 && preview.invalidations == 0 && renderer.resets == 0,
+			"Diagnostic toggles must not touch temporal history or retire a faulty NR backend");
+		const auto repeated = ApplyFoveationConfiguration(preview, diagnostic, "foveation_configure", true);
+		Require(repeated.at("noOp") == true && repeated.at("previewChanged") == false &&
+					repeated.at("errorCode") == "foveation_configure_noop",
+			"An unchanged preview request must retain the normal no-op contract");
 	}
 	renderer = {};
 	Upscaling uncalibrated;

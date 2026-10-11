@@ -2346,7 +2346,7 @@ public:
 		float4 tuning0;        // x=centerScale, y=centerFeather, z=centerHorizontalScale, w=taaOuterScale
 		float4 preview;        // xy=other eye center, z=eye index, w=full-image coverage
 		Matrix previewClipToOtherEye;
-		float4 previewArea;  // x=percentage of full eye area saved
+		float4 previewArea;  // x=area saved percent, y=validated stereo projection, z=binocular diagnostic overlay
 	};
 
 	struct FoveatedCenterBlendCB
@@ -2609,9 +2609,15 @@ public:
 	void DrawFoveatedBlendSettings();
 	/** Prepares calibrated settings without mutation; missing projections or infeasible fits retain the caller settings. */
 	bool PrepareFoveatedMaskCalibration(Settings& a_candidate, bool a_captureReference, float a_percent, std::string& a_error) const;
+	/** Checks configured shared-view coverage independently of the diagnostic overlay. */
+	FoveatedMaskCalibration::CoverageCheck GetFoveatedBinocularCoverage() const;
 	void DrawFoveatedCalibration();
 	std::string foveatedCalibrationMessage;
 	std::optional<float> pendingFoveatedMaskScaling;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	/** Session-only overlay for DevBench diagnostics; normal setup shows only the current eye. */
+	bool foveatedMaskBinocularGapVisualization = false;
+#endif
 	void DrawFoveatedSetupInstructions();
 	void DrawFoveatedSettings();
 	virtual void SaveSettings(json& o_json) override;

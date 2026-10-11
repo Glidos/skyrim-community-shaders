@@ -15,7 +15,7 @@ cbuffer FoveatedPeripheryCB : register(b0)
 	float4 Tuning0;        // x=centerScale, y=centerFeather, z=centerHorizontalScale, w=taaOuterScale
 	float4 Preview;        // xy=other eye offset, z=eye index, w=full-image coverage
 	row_major float4x4 PreviewClipToOtherEye;
-	float4 PreviewArea;  // x=percentage of full eye area saved, y=validated stereo projection
+	float4 PreviewArea;  // x=area saved percent, y=validated stereo projection, z=binocular diagnostic overlay
 };
 
 Texture2D<float4> InputColor : register(t0);
@@ -69,8 +69,12 @@ float2 ClampToSourceRegion(float2 uv, float2 regionMin, float2 regionMax)
 		const bool otherVisible = projectionKnown && otherClip.w > 1e-6 && all(otherUV >= 0.0) && all(otherUV <= 1.0);
 		const bool inOtherCenter = otherVisible && (fullCoverage || FoveatedComputeMaskDistance(otherUV, centerScale, centerHorizontalScale, Preview.xy) <= 1.0 + taaNormalizedFeather);
 		const bool inOtherTaa = otherVisible && showThreeZoneMask > 0.5 && FoveatedComputeMaskDistance(otherUV, taaOuterScale, centerHorizontalScale, Preview.xy) <= 1.0;
-		// Static hatching retains world context while making either eye's missing coverage unambiguous.
-		const bool uncovered = !projectionKnown || (!inCenter && !inTaa) || (otherVisible && !inOtherCenter && !inOtherTaa);
+		const bool showBinocularGaps = PreviewArea.z > 0.5;
+		const bool ownCoreCovered = fullCoverage || inTaa || FoveatedComputeMaskDistance(uv, centerScale, centerHorizontalScale, centerOffset) <= 1.0;
+		const bool peerCoreCovered = otherVisible && (fullCoverage || inOtherTaa || FoveatedComputeMaskDistance(otherUV, centerScale, centerHorizontalScale, Preview.xy) <= 1.0);
+		// Manual fitting follows the own-eye outline; diagnostics cannot count fading pixels as coverage.
+		const bool uncovered = (!inCenter && !inTaa) ||
+		                       (showBinocularGaps && (!projectionKnown || (otherVisible && (!ownCoreCovered || !peerCoreCovered))));
 		// Magenta/green separate along blue as well as red-green; overlap is neutral and brighter.
 		static const float3 kLeftColor = float3(1.0, 0.1, 1.0);
 		static const float3 kRightColor = float3(0.1, 1.0, 0.1);
@@ -83,10 +87,10 @@ float2 ClampToSourceRegion(float2 uv, float2 regionMin, float2 regionMax)
 			const float3 hatch = stripe ? float3(0.65, 0.5, 0.05) : float3(0.08, 0.06, 0.02);
 			color.rgb = lerp(color.rgb, hatch, 0.8);
 		} else {
-			const float3 tint = inCenter ? (inOtherCenter ? kOverlapColor : (Preview.z < 0.5 ? kLeftColor : kRightColor)) : kTaaColor;
+			const float3 tint = inCenter ? (showBinocularGaps && inOtherCenter ? kOverlapColor : (Preview.z < 0.5 ? kLeftColor : kRightColor)) : kTaaColor;
 			color.rgb = lerp(color.rgb, tint, kTintAlpha);
 		}
-		if (projectionKnown && !fullCoverage && (inCenter || inTaa)) {
+		if ((!showBinocularGaps || projectionKnown) && !fullCoverage && (inCenter || inTaa)) {
 			const float supportScale = max(centerScale + 2.0 * max(centerFeather, 1e-4), showThreeZoneMask > 0.5 ? taaOuterScale : 0.0);
 			const float distance = FoveatedComputeMaskDistance(uv, centerScale, centerHorizontalScale, centerOffset) * centerScale / supportScale;
 			const float edgePixels = (1.0 - distance) * supportScale * 0.5 * min(OutputDim.y, OutputDim.x * centerHorizontalScale);

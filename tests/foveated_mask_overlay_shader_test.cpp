@@ -217,11 +217,12 @@ namespace
 		cb.SetVariable("SourceScale", Pair{ 0.5f, 0.5f });
 		cb.SetVariable("DispatchDim", Pair{ kWidth, kHeight });
 		const std::array<float, 16> identity{ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+		bool showBinocularGaps = false;
 		const auto setProjection = [&](const std::array<float, 16>& values) {
 			DirectX::XMFLOAT4X4 matrix;
 			std::memcpy(&matrix, values.data(), sizeof(matrix));
 			cb.SetVariable("PreviewClipToOtherEye", values);
-			cb.SetVariable("PreviewArea", Pixel{ 0, FoveatedMaskCalibration::Inverse(FoveatedMaskCalibration::FromClipProjection(matrix)).has_value() ? 1.0f : 0.0f, 0, 0 });
+			cb.SetVariable("PreviewArea", Pixel{ 0, FoveatedMaskCalibration::Inverse(FoveatedMaskCalibration::FromClipProjection(matrix)).has_value() ? 1.0f : 0.0f, showBinocularGaps ? 1.0f : 0.0f, 0 });
 		};
 		setProjection(identity);
 		cb.SetVariable("Tuning0", Pixel{ 0.5f, 0.05f, 1, 0.8f });
@@ -229,7 +230,7 @@ namespace
 			for (size_t c = 0; c < p.size(); ++c)
 				Require(std::abs(p[c] - kScene[c]) < 1e-5f, "Ordinary sampling must remain unchanged and avoid unused allocation pixels");
 
-		unsigned seenOverlap = 0, seenTaa = 0, seenInk = 0, seenOutline = 0;
+		unsigned seenOwnTint = 0, seenTaa = 0, seenInk = 0, seenOutline = 0;
 		for (const auto geometry : { Pixel{ 0.25f, 0.0f, 1, 0.8f }, Pixel{ 0.55f, 0.05f, 1.5f, 0.9f },
 				 Pixel{ 0.9f, 0.1f, 2, 1 }, Pixel{ 0.998f, 0.1f, 1, 1 }, Pixel{ 0.999f, 0.05f, 1, 1 }, Pixel{ 1, 0.1f, 2, 1 } }) {
 			for (bool taa : { false, true }) {
@@ -271,14 +272,12 @@ namespace
 								++seenOutline;
 								continue;
 							}
-							const bool other = full || FoveatedCommon::MaskDistanceUV(u, v, geometry[0], geometry[2], ox, oy) <= support;
-							const Pixel tint = !center ? Pixel{ .04f, .04f, .04f, 0 } : other ? Pixel{ 1, 1, 1, 0 } :
-							                                                        eye       ? Pixel{ .1f, 1, .1f, 0 } :
-							                                                                    Pixel{ 1, .1f, 1, 0 };
+							const Pixel tint = !center ? Pixel{ .04f, .04f, .04f, 0 } : eye ? Pixel{ .1f, 1, .1f, 0 } :
+							                                                                  Pixel{ 1, .1f, 1, 0 };
 							for (unsigned c = 0; c < 3; ++c)
 								Require(std::abs(p[c] - (kScene[c] * .82f + tint[c] * .18f)) < 2e-5f, "Preview must keep scene detail under the correct zone tint");
 							seenTaa += !center;
-							seenOverlap += center && other;
+							seenOwnTint += center;
 						}
 					}
 					Require(std::abs(100.0f * uncovered / (kWidth * kHeight) - coverage.savedPercent) < .12f,
@@ -286,9 +285,94 @@ namespace
 				}
 			}
 		}
-		Require(seenOverlap && seenTaa && seenInk && seenOutline, "Fixtures must exercise overlap, TAA and readable lettering");
+		Require(seenOwnTint && seenTaa && seenInk && seenOutline, "Fixtures must exercise own-eye tints, TAA and readable lettering");
 
-		// Partially overlapping masks must not let binocular fusion hide either uncovered edge.
+		// Own-eye fitting must follow X/Y independently of the other eye's position.
+		for (unsigned eye = 0; eye < 2; ++eye) {
+			for (bool taa : { false, true }) {
+				for (const auto offset : { Pixel{ -.18f, -.12f }, Pixel{ .16f, .14f }, Pixel{ -.18f, .14f }, Pixel{ .16f, -.12f } }) {
+					const float ox = offset[0], oy = offset[1];
+					cb.SetVariable("Tuning0", Pixel{ .4f, .05f, 1.25f, .7f });
+					cb.SetVariable("CenterAndMask", Pixel{ ox, oy, 1, taa ? 1.0f : 0.0f });
+					cb.SetVariable("Preview", Pixel{ -ox, -oy, float(eye), 0 });
+					setProjection(identity);
+					const auto pixels = f.Draw(program.shader.Get(), cb);
+					unsigned outlines = 0;
+					for (UINT y = 0; y < kHeight; ++y) {
+						for (UINT x = 0; x < kWidth; ++x) {
+							const float u = (x + .5f) / kWidth, v = (y + .5f) / kHeight;
+							const float distance = FoveatedCommon::MaskDistanceUV(u, v, .4f, 1.25f, ox, oy);
+							const float supportScale = taa ? .7f : .5f;
+							const bool covered = distance * .4f <= supportScale;
+							const auto& p = pixels[y * kWidth + x];
+							Require(IsHatch(p, x, y) == !covered, "Manual X/Y fitting must stripe only this eye's missing coverage");
+							const Pixel tint = eye ? Pixel{ .1f, 1, .1f } : Pixel{ 1, .1f, 1 };
+							if (std::abs(p[0] - tint[0]) < 1e-5f && std::abs(p[1] - tint[1]) < 1e-5f) {
+								const float edgePixels = (supportScale - distance * .4f) * .5f * kHeight;
+								Require(covered && edgePixels <= 2.01f, "Own outline must track the striped boundary after X/Y edits");
+								++outlines;
+							}
+						}
+					}
+					Require(outlines > 0, "Offset fixtures must expose the own-eye outline");
+				}
+			}
+		}
+
+		// A centre hole must remain visible in each own-eye view until calibration fills it.
+		const FoveatedMaskCalibration::Reference separated{
+			.version = 1,
+			.outer = { .scale = .27f, .centers = { .23f, .5f, .77f, .5f } },
+			.leftToRight = { 1, 0, 0, 0, 1, 0, 0, 0, 1 },
+			.centerScale = .25f,
+			.feather = .01f
+		};
+		const auto fitted = FoveatedMaskCalibration::Solve(separated, 100);
+		Require(fitted.has_value(), "Separated own-eye masks must have a calibrated fit");
+		for (unsigned eye = 0; eye < 2; ++eye) {
+			cb.SetVariable("Tuning0", Pixel{ .25f, .01f, 1, 1 });
+			cb.SetVariable("CenterAndMask", Pixel{ separated.outer.centers[eye * 2] - .5f, 0, 1, 0 });
+			cb.SetVariable("Preview", Pixel{ separated.outer.centers[(1 - eye) * 2] - .5f, 0, float(eye), 0 });
+			setProjection(identity);
+			const auto manual = f.Draw(program.shader.Get(), cb);
+			for (UINT x : { kWidth * 2 / 5, kWidth / 2, kWidth * 3 / 5 })
+				Require(IsHatch(manual[(kHeight / 2) * kWidth + x], x, kHeight / 2),
+					"Own-eye stripes must clearly expose a centre gap without enabling binocular diagnostics");
+			const auto& geometry = fitted->geometry;
+			cb.SetVariable("Tuning0", Pixel{ geometry.scale, separated.feather, geometry.horizontalScale, 1 });
+			cb.SetVariable("CenterAndMask", Pixel{ geometry.centers[eye * 2] - .5f, geometry.centers[eye * 2 + 1] - .5f, 1, 0 });
+			cb.SetVariable("Preview", Pixel{ geometry.centers[(1 - eye) * 2] - .5f, geometry.centers[(1 - eye) * 2 + 1] - .5f, float(eye), fitted->fullImage ? 1.0f : 0.0f });
+			const auto calibrated = f.Draw(program.shader.Get(), cb);
+			for (UINT x : { kWidth * 2 / 5, kWidth / 2, kWidth * 3 / 5 }) {
+				Require(FoveatedCommon::MaskDistanceUV((x + .5f) / kWidth, (.5f * kHeight + .5f) / kHeight,
+							geometry.scale, geometry.horizontalScale, geometry.centers[eye * 2] - .5f, geometry.centers[eye * 2 + 1] - .5f) <= 1,
+					"Calibrated centre coverage must be full strength before feathering");
+				Require(!IsHatch(calibrated[(kHeight / 2) * kWidth + x], x, kHeight / 2),
+					"Calibration must remove the striped centre hole in both own-eye views");
+			}
+		}
+
+		// Feather support can be visible in setup without certifying binocular reconstruction.
+		for (bool ownFeather : { false, true }) {
+			cb.SetVariable("Tuning0", Pixel{ .4f, .05f, 1, 1 });
+			cb.SetVariable("CenterAndMask", Pixel{ ownFeather ? -.2f : 0, 0, 1, 0 });
+			cb.SetVariable("Preview", Pixel{ ownFeather ? 0 : -.2f, 0, 0, 0 });
+			showBinocularGaps = false;
+			setProjection(identity);
+			const auto setup = f.Draw(program.shader.Get(), cb);
+			const UINT x = kWidth / 2 + kWidth / 32;
+			Require(!IsHatch(setup[(kHeight / 2) * kWidth + x], x, kHeight / 2),
+				"Own-eye setup must retain its support boundary inside the feather");
+			showBinocularGaps = true;
+			setProjection(identity);
+			const auto diagnostic = f.Draw(program.shader.Get(), cb);
+			Require(IsHatch(diagnostic[(kHeight / 2) * kWidth + x], x, kHeight / 2),
+				"Either eye relying only on feather must be striped by full-strength diagnostics");
+		}
+
+		// Binocular diagnostics expose gaps in either eye without hiding the own-eye outline.
+		showBinocularGaps = true;
+		setProjection(identity);
 		for (unsigned eye = 0; eye < 2; ++eye) {
 			for (bool taa : { false, true }) {
 				cb.SetVariable("Tuning0", Pixel{ .3f, .05f, 1, .65f });
@@ -296,12 +380,12 @@ namespace
 				cb.SetVariable("Preview", Pixel{ .2f, 0, float(eye), 0 });
 				const auto pixels = f.Draw(program.shader.Get(), cb);
 				Require(IsHatch(pixels[(kHeight / 2) * kWidth + kWidth / 4], kWidth / 4, kHeight / 2),
-					"A covered own-eye region with a peer gap must be hatched in both modes");
+					"Binocular checking must hatch peer gaps in FOV-only and FOV + TAA");
 				if (!taa) {
 					const auto& edge = pixels[(kHeight / 2) * kWidth + static_cast<UINT>(kWidth * .1f + 1)];
 					Require(std::abs(edge[0] - (eye ? .1f : 1.0f)) < 1e-5f &&
 								std::abs(edge[1] - (eye ? 1.0f : .1f)) < 1e-5f,
-						"The outer outline must remain visible across a peer gap during manual setup");
+						"The own-eye outline must remain visible across a binocular gap warning");
 				}
 			}
 			auto monocular = identity;
@@ -355,6 +439,16 @@ namespace
 			Require(std::abs(p[0] - .344f) < 1e-5f && std::abs(p[1] - .346f) < 1e-5f && IsHatch(pixels.front(), 0, 0),
 				"Invalid peer projection must disable overlap without changing this eye's coverage");
 		}
+		showBinocularGaps = false;
+		for (const auto projection : { singular, std::array<float, 16>{} }) {
+			setProjection(projection);
+			const auto pixels = f.Draw(program.shader.Get(), cb);
+			Require(!IsHatch(pixels[(kHeight / 2) * kWidth + kWidth / 2 + 60], kWidth / 2 + 60, kHeight / 2) && IsHatch(pixels.front(), 0, 0),
+				"Own-eye setup must work without a valid stereo projection");
+			const auto& edge = pixels[(kHeight / 2) * kWidth + static_cast<UINT>(kWidth * .2f + 1)];
+			Require(std::abs(edge[0] - 1) < 1e-5f && std::abs(edge[1] - .1f) < 1e-5f,
+				"Own-eye outline must remain usable without a valid stereo projection");
+		}
 	}
 }
 
@@ -366,7 +460,7 @@ int main()
 		CheckPreview(fixture, true);
 		CheckCalibratedBlend(fixture, false);
 		CheckCalibratedBlend(fixture, true);
-		std::cout << "PASS: production VR/flat overlay, tints, own-eye gaps, readout, feather area, full coverage, source bounds and calibrated blend stability\n";
+		std::cout << "PASS: production VR/flat overlay, tints, independent X/Y boundaries, binocular gaps, readout, feather area, full coverage, source bounds and calibrated blend stability\n";
 	} catch (const std::exception& error) {
 		std::cerr << error.what() << '\n';
 		return 1;

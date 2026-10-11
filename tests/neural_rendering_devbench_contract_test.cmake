@@ -888,7 +888,7 @@ string(JSON
     inputSchema
     allOf
 )
-if(NOT _descriptor_all_of_length EQUAL 9)
+if(_descriptor_all_of_length LESS 9)
     message(FATAL_ERROR "DevBench schema must retain NR, memory recovery and foveation conditional contracts")
 endif()
 string(JSON
@@ -915,8 +915,34 @@ string(JSON
     then
     anyOf
 )
-if(NOT _descriptor_configure_field_count EQUAL 16)
-    message(FATAL_ERROR "foveation_configure schema must require at least one of 16 controls")
+if(NOT _descriptor_configure_field_count EQUAL 17)
+    message(FATAL_ERROR "foveation_configure schema must require at least one of 17 controls")
+endif()
+
+string(JSON _gap_status_types LENGTH "${_descriptor_json}" outputSchema properties foveation properties binocularCoverage properties hasGap type)
+string(JSON _gap_status_boolean GET "${_descriptor_json}" outputSchema properties foveation properties binocularCoverage properties hasGap type 0)
+string(JSON _gap_status_null GET "${_descriptor_json}" outputSchema properties foveation properties binocularCoverage properties hasGap type 1)
+if(NOT _gap_status_types EQUAL 2 OR NOT _gap_status_boolean STREQUAL "boolean" OR NOT _gap_status_null STREQUAL "null")
+    message(FATAL_ERROR "Unavailable shared-view checks must report null rather than certify coverage")
+endif()
+string(JSON _gap_identical GET "${_descriptor_json}" outputSchema properties foveation properties binocularCoverage properties requiresIdenticalMasks const)
+if(_gap_identical)
+    message(FATAL_ERROR "Shared-view warnings must not require identical eye masks")
+endif()
+foreach(_coverage_contract IN ITEMS
+    [[a_upscaling.GetFoveatedBinocularCoverage()]]
+    [[{ "automatic", true }]]
+    [[{ "requiresIdenticalMasks", false }]]
+    [["shared_viewing_directions"]]
+)
+    string(FIND "${_bridge}" "${_coverage_contract}" _coverage_position)
+    if(_coverage_position EQUAL -1)
+        message(FATAL_ERROR "Automatic binocular warning contract missing: ${_coverage_contract}")
+    endif()
+endforeach()
+string(JSON _binocular_gap_type GET "${_descriptor_json}" inputSchema properties maskBinocularGapVisualization type)
+if(NOT _binocular_gap_type STREQUAL "boolean")
+    message(FATAL_ERROR "Binocular diagnostic overlay must accept an explicit boolean")
 endif()
 string(JSON _outer_feather_min GET "${_descriptor_json}" inputSchema properties fovOnlyOuterFeather minimum)
 string(JSON _outer_feather_max GET "${_descriptor_json}" inputSchema properties fovOnlyOuterFeather maximum)
@@ -3180,6 +3206,7 @@ set(_foveation_configuration_fields
     peripheryTaaBlendFeather
     neuralFinalLdrBlendFeather
     maskVisualization
+    maskBinocularGapVisualization
     calibrateMasks
     automaticMaskScaling
 )

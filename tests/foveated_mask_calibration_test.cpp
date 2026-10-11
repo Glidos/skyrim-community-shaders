@@ -18,6 +18,45 @@ namespace
 		}
 	}
 
+	void CheckAutomaticWarnings()
+	{
+		const Projection identity{ 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+		Reference reference{ .version = 1, .outer = { .scale = .4f, .centers = { .25f, .5f, .75f, .5f } }, .leftToRight = identity };
+		const auto manual = CheckCoverage(reference, 100, reference.outer, .4f, false, true, kManualContourTolerance);
+		Require(manual.available && manual.hasGap && manual.uncoveredVertices[0] && manual.uncoveredVertices[1],
+			"Separated manual masks must warn about the shared centre gap");
+		const auto fitted = Solve(reference, 100);
+		Require(fitted.has_value(), "Manual centre gaps must have a safe calibrated fit");
+		const auto calibrated = CheckCoverage(reference, 100, fitted->geometry, fitted->geometry.scale, fitted->fullImage, true);
+		Require(calibrated.available && !calibrated.hasGap, "Calibration must clear the automatic shared-view warning");
+		Require(!fitted->fullImage, "The centre-gap fixture must exercise a bounded fit");
+		auto featherOnly = fitted->geometry;
+		featherOnly.scale = std::max(.25f, featherOnly.scale - .02f);
+		Require(CheckCoverage(reference, 100, featherOnly, featherOnly.scale, false, true).hasGap &&
+					!CheckCoverage(reference, 100, featherOnly, fitted->geometry.scale, false, true).hasGap,
+			"Feather-only overlap must not count as full-strength shared coverage");
+		reference.outer.centers = { .5f, .5f, .5f, .5f };
+		const auto aligned = CheckCoverage(reference, 100, reference.outer, .4f, false, true, kManualContourTolerance);
+		Require(aligned.available && !aligned.hasGap, "Aligned manual masks must not warn about contour approximation");
+		// A horizontal view shift gives each eye a different monocular outer strip.
+		reference.leftToRight = { 1, 0, .5, 0, 1, 0, 0, 0, 1 };
+		reference.outer.scale = .6f;
+		reference.outer.centers = { .8f, .5f, .2f, .5f };
+		Geometry geometry{ .95f, 1, { .25f, .5f, .75f, .5f } };
+		const auto monocular = CheckCoverage(reference, 100, geometry, .95f, false, true);
+		Require(CheckCoverage(reference, 100, geometry, .95f, false, false).hasGap,
+			"The asymmetric fixture must have gaps only outside the shared headset view");
+		Require(monocular.available && !monocular.hasGap,
+			"Non-identical mask regions outside the shared headset view must not generate gaps");
+		reference.leftToRight = {};
+		Require(!CheckCoverage(reference, 100, geometry, .5f, false, true).available,
+			"An unavailable stereo projection must never report verified shared coverage");
+		reference.leftToRight = identity;
+		geometry.centers[0] = std::numeric_limits<float>::quiet_NaN();
+		Require(!CheckCoverage(reference, 100, geometry, .5f, false, true).available,
+			"Invalid geometry must not enter shared-view checks");
+	}
+
 	void CheckInheritedBoundary()
 	{
 		struct Settings
@@ -194,6 +233,11 @@ namespace
 	{
 		const auto solution = Solve(reference, percent);
 		Require(solution.has_value(), "A valid FOV reference must have a safe result");
+		const float visible = reference.peripheryTaa ? std::max(solution->geometry.scale, reference.centerScale + 2.0f * std::max(reference.feather, FoveatedCommon::kMinimumFeather)) : solution->geometry.scale;
+		const auto verified = CheckCoverage(reference, percent, solution->geometry, visible, solution->fullImage, false);
+		const auto shared = CheckCoverage(reference, percent, solution->geometry, visible, solution->fullImage, true);
+		Require(verified.available && !verified.hasGap && shared.available && !shared.hasGap,
+			"Every fitted mask must pass strict full-strength and shared-view coverage verification");
 		const auto targets = BuildTargets(reference, percent);
 		Require(targets.has_value(), "Targets must exist for a valid solution");
 		for (unsigned eye = 0; eye < 2; ++eye) {
@@ -239,6 +283,7 @@ namespace
 
 int main()
 {
+	CheckAutomaticWarnings();
 	CheckInheritedBoundary();
 	const auto started = std::chrono::steady_clock::now();
 	Reference reference{ .version = 1, .outer = { .scale = 0.6f, .horizontalScale = 1.0f }, .leftToRight = { 1, 0, 0, 0, 1, 0, 0, 0, 1 } };

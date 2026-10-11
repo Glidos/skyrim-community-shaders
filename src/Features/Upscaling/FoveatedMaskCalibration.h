@@ -15,6 +15,7 @@ namespace FoveatedMaskCalibration
 	constexpr float kMinimumOffset = FoveatedCommon::kMaskOffsetMin;
 	constexpr float kMaximumOffset = FoveatedCommon::kMaskOffsetMax;
 	constexpr double kCoverageMargin = 1e-5;
+	constexpr float kManualContourTolerance = 0.005f;
 	constexpr float kMinimumPercent = 70.0f;
 	constexpr float kMaximumPercent = 130.0f;
 	struct Point
@@ -345,6 +346,48 @@ namespace FoveatedMaskCalibration
 		if (targets[0].size() < 3 || targets[1].size() < 3)
 			return std::nullopt;
 		return targets;
+	}
+
+	struct CoverageCheck
+	{
+		bool available = false;
+		bool hasGap = false;
+		std::array<uint32_t, 2> checkedVertices{};
+		std::array<uint32_t, 2> uncoveredVertices{};
+	};
+
+	/** Checks the required footprint; shared-only checks exclude directions outside the peer eye. */
+	[[nodiscard]] inline CoverageCheck CheckCoverage(const Reference& reference, float percent,
+		const Geometry& geometry, float visibleScale, bool fullImage, bool sharedOnly, float tolerance = 0.0f)
+	{
+		if ((fullImage && FoveatedCommon::IsActiveCoverage(geometry.scale)) || !std::isfinite(visibleScale) || visibleScale <= 0.0f || visibleScale > 1.2f ||
+			!std::isfinite(geometry.scale) || geometry.scale < FoveatedCommon::kCenterScaleMin || geometry.scale > FoveatedCommon::kCenterScaleMax ||
+			!std::isfinite(geometry.horizontalScale) || geometry.horizontalScale < FoveatedCommon::kCenterHorizontalScaleMin || geometry.horizontalScale > FoveatedCommon::kCenterHorizontalScaleMax ||
+			!std::isfinite(tolerance) || tolerance < 0.0f || tolerance > kManualContourTolerance)
+			return {};
+		for (float center : geometry.centers)
+			if (!std::isfinite(center) || center < 0.5f + kMinimumOffset || center > 0.5f + kMaximumOffset)
+				return {};
+		const auto targets = BuildTargets(reference, percent);
+		if (!targets)
+			return {};
+		const auto inverse = *Inverse(reference.leftToRight);
+		CoverageCheck result{ .available = true };
+		for (unsigned eye = 0; eye < 2; ++eye) {
+			const auto required = sharedOnly ? ClipProjectedEye((*targets)[eye], eye == 0 ? reference.leftToRight : inverse) : (*targets)[eye];
+			for (Point point : required) {
+				++result.checkedVertices[eye];
+				const float distance = FoveatedCommon::MaskDistanceUV(static_cast<float>(point.x), static_cast<float>(point.y),
+										   geometry.scale, geometry.horizontalScale, geometry.centers[eye * 2] - 0.5f, geometry.centers[eye * 2 + 1] - 0.5f) *
+				                       geometry.scale / visibleScale;
+				// A convex superellipse containing every vertex also contains the polygon interior.
+				if (!fullImage && distance > 1.0f + tolerance) {
+					++result.uncoveredVertices[eye];
+					result.hasGap = true;
+				}
+			}
+		}
+		return result;
 	}
 
 	/** Fits a convex target inside a fixed superellipse within both offset limits. */
