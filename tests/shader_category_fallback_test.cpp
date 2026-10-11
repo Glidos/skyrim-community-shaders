@@ -12,6 +12,7 @@
 #include <source_location>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -61,6 +62,7 @@ namespace RE
 		{
 			Type value = Type::Lighting;
 			Type get() const { return value; }
+			bool operator==(Type other) const { return value == other; }
 			unsigned underlying() const { return static_cast<unsigned>(value); }
 		} shaderType;
 		const char* fxpFilename = "Lighting";
@@ -160,6 +162,7 @@ namespace globals
 		struct Upscaling
 		{
 			bool IsNeuralRenderingEnabled() const { return false; }
+			bool NeedsCharacterCategoryShaders() const { return globals::deferred->categories; }
 		} upscaling;
 		struct TerrainBlending
 		{
@@ -199,6 +202,7 @@ namespace SIE
 	struct ShaderCache
 	{
 #include "category_flag.h"
+#include "lighting_flags.h"
 		std::array<std::unordered_map<uint32_t, std::unique_ptr<RE::BSGraphics::PixelShader>>,
 			static_cast<unsigned>(RE::BSShader::Type::Total)>
 			pixelShaders;
@@ -241,10 +245,22 @@ namespace SIE
 			++compiles;
 			return compilationSucceeds ? Add(shader, descriptor) : nullptr;
 		}
+		void PrewarmDeferredPixelShaders(const RE::BSShader&, uint32_t, bool);
 		RE::BSGraphics::PixelShader* GetPixelShader(const RE::BSShader&, uint32_t, PixelShaderLookup = PixelShaderLookup::Compile);
 	};
 #include "pixel_lookup.h"
+#include "pixel_prewarm.h"
 }
+namespace Permutations
+{
+	std::vector<uint32_t> pixelPermutations;
+	const auto& GeneratePBRLightingPixelPermutations() { return pixelPermutations; }
+}
+struct TruePBR
+{
+	void GenerateShaderPermutations(RE::BSShader*);
+};
+#include "pbr_prewarm.h"
 enum class CSFrameHookPhase
 {
 	BeginTechniqueTerrainOnBegin,
@@ -294,8 +310,10 @@ namespace NeuralRendering
 #include "preparation_failure.h"
 	};
 }
+unsigned assertions = 0;
 void Require(bool condition, const std::source_location& location = std::source_location::current())
 {
+	++assertions;
 	if (!condition)
 		throw std::runtime_error("Category fallback check failed at line " + std::to_string(location.line()));
 }
@@ -456,8 +474,8 @@ bool nativeTechniqueReady = true;
 RE::BSGraphics::PixelShader* nativeTechniquePixel = nullptr;
 bool NativeTechnique(RE::BSShader*, uint32_t, uint32_t, bool skipPixel)
 {
-	if (nativeTechniqueReady && !skipPixel)
-		Hooks::BSShader__BeginTechnique_SetPixelShader::thunk(nullptr, nativeTechniquePixel);
+	if (nativeTechniqueReady)
+		Hooks::BSShader__BeginTechnique_SetPixelShader::thunk(nullptr, skipPixel ? nullptr : nativeTechniquePixel);
 	return nativeTechniqueReady;
 }
 void TestTechniqueAdmission()
@@ -472,7 +490,7 @@ void TestTechniqueAdmission()
 	Require(f.context.binds == 0 && f.state.deferredPixelShaderMissing);
 	// A new depth-only technique must not inherit the rejected pixel stage.
 	Require(Hooks::BSShader_BeginTechnique::thunk(&f.shader, plain, requested, true));
-	Require(!f.state.deferredPixelShaderMissing && f.context.binds == 0);
+	Require(!f.state.deferredPixelShaderMissing && f.context.binds == 1 && f.context.bound == nullptr);
 	auto* fallback = f.cache.Add(f.shader, plain);
 	Require(Hooks::BSShader_BeginTechnique::thunk(&f.shader, plain, requested, false));
 	Require(f.context.bound == fallback->shader);
@@ -485,8 +503,10 @@ void TestTechniqueAdmission()
 	Require(f.current == fallback && f.context.vertex == &nativeVS && !f.state.settingCustomShader);
 	// Depth-only fallback requires a vertex stage but never a pixel variant.
 	f.cache.pixelShaders[0].clear();
+	f.cache.compilationSet.requests.clear();
 	Require(Hooks::BSShader_BeginTechnique::thunk(&f.shader, plain, requested, true));
 	Require(f.current == nullptr && !f.state.deferredPixelShaderMissing);
+	Require(f.context.bound == nullptr && f.cache.compilationSet.requests.empty());
 	// Effect techniques retain their native admission rules.
 	f.shader.shaderType.value = RE::BSShader::Type::Effect;
 	Require(!Hooks::BSShader_BeginTechnique::thunk(&f.shader, plain, requested, false));
@@ -511,6 +531,43 @@ void TestWarningDeduplication()
 	state.RecordPreparationFailure(args, "category capture pending");
 	Require(logger::warnings == 3);
 }
+void TestNullPixelBinding()
+{
+	for (bool cached : { false, true }) {
+		Fixture f;
+		f.context.bound = f.native.shader;
+		f.current = &f.native;
+		f.state.modifiedPixelDescriptor = 0x10021u;
+		if (cached)
+			f.cache.Add(f.shader, f.state.modifiedPixelDescriptor);
+		Hooks::BSShader__BeginTechnique_SetPixelShader::thunk(nullptr, nullptr);
+		Require(f.context.bound == nullptr && f.current == nullptr);
+		Require(!f.state.deferredPixelShaderMissing && f.deferred.captureReady);
+		Require(f.cache.compilationSet.requests.empty());
+	}
+}
+void TestPBRPrewarming()
+{
+	constexpr uint32_t forward = 0x10009u;
+	constexpr uint32_t deferred = forward | static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Deferred);
+	const auto flag = SIE::ShaderCache::GetCharacterCategoryFlag(RE::BSShader::Type::Lighting);
+	Permutations::pixelPermutations = { forward, deferred };
+	for (bool categories : { false, true }) {
+		Fixture f;
+		f.deferred.categories = categories;
+		TruePBR feature;
+		feature.GenerateShaderPermutations(&f.shader);
+		std::set<uint32_t> expected{ forward, deferred };
+		if (categories)
+			expected.insert(deferred | flag);
+		Require(f.cache.compilationSet.requests == expected);
+		Require(f.deferred.captureReady && !f.state.deferredPixelShaderMissing);
+		f.cache.compilationSet.requests.clear();
+		f.shader.shaderType.value = RE::BSShader::Type::Effect;
+		feature.GenerateShaderPermutations(&f.shader);
+		Require(f.cache.compilationSet.requests.empty());
+	}
+}
 int main()
 {
 	try {
@@ -519,14 +576,16 @@ int main()
 			for (auto type : { RE::BSShader::Type::Lighting, RE::BSShader::Type::Grass,
 					 RE::BSShader::Type::DistantTree, RE::BSShader::Type::Sky, RE::BSShader::Type::Effect })
 				for (bool categories : { false, true }) TestLayoutTransitions(type, categories);
+			TestColdAndFailedVariants();
+			TestExactAndProtectedLookups();
+			TestUnusedCategoriesStayCold();
+			TestBoundGrassVariant();
+			TestNullPixelBinding();
+			TestTechniqueAdmission();
+			TestPBRPrewarming();
 		}
-		TestColdAndFailedVariants();
-		TestExactAndProtectedLookups();
 		TestWarningDeduplication();
-		TestUnusedCategoriesStayCold();
-		TestBoundGrassVariant();
-		TestTechniqueAdmission();
-		std::cout << "Category fallback and warning checks passed\n";
+		std::cout << "Category fallback and warning checks: " << assertions << " passed (flat and VR)\n";
 		return 0;
 	} catch (const std::exception& error) {
 		std::cerr << error.what() << '\n';

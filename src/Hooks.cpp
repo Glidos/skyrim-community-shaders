@@ -792,8 +792,8 @@ bool Hooks::BSShader_BeginTechnique::thunk(RE::BSShader* shader, uint32_t vertex
 
 	if (!shaderFound && shader->shaderType.get() != RE::BSShader::Type::Effect && !UseNativeWaterShaders(*shader)) {
 		RE::BSGraphics::VertexShader* vertexShader = shaderCache->GetVertexShader(*shader, state->modifiedVertexDescriptor);
-		RE::BSGraphics::PixelShader* pixelShader = shaderCache->GetPixelShader(*shader, state->modifiedPixelDescriptor,
-			skipPixelShader ? SIE::ShaderCache::PixelShaderLookup::Compile : SIE::ShaderCache::PixelShaderLookup::Draw);
+		RE::BSGraphics::PixelShader* pixelShader = skipPixelShader ? nullptr :
+		                                                             shaderCache->GetPixelShader(*shader, state->modifiedPixelDescriptor, SIE::ShaderCache::PixelShaderLookup::Draw);
 		if (phaseDiagActive) {
 			const uint64_t phaseEndTicks = ReadFrameDiagCounterTicks();
 			RecordCSFrameHookPhase(CSFrameHookPhase::BeginTechniqueShaderCacheLookup, phaseDiagFrame, phaseEndTicks - phaseStartTicks);
@@ -806,12 +806,8 @@ bool Hooks::BSShader_BeginTechnique::thunk(RE::BSShader* shader, uint32_t vertex
 			globals::d3d::context->VSSetShader(reinterpret_cast<ID3D11VertexShader*>(vertexShader->shader), NULL, NULL);
 			*globals::game::currentVertexShader = vertexShader;
 			globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_VERTEX_DESC);
-			if (skipPixelShader) {
-				pixelShader = nullptr;
-			}
 			*globals::game::currentPixelShader = pixelShader;
-			if (pixelShader)
-				globals::d3d::context->PSSetShader(reinterpret_cast<ID3D11PixelShader*>(pixelShader->shader), NULL, NULL);
+			globals::d3d::context->PSSetShader(pixelShader ? reinterpret_cast<ID3D11PixelShader*>(pixelShader->shader) : nullptr, NULL, NULL);
 #ifdef DEVBENCH_BRIDGE_ENABLED
 			if (globals::features::upscaling.IsNeuralRenderingEnabled())
 				NeuralRendering::Color::ExposureCapture::Instance().ObservePixelShaderSelection(
@@ -1686,7 +1682,7 @@ namespace Hooks
 			auto state = globals::state;
 			auto shaderCache = globals::shaderCache;
 
-			if (!state->settingCustomShader) {
+			if (!state->settingCustomShader && a_pixelShader) {
 				if (shaderCache->IsEnabled()) {
 					auto currentShader = state->currentShader;
 					auto type = currentShader->shaderType.get();
@@ -1707,19 +1703,18 @@ namespace Hooks
 				}
 			}
 
-			if (state->deferredPixelShaderMissing) {
+			if (!state->settingCustomShader && a_pixelShader && state->deferredPixelShaderMissing) {
 				*globals::game::currentPixelShader = a_pixelShader;
 				return;
 			}
 			auto* deferred = globals::deferred;
-			if (!state->settingCustomShader && deferred && deferred->deferredPass &&
+			if (!state->settingCustomShader && a_pixelShader && deferred && deferred->deferredPass &&
 				deferred->IsCharacterCategoryEnabled() && state->currentShader &&
 				SIE::ShaderCache::GetCharacterCategoryFlag(state->currentShader->shaderType.get()) != 0)
 				deferred->InvalidateCharacterCategoryCapture();
 			*globals::game::currentPixelShader = a_pixelShader;
 
-			if (a_pixelShader)
-				globals::d3d::context->PSSetShader(reinterpret_cast<ID3D11PixelShader*>(a_pixelShader->shader), NULL, NULL);
+			globals::d3d::context->PSSetShader(a_pixelShader ? reinterpret_cast<ID3D11PixelShader*>(a_pixelShader->shader) : nullptr, NULL, NULL);
 #ifdef DEVBENCH_BRIDGE_ENABLED
 			if (globals::features::upscaling.IsNeuralRenderingEnabled())
 				NeuralRendering::Color::ExposureCapture::Instance().ObservePixelShaderSelection(

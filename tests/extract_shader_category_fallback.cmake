@@ -23,7 +23,7 @@ extract_between("${_hooks}" "bool Hooks::BSShader_BeginTechnique::thunk("
 foreach(_guard IN ITEMS
     "state->deferredPixelShaderMissing = false;"
     "return shaderFound && !state->deferredPixelShaderMissing;"
-    "skipPixelShader ? SIE::ShaderCache::PixelShaderLookup::Compile : SIE::ShaderCache::PixelShaderLookup::Draw"
+    "skipPixelShader ? nullptr :"
     "cache->GetPixelShader(*shader, state->modifiedPixelDescriptor, SIE::ShaderCache::PixelShaderLookup::Draw)"
     "GetPixelShader(*currentShader, state->modifiedPixelDescriptor, SIE::ShaderCache::PixelShaderLookup::Draw)")
     string(FIND "${_hooks}" "${_guard}" _found)
@@ -34,3 +34,10 @@ endforeach()
 
 extract_between("${_pbr}" "auto* boundShader = *globals::game::currentPixelShader;"
     "const auto* pbr = static_cast<const BSLightingShaderMaterialPBR*>" "grass_material_admission.h")
+
+extract_between("${_header}" "enum class LightingShaderFlags"
+    "enum class BloodSplatterShaderTechniques" "lighting_flags.h")
+extract_between("${_cache}" "void ShaderCache::PrewarmDeferredPixelShaders("
+    "RE::BSGraphics::PixelShader* ShaderCache::GetPixelShader(" "pixel_prewarm.h")
+extract_between("${_pbr}" "void TruePBR::GenerateShaderPermutations("
+    "struct ExtendedRendererState" "pbr_prewarm.h")

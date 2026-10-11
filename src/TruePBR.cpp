@@ -6,6 +6,7 @@
 
 #include "Features/GrassLighting.h"
 #include "Features/InteriorSun.h"
+#include "Features/Upscaling.h"
 #include "Hooks.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -713,12 +714,16 @@ void TruePBR::GenerateShaderPermutations(RE::BSShader* shader)
 	auto state = globals::state;
 	auto shaderCache = globals::shaderCache;
 	if (shader->shaderType == RE::BSShader::Type::Lighting) {
+		const bool categories = globals::features::upscaling.NeedsCharacterCategoryShaders();
 		const auto pixelPermutations = Permutations::GeneratePBRLightingPixelPermutations();
 		for (auto descriptor : pixelPermutations) {
 			auto vertexShaderDesriptor = descriptor;
 			auto pixelShaderDescriptor = descriptor;
 			state->ModifyShaderLookup(*shader, vertexShaderDesriptor, pixelShaderDescriptor);
-			std::ignore = shaderCache->GetPixelShader(*shader, pixelShaderDescriptor);
+			if (pixelShaderDescriptor & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Deferred))
+				shaderCache->PrewarmDeferredPixelShaders(*shader, pixelShaderDescriptor, categories);
+			else
+				std::ignore = shaderCache->GetPixelShader(*shader, pixelShaderDescriptor);
 		}
 	}
 }
