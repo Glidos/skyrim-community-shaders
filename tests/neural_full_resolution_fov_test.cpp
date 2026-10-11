@@ -27,10 +27,10 @@ namespace globals
 }
 struct FoveatedHeadsetSnapshot;
 std::optional<FoveatedHeadsetSnapshot> GetFoveatedHeadsetGeometry(bool includeVisibleBounds = true);
-bool loadingMenu = false;
+bool loadingMenu = false, mainMenu = false, menuPresentation = false, loadingProtection = false;
 bool IsLoadingMenuContextActive() { return loadingMenu; }
-bool IsMainMenuContextActive() { return false; }
-bool IsVRMenuPresentationContextActive() { return false; }
+bool IsMainMenuContextActive() { return mainMenu; }
+bool IsVRMenuPresentationContextActive() { return menuPresentation; }
 
 namespace globals::features
 {
@@ -98,7 +98,7 @@ float ClampFoveatedCenterScale(float value) { return FoveatedCommon::ClampCenter
 float ClampFoveatedCenterHorizontalScale(float value) { return FoveatedCommon::ClampCenterHorizontalScale(value); }
 float ClampFoveatedMaskOffsetAdjustment(float value) { return std::clamp(value, FoveatedCommon::kMaskOffsetMin, FoveatedCommon::kMaskOffsetMax); }
 bool SupportsFoveatedVendorDispatch(Upscaling::UpscaleMethod method) { return method != Upscaling::UpscaleMethod::kNONE; }
-bool IsVRLoadingSubmitProtectionContextActive(const Upscaling&, const globals::State*) { return false; }
+bool IsVRLoadingSubmitProtectionContextActive(const Upscaling&, const globals::State*) { return loadingProtection; }
 
 #include "neural_full_resolution_fov_under_test.h"
 std::optional<FoveatedHeadsetSnapshot> liveHeadset;
@@ -183,33 +183,57 @@ void CheckHeadsetSetupTransaction()
 		"Changed headset outline must invalidate reuse even when projection and nasal extent are unchanged");
 	Require(!upscaling.ConfirmFoveatedMaskSetup(candidate, error) && candidate == scaled && !error.empty(),
 		"Valid headset optics with stale calibration must require recalibration instead of manual fallback");
+	Require(upscaling.PrepareFoveatedMaskCalibration(candidate, CaptureMode::Headset, 100, error) &&
+				candidate.foveatedCalibrationReference.headsetOutlines == liveHeadset->outlines && error.empty(),
+		"Fresh headset setup must replace a stale saved outline");
+	Require(upscaling.PrepareFoveatedMaskCalibration(candidate, CaptureMode::Reuse, 70, error),
+		"Outer Coverage must work after replacing a stale saved reference");
 	liveHeadset->outlines[0][0].y = 0;
-	for (unsigned condition = 0; condition < 6; ++condition) {
+	candidate = scaled;
+	for (unsigned condition = 0; condition < 10; ++condition) {
 		globals::game::isVR = condition != 0;
 		upscaling.loaded = condition != 1;
 		loadingMenu = condition == 2;
 		globals::storage.pendingPostLoadRuntimeReset = condition == 3;
 		upscaling.method = condition == 4 ? Upscaling::UpscaleMethod::kNONE : Upscaling::UpscaleMethod::kDLSS;
-		if (condition == 5)
+		mainMenu = condition == 5;
+		candidate.foveatedVendorDispatch = condition != 6;
+		loadingProtection = condition == 7;
+		globals::state = condition == 8 ? nullptr : &globals::storage;
+		if (condition == 9)
 			liveHeadset.reset();
-		Require(!upscaling.PrepareFoveatedMaskCalibration(candidate, CaptureMode::Headset, 100, error) && candidate == scaled && !error.empty(),
+		const auto rejected = candidate;
+		Require(!upscaling.PrepareFoveatedMaskCalibration(candidate, CaptureMode::Headset, 100, error) && candidate == rejected && !error.empty(),
 			"Unavailable runtime, loading or missing optics must leave all mask settings untouched");
-		if (condition != 5)
-			Require(!upscaling.ConfirmFoveatedMaskSetup(candidate, error) && candidate == scaled,
+		if (condition != 9)
+			Require(!upscaling.ConfirmFoveatedMaskSetup(candidate, error) && candidate == rejected,
 				"Manual confirmation must retain the calibration runtime and loaded-scene guards");
-		if (condition == 5)
+		if (condition == 9)
 			Require(error.find("valid viewing angles for both eyes") != std::string::npos &&
 						error.find("manually in FOV only") != std::string::npos && error.find("X/Y sliders") != std::string::npos &&
 						error.find("Mask setup finished, then Save settings") != std::string::npos,
 				"Missing headset data must explain the failure and direct users to manual FOV setup");
 	}
 	globals::game::isVR = upscaling.loaded = true;
-	loadingMenu = globals::storage.pendingPostLoadRuntimeReset = false;
+	globals::state = &globals::storage;
+	loadingMenu = mainMenu = menuPresentation = loadingProtection = globals::storage.pendingPostLoadRuntimeReset = false;
 	auto expected = scaled;
 	expected.foveatedMaskSetup = CaptureSetupConfirmation(expected);
 	Require(upscaling.ConfirmFoveatedMaskSetup(candidate, error) && candidate == expected && error.empty() &&
 				!upscaling.GetFoveatedBinocularCoverage(candidate).available,
 		"Missing headset optics must allow explicit acceptance without changing the fit or inventing a coverage result");
+	liveHeadset = FoveatedHeadsetSnapshot{ .leftToRight = { 1, 0, -.19, 0, 1, 0, 0, 0, 1 }, .innerLimits = { 1, 0 }, .outlines = { rectangle, rectangle } };
+	menuPresentation = true;
+	for (unsigned staleFlag = 0; staleFlag < 4; ++staleFlag) {
+		upscaling.runtimeResolutionPlan = { staleFlag == 0, staleFlag == 1, staleFlag == 2 };
+		candidate = scaled;
+		Require(upscaling.PrepareFoveatedMaskCalibration(candidate, CaptureMode::Headset, 100, error) && candidate == baseline && error.empty(),
+			"An in-game menu or stale plan must not block headset setup in a loaded scene");
+		Require(upscaling.PrepareFoveatedMaskCalibration(candidate, CaptureMode::Reuse, 50, error) && candidate == scaled,
+			"An in-game menu or stale plan must not block Outer Coverage");
+		Require(upscaling.ConfirmFoveatedMaskSetup(candidate, error) && HasFovOnlySetup(candidate),
+			"An in-game menu or stale plan must not block confirmation after live setup");
+	}
 }
 
 int main()

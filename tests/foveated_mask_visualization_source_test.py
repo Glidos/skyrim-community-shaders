@@ -14,6 +14,14 @@ def section(begin, end):
 
 
 class PreviewIntegration(unittest.TestCase):
+    def test_menu_close_ends_preview_on_both_close_paths(self):
+        menu = (ROOT / "src/Menu.cpp").read_text()
+        close = menu[menu.index("void Menu::CloseMenu()"):]
+        close = close[:close.index("static std::vector<InputCombo>")]
+        self.assertIn("globals::features::upscaling.EndFoveatedMaskVisualization();", close)
+        draw = menu[menu.index("void Menu::DrawSettings()"):menu.index("void Menu::DrawGeneralSettings()")]
+        self.assertIn("globals::features::upscaling.EndFoveatedMaskVisualization();", draw[draw.rindex("if (!IsEnabled)"):])
+
     def test_profile_load_preserves_visualization(self):
         load = section("void Upscaling::LoadSettings(", "void Upscaling::RestoreDefaultSettings(")
         self.assertNotIn("settings.foveatedPeripheryMaskVisualization = false", load)

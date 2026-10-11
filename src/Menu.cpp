@@ -1196,6 +1196,7 @@ void Menu::DrawSettings()
 	UpdateSettingsDirtyState();
 
 	if (!IsEnabled) {
+		globals::features::upscaling.EndFoveatedMaskVisualization();
 		systemCommitLastRefreshTime = -1.0;
 		PerformanceTuningRenderer::NotifyMenuClosed();
 	}
@@ -1405,6 +1406,7 @@ void Menu::CloseMenu()
 		editorWindow->UpdateOpenState();
 	}
 	IsEnabled = false;
+	globals::features::upscaling.EndFoveatedMaskVisualization();
 #ifdef DEVBENCH_BRIDGE_ENABLED
 	MenuUI::DevBenchViewport::Invalidate();
 #endif

@@ -1978,7 +1978,7 @@ namespace
 
 	constexpr const char* kFoveatedUpscalingMethodAvailabilityText = "VR FOV mask setup is available only with DLSS or FSR.";
 	constexpr const char* kFoveatedUpscalingSetupInstructions = R"(1) Select FOV only, then press Automatic Headset Setup.
-2) Turn FOV Mask Visualization on.
+2) Turn FOV Mask Visualization on. It turns off when you close CSX.
 3) Lower Outer Coverage until the yellow-and-black stripes just enter your view. Then increase it slightly until the stripes are no longer visible.
 4) Check each eye separately, then with both eyes open. Unequal eye views may need manual fine-tuning using each eye's X/Y sliders. After manual changes, press Calibrate Masks and check again.
 5) When both eyes look clear, click Mask setup finished.
@@ -19559,10 +19559,10 @@ bool Upscaling::ValidateFoveatedMaskSetupContext(const Settings& a_settings, std
 		a_error = "Calibration requires enabled VR FOV with DLSS or FSR.";
 		return false;
 	}
+	// Headset optics remain valid while an in-game menu is open; loading must finish first.
 	if (globals::state->pendingPostLoadRuntimeReset || IsMainMenuContextActive() || IsLoadingMenuContextActive() ||
-		IsVRLoadingSubmitProtectionContextActive(*this, globals::state) || IsVRMenuPresentationContextActive() ||
-		runtimeResolutionPlan.knownMenuContextActive || runtimeResolutionPlan.menuContextActive || runtimeResolutionPlan.loadingMenuActive) {
-		a_error = "Calibration requires a loaded scene. Close game menus and try again.";
+		IsVRLoadingSubmitProtectionContextActive(*this, globals::state)) {
+		a_error = "Calibration requires a loaded scene. Wait for loading to finish and try again.";
 		return false;
 	}
 	return true;
@@ -19831,7 +19831,7 @@ void Upscaling::DrawFoveatedSettings()
 	Util::Widgets::Checkbox("FOV Mask Visualization", &settings.foveatedPeripheryMaskVisualization);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::TextUnformatted("Use this while tuning FOV masks.");
-		ImGui::TextUnformatted("Also works at full coverage. Temporarily pauses during loading and game menus.");
+		ImGui::TextUnformatted("Works at full coverage and with an in-game menu open. Pauses during loading; turns off when you close CSX.");
 		ImGui::TextUnformatted("Each eye shows its own mask: magenta = left FOV, green = right FOV, charcoal = TAA.");
 		ImGui::TextUnformatted("Amber stripes (80% opaque) begin outside this eye's outline, including uncovered areas toward the centre.");
 		ImGui::TextUnformatted("Shared-view coverage gaps are checked automatically and reported separately below.");
@@ -43876,16 +43876,23 @@ void Upscaling::DestroyPeripheryTAAResources()
 	submitStageFoveatedPeripheryTAAEyeReady = {};
 }
 
+void Upscaling::EndFoveatedMaskVisualization()
+{
+	pendingFoveatedMaskScaling.reset();
+	if (!settings.foveatedPeripheryMaskVisualization)
+		return;
+	settings.foveatedPeripheryMaskVisualization = false;
+	InvalidateFrameScopedUpscalingState();
+	RequestHistoryReset();
+}
+
 bool Upscaling::IsFoveatedMaskVisualizationEnabled(UpscaleMethod a_upscaleMethod) const
 {
 	return globals::game::isVR && IsFoveatedVendorDispatchRequested(settings, a_upscaleMethod) &&
 	       settings.foveatedPeripheryMaskVisualization && globals::state &&
 	       !globals::state->pendingPostLoadRuntimeReset &&
 	       !IsMainMenuContextActive() && !IsLoadingMenuContextActive() &&
-	       !IsVRLoadingSubmitProtectionContextActive(*this, globals::state) &&
-	       !IsVRMenuPresentationContextActive() &&
-	       !runtimeResolutionPlan.knownMenuContextActive &&
-	       !runtimeResolutionPlan.menuContextActive && !runtimeResolutionPlan.loadingMenuActive;
+	       !IsVRLoadingSubmitProtectionContextActive(*this, globals::state);
 }
 
 bool Upscaling::DispatchFoveatedMaskVisualization(uint32_t a_eyeIndex, uint32_t a_inputWidth, uint32_t a_inputHeight)

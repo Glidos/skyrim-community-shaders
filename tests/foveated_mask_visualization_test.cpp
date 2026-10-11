@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 
 #include "Features/FoveatedCommon.h"
@@ -166,6 +167,7 @@ struct Upscaling
 		bool periphery_taa_enable = false;
 		float center = 1.0f;
 		float taaCenter = 0.4f;
+		bool operator==(const Settings&) const = default;
 	} settings;
 	struct
 	{
@@ -261,6 +263,11 @@ struct Upscaling
 		Check(!globals::d3d::context->predicate, "Final copy must not inherit an occlusion predicate");
 		++finalizations;
 	}
+	std::optional<float> pendingFoveatedMaskScaling;
+	unsigned invalidations = 0, historyResets = 0;
+	void InvalidateFrameScopedUpscalingState() { ++invalidations; }
+	void RequestHistoryReset() { ++historyResets; }
+	void EndFoveatedMaskVisualization();
 	bool TryDrawMainFoveatedMaskVisualization(bool);
 	bool IsFoveatedMaskVisualizationEnabled(UpscaleMethod) const;
 	bool DispatchFoveatedMaskVisualization(uint32_t, uint32_t = 1280, uint32_t = 1440);
@@ -298,6 +305,24 @@ int main()
 			Check(upscaling.dispatchedScale == scale && upscaling.dispatchedOffset.x == -0.1f, "Left profile must match");
 		}
 	}
+	for (bool taa : { false, true }) {
+		upscaling.settings.periphery_taa_enable = taa;
+		auto expected = upscaling.settings;
+		expected.foveatedPeripheryMaskVisualization = false;
+		upscaling.pendingFoveatedMaskScaling = 70.0f;
+		const auto resets = upscaling.historyResets;
+		const auto invalidations = upscaling.invalidations;
+		upscaling.EndFoveatedMaskVisualization();
+		Check(upscaling.settings == expected && !upscaling.pendingFoveatedMaskScaling && upscaling.historyResets == resets + 1 && upscaling.invalidations == invalidations + 1,
+			"Closing preview must preserve the fitted mask and mode while resetting temporal history");
+		Check(!upscaling.IsFoveatedMaskVisualizationEnabled(Method::DLSS) && !upscaling.DispatchFoveatedMaskVisualization(0),
+			"A closed preview must not draw again until explicitly enabled");
+		upscaling.pendingFoveatedMaskScaling = 80.0f;
+		upscaling.EndFoveatedMaskVisualization();
+		Check(upscaling.settings == expected && !upscaling.pendingFoveatedMaskScaling && upscaling.historyResets == resets + 1 && upscaling.invalidations == invalidations + 1,
+			"Closing with preview already off must discard unapplied edits without resetting history again");
+		upscaling.settings.foveatedPeripheryMaskVisualization = true;
+	}
 	upscaling.settings.periphery_taa_enable = true;
 	Check(upscaling.DispatchFoveatedMaskVisualization(1) && upscaling.dispatchedScale == 0.4f,
 		"TAA preview must select its own center scale");
@@ -305,12 +330,17 @@ int main()
 	Check(upscaling.DispatchFoveatedMaskVisualization(1), "Right eye full-coverage TAA profile must draw");
 	Check(upscaling.dispatchedScale == 1.0f && upscaling.usedTaaOffsets && upscaling.dispatchedOffset.y == -0.4f,
 		"Full coverage must retain the selected TAA profile and eye offsets");
-	for (auto* gate : { &upscaling.mainMenu, &upscaling.loadingMenu, &upscaling.nativeMenu,
-			 &upscaling.loadingProtection, &state.pendingPostLoadRuntimeReset,
-			 &upscaling.runtimeResolutionPlan.knownMenuContextActive,
+	for (auto* menu : { &upscaling.nativeMenu, &upscaling.runtimeResolutionPlan.knownMenuContextActive,
 			 &upscaling.runtimeResolutionPlan.menuContextActive, &upscaling.runtimeResolutionPlan.loadingMenuActive }) {
+		*menu = true;
+		Check(upscaling.IsFoveatedMaskVisualizationEnabled(Method::DLSS),
+			"In-game menus and stale render-plan flags must not hide the setup preview");
+		*menu = false;
+	}
+	for (auto* gate : { &upscaling.mainMenu, &upscaling.loadingMenu,
+			 &upscaling.loadingProtection, &state.pendingPostLoadRuntimeReset }) {
 		*gate = true;
-		Check(!upscaling.IsFoveatedMaskVisualizationEnabled(Method::DLSS), "Native menu/load protection must prevail");
+		Check(!upscaling.IsFoveatedMaskVisualizationEnabled(Method::DLSS), "Main-menu/load protection must prevail");
 		*gate = false;
 	}
 	Check(!upscaling.IsFoveatedMaskVisualizationEnabled(Method::None) && !upscaling.IsFoveatedMaskVisualizationEnabled(Method::TAA), "Unsupported methods must remain inactive");

@@ -5,7 +5,7 @@ endif()
 file(READ "${PROJECT_ROOT}/src/Features/Upscaling.cpp" _source)
 string(
     FIND "${_source}"
-    "bool Upscaling::IsFoveatedMaskVisualizationEnabled("
+    "void Upscaling::EndFoveatedMaskVisualization("
     _start
 )
 if(_start EQUAL -1)

@@ -4411,6 +4411,8 @@ public:
 		const float4x4& currentViewProjInverse, const float4x4& previousViewProj, const float4& currentCameraPosAdjust, const float4& previousCameraPosAdjust,
 		bool resetHistory, float centerScale, float centerHorizontalScale, float centerOffsetX, float centerOffsetY,
 		float inputTextureScaleX = 1.0f, float inputTextureScaleY = 1.0f, float inputTextureOffsetX = 0.0f, float inputTextureOffsetY = 0.0f);
+	/** Ends the setup preview and discards unapplied coverage edits without changing the fitted mask. */
+	void EndFoveatedMaskVisualization();
 	bool IsFoveatedMaskVisualizationEnabled(UpscaleMethod a_upscaleMethod) const;
 	/** Composites the configured mask over the freshly copied eye image. */
 	bool DispatchFoveatedMaskVisualization(uint32_t a_eyeIndex, uint32_t a_inputWidth, uint32_t a_inputHeight);
