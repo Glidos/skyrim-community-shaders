@@ -189,6 +189,10 @@ void CheckHeadsetSetupTransaction()
 			liveHeadset.reset();
 		Require(!upscaling.PrepareFoveatedMaskCalibration(candidate, CaptureMode::Headset, 100, error) && candidate == scaled && !error.empty(),
 			"Unavailable runtime, loading or missing optics must leave all mask settings untouched");
+		if (condition == 5)
+			Require(error.find("valid viewing angles for both eyes") != std::string::npos &&
+						error.find("manually in FOV only") != std::string::npos && error.find("X/Y sliders") != std::string::npos,
+				"Missing headset data must explain the failure and direct users to manual FOV setup");
 	}
 	globals::game::isVR = upscaling.loaded = true;
 	loadingMenu = globals::storage.pendingPostLoadRuntimeReset = false;

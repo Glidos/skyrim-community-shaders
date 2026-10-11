@@ -120,6 +120,7 @@ namespace Util
 		std::string warning;
 		void WrappedError(const char* text) { warning = text; }
 		void WrappedWarning(const char* text) { warning = text; }
+		void WrappedWarning(const char*, const char* text) { warning = ImGui::renderedMessage = text; }
 	}
 }
 namespace globals::features
@@ -195,6 +196,7 @@ struct Upscaling
 	void DrawFovSettingsLink() const {}
 	void DrawPeripheryTAAControl();
 	std::string foveatedCalibrationMessage;
+	bool foveatedCalibrationWarning = false;
 	void DrawFoveatedCalibration();
 	bool ConfirmFoveatedMaskSetup(Settings&, std::string&) const;
 	bool coverageAvailable = true, coverageGap = false;
@@ -466,9 +468,18 @@ void CheckConfirmedCalibrationFailure()
 		upscaling.DrawFoveatedCalibration();
 		Require(upscaling.settings == confirmed && FoveatedMaskCalibration::HasFovOnlySetup(upscaling.settings),
 			"Failed calibration must retain a previously confirmed fit");
+		Require(upscaling.foveatedCalibrationWarning && Util::Text::warning == upscaling.foveatedCalibrationMessage,
+			"Failed calibration must display its message using warning styling");
 		Require(ImGui::renderedMessage == "Calibration unavailable; previous fit retained.",
 			"A confirmed fit must not hide a later calibration error");
 	}
+	upscaling.calibrationSucceeds = true;
+	Util::Text::warning.clear();
+	upscaling.DrawFoveatedCalibration();
+	Require(!upscaling.foveatedCalibrationWarning && Util::Text::warning.empty(),
+		"A successful retry must return calibration messages to normal styling");
+	upscaling.settings = confirmed;
+	upscaling.calibrationSucceeds = false;
 	ImGui::captureHeadset = ImGui::captureCalibration = false;
 	FoveationConfigurationRequest request;
 	request.automaticHeadsetSetup = true;

@@ -2618,6 +2618,7 @@ public:
 	bool ConfirmFoveatedMaskSetup(Settings& a_candidate, std::string& a_error) const;
 	void DrawFoveatedCalibration();
 	std::string foveatedCalibrationMessage;
+	bool foveatedCalibrationWarning = false;
 	std::optional<float> pendingFoveatedMaskScaling;
 #ifdef DEVBENCH_BRIDGE_ENABLED
 	/** Session-only overlay for DevBench diagnostics; normal setup shows only the current eye. */

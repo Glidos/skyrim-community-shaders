@@ -19556,7 +19556,7 @@ bool Upscaling::ConfirmFoveatedMaskSetup(Settings& a_candidate, std::string& a_e
 	const auto coverage = GetFoveatedBinocularCoverage(a_candidate);
 	if (!coverage.available || coverage.hasGap) {
 		a_error = coverage.available ? "Shared-view gap detected. Calibrate Masks and check the fit again." :
-		                               "Coverage check unavailable. Enter a loaded scene and repeat setup.";
+		                               "Shared-view coverage cannot be checked automatically. Keep FOV only, check each eye separately, then with both eyes open, and save settings.";
 		return false;
 	}
 	auto confirmed = a_candidate;
@@ -19586,7 +19586,7 @@ bool Upscaling::PrepareFoveatedMaskCalibration(Settings& a_candidate, FoveatedMa
 	}
 	const auto headset = GetFoveatedHeadsetGeometry();
 	if (!headset) {
-		a_error = "Headset projection data is unavailable from the VR runtime. Check that your headset is active and try again.";
+		a_error = "Automatic setup is unavailable because the VR runtime has not provided valid viewing angles for both eyes. Set up masks manually in FOV only using size, R/L expansion and each eye's X/Y sliders. Check each eye separately, then with both eyes open, and save settings.";
 		return false;
 	}
 	const auto& projection = headset->leftToRight;
@@ -19676,13 +19676,15 @@ void Upscaling::DrawFoveatedCalibration()
 		pendingFoveatedMaskScaling.reset();
 		const auto previous = settings;
 		auto candidate = settings;
-		if (PrepareFoveatedMaskCalibration(candidate, headsetSetup ? CaptureMode::Headset : capture ? CaptureMode::Manual :
-																									  CaptureMode::Reuse,
-				percent, foveatedCalibrationMessage)) {
+		foveatedCalibrationWarning = !PrepareFoveatedMaskCalibration(candidate, headsetSetup ? CaptureMode::Headset : capture ? CaptureMode::Manual :
+																																CaptureMode::Reuse,
+			percent, foveatedCalibrationMessage);
+		if (!foveatedCalibrationWarning) {
 			settings = candidate;
 			InvalidateFrameScopedUpscalingState();
 			RequestHistoryReset();
-			if (!HandleNeuralRenderingSettingsTransition(previous, "FOV mask calibration")) {
+			foveatedCalibrationWarning = !HandleNeuralRenderingSettingsTransition(previous, "FOV mask calibration");
+			if (foveatedCalibrationWarning) {
 				settings = previous;
 				foveatedCalibrationMessage = "NR could not switch FOV coverage; previous calibration retained. Check NR status.";
 			} else
@@ -19693,13 +19695,20 @@ void Upscaling::DrawFoveatedCalibration()
 	}
 	{
 		auto guard = Util::DisableGuard(FoveatedMaskCalibration::HasFovOnlySetup(settings));
-		if (ImGui::Button("Mask setup finished") && ConfirmFoveatedMaskSetup(settings, foveatedCalibrationMessage))
-			foveatedCalibrationMessage.clear();
+		if (ImGui::Button("Mask setup finished")) {
+			foveatedCalibrationWarning = !ConfirmFoveatedMaskSetup(settings, foveatedCalibrationMessage);
+			if (!foveatedCalibrationWarning)
+				foveatedCalibrationMessage.clear();
+		}
 	}
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::TextWrapped("Check both eyes for clear coverage. Confirms this outer fit and unlocks FOV + TAA. Changing the outer mask requires confirmation again.");
-	if (!foveatedCalibrationMessage.empty())
-		ImGui::TextWrapped("%s", foveatedCalibrationMessage.c_str());
+	if (!foveatedCalibrationMessage.empty()) {
+		if (foveatedCalibrationWarning)
+			Util::Text::WrappedWarning("%s", foveatedCalibrationMessage.c_str());
+		else
+			ImGui::TextWrapped("%s", foveatedCalibrationMessage.c_str());
+	}
 	if (FoveatedMaskCalibration::HasFovOnlySetup(settings))
 		ImGui::TextUnformatted("Mask setup finished. FOV + TAA is available. Save settings to keep this fit.");
 }
@@ -19818,7 +19827,7 @@ void Upscaling::DrawFoveatedSettings()
 	if (settings.foveatedVendorDispatch) {
 		const auto binocular = GetFoveatedBinocularCoverage();
 		if (!binocular.available)
-			ImGui::TextDisabled("Shared-view check unavailable. Recalibrate in a loaded scene.");
+			ImGui::TextDisabled("Shared-view check unavailable. Check each eye separately, then with both eyes open.");
 		else if (binocular.hasGap)
 			Util::Text::WrappedWarning("Shared-view coverage gap. Run Automatic Headset Setup, or refit the outer edges in FOV only and press Calibrate Masks.");
 		else
@@ -20849,6 +20858,7 @@ void Upscaling::LoadSettings(json& o_json)
 {
 	pendingFoveatedMaskScaling.reset();
 	foveatedCalibrationMessage.clear();
+	foveatedCalibrationWarning = false;
 	const Settings previousSettings = settings;
 	const bool hasLegacyNeuralSettings = !NeuralRendering::RenderingSettings(o_json).empty();
 	const VRRenderScaleDesiredProfile currentDesiredProfile =
@@ -20969,6 +20979,7 @@ void Upscaling::RestoreDefaultSettings()
 {
 	pendingFoveatedMaskScaling.reset();
 	foveatedCalibrationMessage.clear();
+	foveatedCalibrationWarning = false;
 	const Settings previousSettings = settings;
 	const VRRenderScaleDesiredProfile currentDesiredProfile =
 		GetPendingVRRenderScaleDesiredProfile();
