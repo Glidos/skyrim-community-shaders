@@ -755,6 +755,7 @@ bool Hooks::BSShader_BeginTechnique::thunk(RE::BSShader* shader, uint32_t vertex
 
 	state->updateShader = true;
 	state->currentShader = shader;
+	state->deferredPixelShaderMissing = false;
 
 	state->currentVertexDescriptor = vertexDescriptor;
 	state->currentPixelDescriptor = pixelDescriptor;
@@ -791,7 +792,8 @@ bool Hooks::BSShader_BeginTechnique::thunk(RE::BSShader* shader, uint32_t vertex
 
 	if (!shaderFound && shader->shaderType.get() != RE::BSShader::Type::Effect && !UseNativeWaterShaders(*shader)) {
 		RE::BSGraphics::VertexShader* vertexShader = shaderCache->GetVertexShader(*shader, state->modifiedVertexDescriptor);
-		RE::BSGraphics::PixelShader* pixelShader = shaderCache->GetPixelShader(*shader, state->modifiedPixelDescriptor);
+		RE::BSGraphics::PixelShader* pixelShader = shaderCache->GetPixelShader(*shader, state->modifiedPixelDescriptor,
+			skipPixelShader ? SIE::ShaderCache::PixelShaderLookup::Compile : SIE::ShaderCache::PixelShaderLookup::Draw);
 		if (phaseDiagActive) {
 			const uint64_t phaseEndTicks = ReadFrameDiagCounterTicks();
 			RecordCSFrameHookPhase(CSFrameHookPhase::BeginTechniqueShaderCacheLookup, phaseDiagFrame, phaseEndTicks - phaseStartTicks);
@@ -834,7 +836,7 @@ bool Hooks::BSShader_BeginTechnique::thunk(RE::BSShader* shader, uint32_t vertex
 		RecordCSFrameHookPhase(CSFrameHookPhase::BeginTechniqueTotal, phaseDiagFrame, totalEndTicks - totalStartTicks);
 	}
 
-	return shaderFound;
+	return shaderFound && !state->deferredPixelShaderMissing;
 }
 
 namespace EffectExtensions
@@ -965,7 +967,9 @@ namespace GrassExtensions
 				!cache->IsEnabled() || !state->ShaderEnabled(RE::BSShader::Type::Grass))
 				return ready;
 			auto* vertex = cache->GetVertexShader(*shader, state->modifiedVertexDescriptor);
-			auto* pixel = cache->GetPixelShader(*shader, state->modifiedPixelDescriptor);
+			auto* pixel = cache->GetPixelShader(*shader, state->modifiedPixelDescriptor, SIE::ShaderCache::PixelShaderLookup::Draw);
+			if (state->deferredPixelShaderMissing)
+				return false;
 			if (vertex && pixel) {
 				// Native setup must address the reflected constants of the bound grass pair.
 				globals::d3d::context->VSSetShader(reinterpret_cast<ID3D11VertexShader*>(vertex->shader), nullptr, 0);
@@ -974,6 +978,11 @@ namespace GrassExtensions
 				*globals::game::currentPixelShader = pixel;
 				globals::game::stateUpdateFlags->set(RE::BSGraphics::DIRTY_VERTEX_DESC);
 			} else {
+				if (auto* deferred = globals::deferred; pixel && deferred && deferred->deferredPass) {
+					// A missing custom vertex stage must not restore native outputs into the G-buffer.
+					deferred->InvalidateCharacterCategoryCapture();
+					return false;
+				}
 				auto* nativeVertex = *globals::game::currentVertexShader;
 				auto* nativePixel = *globals::game::currentPixelShader;
 				globals::d3d::context->VSSetShader(nativeVertex ? reinterpret_cast<ID3D11VertexShader*>(nativeVertex->shader) : nullptr, nullptr, 0);
@@ -1682,7 +1691,7 @@ namespace Hooks
 					auto currentShader = state->currentShader;
 					auto type = currentShader->shaderType.get();
 					if (state->ShaderEnabled(type) && !UseNativeWaterShaders(*currentShader)) {
-						RE::BSGraphics::PixelShader* pixelShader = shaderCache->GetPixelShader(*currentShader, state->modifiedPixelDescriptor);
+						RE::BSGraphics::PixelShader* pixelShader = shaderCache->GetPixelShader(*currentShader, state->modifiedPixelDescriptor, SIE::ShaderCache::PixelShaderLookup::Draw);
 						if (pixelShader) {
 							globals::d3d::context->PSSetShader(reinterpret_cast<ID3D11PixelShader*>(pixelShader->shader), NULL, NULL);
 							*globals::game::currentPixelShader = a_pixelShader;
@@ -1698,6 +1707,10 @@ namespace Hooks
 				}
 			}
 
+			if (state->deferredPixelShaderMissing) {
+				*globals::game::currentPixelShader = a_pixelShader;
+				return;
+			}
 			auto* deferred = globals::deferred;
 			if (!state->settingCustomShader && deferred && deferred->deferredPass &&
 				deferred->IsCharacterCategoryEnabled() && state->currentShader &&
