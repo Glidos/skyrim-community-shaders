@@ -139,7 +139,7 @@ foreach(_required_behavior IN ITEMS
     "SetLogLevel(spdlog::level::debug)"
     "settings.foveatedVendorDispatch = true"
     "settings.periphery_taa_enable = true"
-    "FovOnlyFixtureScale(FoveatedCommon::GetOuterFeather(settings.foveatedOuterBlendFeather, settings.foveatedDisableOuterFeather))"
+    "FovOnlyFixtureScale(before.state.foveatedOuterFeather)"
     "kPeripheryTAACenterArea"
     "kPeripheryTAAOuterScale"
     "{ \"foliageLightingEnabled\", globals::features::foliageLighting.IsEnabled() }"

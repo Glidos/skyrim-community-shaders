@@ -915,8 +915,8 @@ string(JSON
     then
     anyOf
 )
-if(NOT _descriptor_configure_field_count EQUAL 18)
-    message(FATAL_ERROR "foveation_configure schema must require at least one of 18 controls")
+if(NOT _descriptor_configure_field_count EQUAL 20)
+    message(FATAL_ERROR "foveation_configure schema must require at least one of 20 controls")
 endif()
 
 string(JSON _gap_status_types LENGTH "${_descriptor_json}" outputSchema properties foveation properties binocularCoverage properties hasGap type)
@@ -952,6 +952,7 @@ if(NOT _disable_outer_type STREQUAL "boolean" OR _disable_outer_default OR NOT _
 endif()
 foreach(_saved_outer_contract IN ITEMS
     [[OP(foveatedDisableOuterFeather)]]
+    [[OP(foveatedMaskSetup)]]
     [[o_json.erase("foveatedDisableOuterFeather");]]
     [[if (globals::state && globals::state->IsDeveloperMode()) {]]
     [[Util::Widgets::Checkbox("Disable Outer FOV Feather", &settings.foveatedDisableOuterFeather);]]
@@ -964,13 +965,28 @@ endforeach()
 string(JSON _outer_feather_min GET "${_descriptor_json}" inputSchema properties fovOnlyOuterFeather minimum)
 string(JSON _outer_feather_max GET "${_descriptor_json}" inputSchema properties fovOnlyOuterFeather maximum)
 string(JSON _scaling_conflicts LENGTH "${_descriptor_json}" inputSchema allOf 1 then allOf 0 then not anyOf)
-if(NOT _outer_feather_min EQUAL 0 OR NOT _outer_feather_max EQUAL 0.1 OR NOT _scaling_conflicts EQUAL 12)
+if(NOT _outer_feather_min EQUAL 0 OR NOT _outer_feather_max EQUAL 0.1 OR NOT _scaling_conflicts EQUAL 13)
     message(FATAL_ERROR "Outer feather bounds and automatic/manual exclusions must match the runtime contract")
 endif()
 string(JSON _calibrate_true GET "${_descriptor_json}" inputSchema properties calibrateMasks const)
+string(JSON _headset_true GET "${_descriptor_json}" inputSchema properties automaticHeadsetSetup const)
+string(JSON _headset_conflicts LENGTH "${_descriptor_json}" inputSchema allOf 1 then allOf 1 then not anyOf)
+if(NOT _headset_true OR NOT _headset_conflicts EQUAL 12)
+    message(FATAL_ERROR "Automatic headset setup must advertise capture-only input and geometry exclusions")
+endif()
+string(JSON _finish_type GET "${_descriptor_json}" inputSchema properties maskSetupFinished type)
+string(JSON _finish_true GET "${_descriptor_json}" inputSchema properties maskSetupFinished const)
+string(JSON _rule_count LENGTH "${_descriptor_json}" inputSchema allOf)
+math(EXPR _finish_rule "${_rule_count} - 1")
+string(JSON _finish_action GET "${_descriptor_json}" inputSchema allOf ${_finish_rule} then properties action const)
+string(JSON _finish_fields LENGTH "${_descriptor_json}" inputSchema allOf ${_finish_rule} then propertyNames enum)
+if(NOT _finish_type STREQUAL "boolean" OR NOT _finish_true OR
+   NOT _finish_action STREQUAL "foveation_configure" OR NOT _finish_fields EQUAL 3)
+    message(FATAL_ERROR "Mask confirmation must be a standalone explicit foveation_configure action")
+endif()
 string(JSON _scaling_min GET "${_descriptor_json}" inputSchema properties automaticMaskScaling minimum)
 string(JSON _scaling_max GET "${_descriptor_json}" inputSchema properties automaticMaskScaling maximum)
-if(NOT _calibrate_true OR NOT _scaling_min EQUAL 70 OR NOT _scaling_max EQUAL 130)
+if(NOT _calibrate_true OR NOT _scaling_min EQUAL 50 OR NOT _scaling_max EQUAL 130)
     message(FATAL_ERROR "FOV calibration controls must advertise their accepted values")
 endif()
 
@@ -3225,7 +3241,9 @@ set(_foveation_configuration_fields
     neuralFinalLdrBlendFeather
     maskVisualization
     maskBinocularGapVisualization
+    maskSetupFinished
     calibrateMasks
+    automaticHeadsetSetup
     automaticMaskScaling
 )
 foreach(_foveation_field IN LISTS _foveation_configuration_fields)

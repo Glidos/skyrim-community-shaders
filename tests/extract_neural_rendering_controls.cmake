@@ -16,6 +16,7 @@ endfunction()
 extract("void Upscaling::DrawNeuralRenderingFovWarning(" "bool Upscaling::ApplyNeuralRenderingPreset(" controls)
 extract("bool Upscaling::HandleNeuralRenderingSettingsTransition(" "NeuralRendering::InsertionPoint Upscaling::GetNeuralRenderingInsertionPoint()" transition)
 extract("bool Upscaling::IsPeripheryTAAEnabled(" "bool Upscaling::IsPeripheryTAAPathActive(" taa_guard)
+extract("bool Upscaling::ConfirmFoveatedMaskSetup(" "bool Upscaling::PrepareFoveatedMaskCalibration(" confirmation)
 extract("void Upscaling::DrawFoveatedCalibration()" "void Upscaling::DrawFoveatedSetupInstructions()" calibration)
 extract("\tconst auto previousSettings = settings;\n\tauto coverageTransition" "\tif (globals::state && globals::state->IsDeveloperMode()) {\n\t\tUtil::Widgets::Checkbox(\"Disable Outer FOV Feather\"" fov_menu_transition)
 file(READ "${PROJECT_ROOT}/src/Features/Upscaling/VRRenderScaleDevBenchBridge.cpp" source)
@@ -23,6 +24,6 @@ extract("\tstruct FoveationConfigurationRequest" "\tconstexpr std::array kFoveat
 extract("\tvoid ApplyFoveationRequest(" "\ttemplate <class T, std::size_t N>" foveation_configuration)
 file(MAKE_DIRECTORY "${OUTPUT_DIRECTORY}")
 file(WRITE "${OUTPUT_DIRECTORY}/neural_rendering_controls_under_test.h"
-    "${controls}\n${transition}\n${taa_guard}\n${calibration}\n${foveation_request}\n${foveation_configuration}\n"
+    "${controls}\n${transition}\n${taa_guard}\n${confirmation}\n${calibration}\n${foveation_request}\n${foveation_configuration}\n"
     "void Upscaling::EditOuterFeatherFromMenu(bool disabled, bool fullEye) {\n${fov_menu_transition}\n"
     "settings.foveatedDisableOuterFeather = disabled;\nif (fullEye) settings.foveatedCenterArea = 1.0f;\nFoveatedMaskCalibration::InheritFovOnlyBoundary(settings);\n}\n")

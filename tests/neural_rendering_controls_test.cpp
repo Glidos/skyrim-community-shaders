@@ -78,11 +78,14 @@ namespace ImGui
 {
 	int disabled = 0, selectedMode = -1;
 	bool taaDisabled = false;
-	std::string tooltip;
-	bool captureCalibration = false;
-	bool Button(const char*) { return captureCalibration; }
+	std::string tooltip, renderedMessage;
+	bool captureCalibration = false, captureHeadset = false, finishSetup = false;
+	bool Button(const char* label) { return disabled ? false : std::string(label) == "Automatic Headset Setup" ? captureHeadset :
+		                                                   std::string(label) == "Mask setup finished"         ? finishSetup :
+		                                                                                                         captureCalibration; }
 	bool SliderFloat(const char*, float*, float, float, const char*) { return false; }
 	bool IsItemActive() { return false; }
+	void TextWrapped(const char*, const char* text) { renderedMessage = text; }
 	template <class... T>
 	void TextWrapped(const char*, T&&...)
 	{}
@@ -156,6 +159,7 @@ struct Upscaling
 		float foveatedOuterBlendFeather = 0.05f, periphery_taa_outer_scale = 0.9f, periphery_taa_center_blend_feather = 0.05f;
 		bool foveatedDisableOuterFeather = false;
 		FoveatedMaskCalibration::Reference foveatedCalibrationReference;
+		FoveatedMaskCalibration::SetupConfirmation foveatedMaskSetup;
 		float foveatedAutomaticMaskScaling = 100.0f, foveatedCenterHorizontalScale = 1.0f;
 		float foveatedLeftEyeMaskOffsetX = 0, foveatedLeftEyeMaskOffsetY = 0;
 		float foveatedRightEyeMaskOffsetX = 0, foveatedRightEyeMaskOffsetY = 0;
@@ -192,9 +196,19 @@ struct Upscaling
 	void DrawPeripheryTAAControl();
 	std::string foveatedCalibrationMessage;
 	void DrawFoveatedCalibration();
+	bool ConfirmFoveatedMaskSetup(Settings&, std::string&) const;
+	bool coverageAvailable = true, coverageGap = false;
+	FoveatedMaskCalibration::CoverageCheck GetFoveatedBinocularCoverage(const Settings&) const { return { .available = coverageAvailable, .hasGap = coverageGap }; }
 	void EditOuterFeatherFromMenu(bool disabled, bool fullEye = false);
-	bool PrepareFoveatedMaskCalibration(Settings& candidate, bool, float percent, std::string&) const
+	mutable FoveatedMaskCalibration::CaptureMode capturedMode = FoveatedMaskCalibration::CaptureMode::Reuse;
+	bool calibrationSucceeds = true;
+	bool PrepareFoveatedMaskCalibration(Settings& candidate, FoveatedMaskCalibration::CaptureMode mode, float percent, std::string& error) const
 	{
+		capturedMode = mode;
+		if (!calibrationSucceeds) {
+			error = "Calibration unavailable; previous fit retained.";
+			return false;
+		}
 		candidate.foveatedCenterArea = 0.6f;
 		candidate.foveatedAutomaticMaskScaling = percent;
 		return true;
@@ -228,6 +242,7 @@ void SetFovOnlySetup(Upscaling& upscaling)
 	reference.version = FoveatedMaskCalibration::kReferenceVersion;
 	reference.leftToRight = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
 	reference.feather = 0.05f;
+	upscaling.settings.foveatedMaskSetup = FoveatedMaskCalibration::CaptureSetupConfirmation(upscaling.settings);
 }
 
 void CheckOuterFeatherMenuTransactions()
@@ -240,6 +255,7 @@ void CheckOuterFeatherMenuTransactions()
 			SetFovOnlySetup(upscaling);
 			upscaling.settings.foveatedOuterBlendFeather = feather;
 			upscaling.settings.foveatedCalibrationReference.feather = FoveatedCommon::GetOuterFeather(feather);
+			upscaling.settings.foveatedMaskSetup = FoveatedMaskCalibration::CaptureSetupConfirmation(upscaling.settings);
 			upscaling.settings.periphery_taa_enable = taa;
 			NeuralRendering::NormalizeRenderingCoverage(upscaling.settings, true);
 			const auto reference = upscaling.settings.foveatedCalibrationReference;
@@ -289,10 +305,32 @@ void CheckFoveationTransactions()
 			ImGui::captureCalibration = true;
 			upscaling.DrawFoveatedCalibration();
 			ImGui::captureCalibration = false;
+			Require(upscaling.capturedMode == FoveatedMaskCalibration::CaptureMode::Manual, "Manual calibration must retain its own capture action");
 			Require(succeeds ? upscaling.settings.foveatedCenterArea == 0.6f : upscaling.settings == previous,
 				"Calibration must commit only after safe NR retirement, preserving all prior settings on failure");
 			Require(succeeds || upscaling.foveatedCalibrationMessage.find("previous calibration retained") != std::string::npos,
 				"Rejected calibration must explain that the previous fit is retained");
+			upscaling.settings = previous;
+			renderer = {};
+			renderer.quarantined = true;
+			renderer.resetSucceeds = succeeds;
+			ImGui::captureHeadset = true;
+			upscaling.DrawFoveatedCalibration();
+			ImGui::captureHeadset = false;
+			Require(upscaling.capturedMode == FoveatedMaskCalibration::CaptureMode::Headset &&
+						(succeeds ? upscaling.settings.foveatedCenterArea == .6f : upscaling.settings == previous),
+				"Headset setup must use its own action and retain all settings when NR refuses the transition");
+			upscaling.settings = previous;
+			renderer = {};
+			renderer.quarantined = true;
+			renderer.resetSucceeds = succeeds;
+			FoveationConfigurationRequest headsetRequest;
+			headsetRequest.automaticHeadsetSetup = true;
+			const auto headsetResponse = ApplyFoveationConfiguration(upscaling, headsetRequest, "foveation_configure", true);
+			Require(upscaling.capturedMode == FoveatedMaskCalibration::CaptureMode::Headset &&
+						headsetResponse.at("ok") == succeeds && headsetResponse.at("mutationApplied") == succeeds &&
+						(succeeds ? upscaling.settings.foveatedCenterArea == .6f : upscaling.settings == previous),
+				"DevBench headset setup must use the same transactional fit and report the retained state");
 			upscaling.settings = previous;
 			renderer = {};
 			renderer.quarantined = true;
@@ -364,8 +402,86 @@ void CheckFoveationTransactions()
 		"The API must reject uncalibrated TAA without changing controls");
 }
 
+void CheckMaskSetupConfirmation()
+{
+	NeuralRendering::Renderer::Instance() = {};
+	Upscaling upscaling;
+	ImGui::selectedMode = 1;
+	upscaling.DrawPeripheryTAAControl();
+	Require(ImGui::taaDisabled && !upscaling.settings.periphery_taa_enable, "TAA must start locked");
+	const auto before = upscaling.settings;
+	for (const bool available : { false, true }) {
+		upscaling.coverageAvailable = available;
+		upscaling.coverageGap = available;
+		ImGui::finishSetup = true;
+		upscaling.DrawFoveatedCalibration();
+		Require(upscaling.settings == before, "Unavailable or gapped coverage must not confirm the mask");
+	}
+	upscaling.coverageGap = false;
+	upscaling.DrawFoveatedCalibration();
+	ImGui::finishSetup = false;
+	Require(FoveatedMaskCalibration::HasFovOnlySetup(upscaling.settings), "Finish button must unlock a checked manual fit");
+	upscaling.DrawPeripheryTAAControl();
+	Require(!ImGui::taaDisabled && upscaling.settings.periphery_taa_enable, "Confirmed setup must enable the TAA dropdown");
+	for (bool hardEdge : { true, false }) {
+		FoveationConfigurationRequest inner;
+		inner.disableOuterFeather = hardEdge;
+		inner.peripheryTaaCenterScale = 0.4f;
+		inner.peripheryTaaBlendFeather = 0.07f;
+		const auto confirmed = upscaling.settings.foveatedMaskSetup;
+		Require(ApplyFoveationConfiguration(upscaling, inner, "foveation_configure", false).at("ok") == true &&
+					upscaling.settings.foveatedMaskSetup == confirmed && upscaling.settings.periphery_taa_center_blend_feather == 0.07f,
+			"Inner feather and size edits must preserve the outer fit with or without outer feather");
+		const auto locked = upscaling.settings;
+		FoveationConfigurationRequest outer;
+		outer.leftEyeOffsetX = 0.1f;
+		Require(ApplyFoveationConfiguration(upscaling, outer, "foveation_configure", false).at("errorCode") == "foveation_outer_mask_locked" &&
+					upscaling.settings == locked,
+			"TAA must reject outer edits atomically");
+	}
+	FoveationConfigurationRequest edit;
+	edit.peripheryTaaEnabled = false;
+	edit.leftEyeOffsetX = 0.1f;
+	Require(ApplyFoveationConfiguration(upscaling, edit, "foveation_configure", false).at("ok") == true &&
+				!FoveatedMaskCalibration::HasFovOnlySetup(upscaling.settings),
+		"FOV-only edits must clear confirmation");
+	FoveationConfigurationRequest finish;
+	finish.maskSetupFinished = true;
+	Require(ApplyFoveationConfiguration(upscaling, finish, "foveation_configure", false).at("ok") == true &&
+				FoveatedMaskCalibration::HasFovOnlySetup(upscaling.settings),
+		"DevBench must share the finish-button policy");
+	ImGui::selectedMode = -1;
+}
+
+void CheckConfirmedCalibrationFailure()
+{
+	Upscaling upscaling;
+	upscaling.settings.foveatedMaskSetup = FoveatedMaskCalibration::CaptureSetupConfirmation(upscaling.settings);
+	const auto confirmed = upscaling.settings;
+	upscaling.calibrationSucceeds = false;
+	for (const bool automatic : { false, true }) {
+		ImGui::captureHeadset = automatic;
+		ImGui::captureCalibration = !automatic;
+		ImGui::renderedMessage.clear();
+		upscaling.DrawFoveatedCalibration();
+		Require(upscaling.settings == confirmed && FoveatedMaskCalibration::HasFovOnlySetup(upscaling.settings),
+			"Failed calibration must retain a previously confirmed fit");
+		Require(ImGui::renderedMessage == "Calibration unavailable; previous fit retained.",
+			"A confirmed fit must not hide a later calibration error");
+	}
+	ImGui::captureHeadset = ImGui::captureCalibration = false;
+	FoveationConfigurationRequest request;
+	request.automaticHeadsetSetup = true;
+	const auto response = ApplyFoveationConfiguration(upscaling, request, "foveation_configure", true);
+	Require(response.at("errorCode") == "foveation_calibration_failed" && response.at("ok") == false &&
+				response.at("mutationApplied") == false && response.at("settingsChanged") == false && upscaling.settings == confirmed,
+		"DevBench calibration failure must retain the fit and report no mutation");
+}
+
 int main()
 {
+	CheckConfirmedCalibrationFailure();
+	CheckMaskSetupConfirmation();
 	CheckOuterFeatherMenuTransactions();
 	CheckFoveationTransactions();
 	auto& renderer = NeuralRendering::Renderer::Instance();
@@ -530,7 +646,7 @@ int main()
 		unconfigured.DrawPeripheryTAAControl();
 		Require(ImGui::taaDisabled && ImGui::disabled == 0 && !unconfigured.settings.periphery_taa_enable,
 			"Uncalibrated TAA must be unavailable without leaking ImGui state");
-		Require(ImGui::tooltip.find("Calibrate Masks") != std::string::npos,
+		Require(ImGui::tooltip.find("Mask setup finished") != std::string::npos,
 			"Disabled TAA must explain the FOV-only setup prerequisite");
 		unconfigured.settings.periphery_taa_enable = true;
 		Require(!unconfigured.IsPeripheryTAAEnabled(Upscaling::UpscaleMethod::kDLSS),

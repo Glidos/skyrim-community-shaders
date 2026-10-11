@@ -2477,6 +2477,10 @@ if(BUILD_CONTROLLER_TESTS)
     )
 
     add_controller_test(foveated_headset_calibration_test FoveatedHeadsetCalibration tests/foveated_headset_calibration_test.cpp)
+    target_link_libraries(
+        foveated_headset_calibration_test
+        PRIVATE nlohmann_json::nlohmann_json
+    )
     add_controller_test(foveated_mask_calibration_test FoveatedMaskCalibration tests/foveated_mask_calibration_test.cpp)
     target_link_libraries(
         foveated_mask_calibration_test

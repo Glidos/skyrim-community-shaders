@@ -1,4 +1,5 @@
 #include "Features/Upscaling/FoveatedHeadsetGeometry.h"
+#include "Features/Upscaling/FoveatedMaskCalibrationJson.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -189,7 +190,7 @@ namespace
 				}
 			}
 			float previousArea = 0;
-			for (float percent : { 70.0f, 100.0f, 130.0f }) {
+			for (float percent : { 50.0f, 70.0f, 100.0f, 130.0f }) {
 				const auto scaled = Solve(reference, percent);
 				Require(scaled.has_value(), "Automatic outer scaling must remain feasible");
 				CheckContours(reference, *scaled, percent);
@@ -204,6 +205,92 @@ namespace
 					  << fit->geometry.centers[1] << ',' << fit->geometry.centers[2] << ',' << fit->geometry.centers[3] << '\n';
 		}
 	}
+	void CheckAutomaticHeadsetFit()
+	{
+		struct Vertex
+		{
+			float v[2];
+		};
+		Reference reference{ .version = kReferenceVersion, .leftToRight = *FoveatedHeadsetGeometry::BuildProjection(optics, { identity, identity }), .innerLimits = { .953f, .047f }, .centerScale = 1.0f };
+		const std::array<Polygon, 2> visible{ Polygon{ { 0.947000027, 0.356000006 }, { 0.941999972, 0.444000006 }, { 0.940999985, 0.531000018 }, { 0.945999980, 0.613000035 }, { 0.953000009, 0.698000014 }, { 0.913999975, 0.787000000 }, { 0.846000016, 0.870999992 }, { 0.771000028, 0.930000007 }, { 0.670000017, 0.976999998 }, { 0.560999989, 1.000000000 }, { 0.416999996, 1.000000000 }, { 0.294000000, 0.964999974 }, { 0.192000002, 0.903999984 }, { 0.128999993, 0.848999977 }, { 0.071000002, 0.768999994 }, { 0.041999999, 0.692999959 }, { 0.048999999, 0.574000001 }, { 0.050999999, 0.503000021 }, { 0.048000000, 0.452000022 }, { 0.043000001, 0.380999982 }, { 0.039000001, 0.310000002 }, { 0.086000003, 0.209999978 }, { 0.172000006, 0.111999989 }, { 0.282000005, 0.044000030 }, { 0.437000006, 0.000000000 }, { 0.561999977, 0.000000000 }, { 0.750999987, 0.055999994 } },
+			Polygon{ { 0.052999973, 0.356000006 }, { 0.058000028, 0.444000006 }, { 0.059000015, 0.531000018 }, { 0.054000020, 0.613000035 }, { 0.046999991, 0.698000014 }, { 0.086000025, 0.787000000 }, { 0.153999984, 0.870999992 }, { 0.228999972, 0.930000007 }, { 0.329999983, 0.976999998 }, { 0.439000010, 1.000000000 }, { 0.583000004, 1.000000000 }, { 0.705999970, 0.964999974 }, { 0.807999968, 0.903999984 }, { 0.870999992, 0.848999977 }, { 0.929000020, 0.768999994 }, { 0.958000004, 0.692999959 }, { 0.950999975, 0.574000001 }, { 0.949000001, 0.503000021 }, { 0.952000022, 0.452000022 }, { 0.957000017, 0.380999982 }, { 0.961000025, 0.310000002 }, { 0.913999975, 0.209999978 }, { 0.828000009, 0.111999989 }, { 0.717999995, 0.044000030 }, { 0.562999964, 0.000000000 }, { 0.438000023, 0.000000000 }, { 0.249000013, 0.055999994 } } };
+		for (unsigned eye = 0; eye < 2; ++eye) {
+			std::vector<Vertex> vertices;
+			for (auto point : visible[eye])
+				vertices.push_back({ float(point.x), float(point.y) });
+			const auto outline = FoveatedHeadsetGeometry::VisibleOutline(vertices.data(), uint32_t(vertices.size()));
+			Require(outline.has_value(), "The measured visible mesh must yield a conservative outline");
+			reference.headsetOutlines[eye] = *outline;
+		}
+		const auto saved = reference;
+		const auto baseline = Solve(reference, 100);
+		Require(baseline && baseline->fullImage, "Full-height headset optics require conservative full-eye startup with current controls");
+		Require(nlohmann::json::parse(nlohmann::json(reference).dump()).get<Reference>() == reference,
+			"Automatic headset outlines must survive save/load exactly");
+		for (float feather : { 0.0f, .05f, .1f }) {
+			reference.feather = feather;
+			float previousArea = 0;
+			for (float percent : { 50.0f, 65.0f, 80.0f, 100.0f, 130.0f }) {
+				const auto fit = Solve(reference, percent);
+				Require(fit.has_value(), "Headset outer scaling must always have a conservative result");
+				Require(fit->areaPercent >= previousArea - .02f, "Increasing headset outer coverage cannot reduce area");
+				previousArea = fit->areaPercent;
+				if (percent <= 65)
+					Require(!fit->fullImage && fit->areaPercent < 90, "Reducing outer coverage must escape the initial full-eye fit");
+				const auto coverage = CheckCoverage(reference, percent, fit->geometry, fit->geometry.scale, fit->fullImage, false);
+				Require(coverage.available && !coverage.hasGap, "Automatically fitted headset contours must be covered at full strength");
+				for (unsigned eye = 0; eye < 2; ++eye) {
+					const auto& polygon = visible[eye];
+					for (size_t edge = 0; edge < polygon.size(); ++edge) {
+						const auto a = polygon[edge], b = polygon[(edge + 1) % polygon.size()];
+						for (unsigned sample = 0; sample <= 128; ++sample) {
+							const double t = sample / 128.0;
+							Point point{ a.x + t * (b.x - a.x), a.y + t * (b.y - a.y) };
+							if ((point.x < .5) == (eye == 0))
+								point.x = .5 + (point.x - .5) * percent / 100;
+							point.y = .5 + (point.y - .5) * percent / 100;
+							if (point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1)
+								Require(fit->fullImage || Distance(fit->geometry, eye, point) <= 1.00001,
+									"Every transformed mesh edge, including nasal edges and seam crossings, must retain full core coverage");
+						}
+					}
+				}
+				std::cout << "Headset fit feather=" << feather << " coverage=" << percent << " saved=" << 100 - fit->areaPercent << '\n';
+			}
+			Require(Solve(reference, 100)->geometry == baseline->geometry, "100 percent must restore the initial headset setup");
+		}
+		reference.feather = saved.feather;
+		Require(reference == saved, "Automatic scaling must not rewrite the original headset outline");
+		const auto fallback = FoveatedHeadsetGeometry::VisibleOutline<Vertex>(nullptr, 0);
+		Require(fallback && fallback->size() == 4, "Absent visibility data must provide full-eye bounds");
+		auto corrupt = nlohmann::json(reference);
+		for (auto invalid : { nlohmann::json{ true, .5 }, nlohmann::json{ 2, .5 }, nlohmann::json{ .5 } }) {
+			corrupt["headsetOutlines"][0][0] = invalid;
+			auto retained = reference;
+			bool rejected = false;
+			try {
+				corrupt.get_to(retained);
+			} catch (const std::exception&) {
+				rejected = true;
+			}
+			Require(rejected && retained == reference, "Corrupt saved headset outlines must be rejected transactionally");
+		}
+		std::vector<Vertex> detailed;
+		for (unsigned i = 0; i < 1024; ++i) {
+			const double a = i * 6.283185307179586 / 1024;
+			detailed.push_back({ float(.5 + .45 * std::cos(a)), float(.5 + .45 * std::sin(a)) });
+		}
+		const auto bounded = FoveatedHeadsetGeometry::VisibleOutline(detailed.data(), uint32_t(detailed.size()));
+		Require(bounded && bounded->size() <= kMaximumHeadsetOutlineVertices, "Detailed driver meshes must be reduced to bounded conservative outlines");
+		for (const auto& vertex : detailed) {
+			for (size_t i = 0; i < bounded->size(); ++i) {
+				const auto a = (*bounded)[i], b = (*bounded)[(i + 1) % bounded->size()];
+				Require((b.x - a.x) * (vertex.v[1] - a.y) - (b.y - a.y) * (vertex.v[0] - a.x) >= -1e-8,
+					"Contour reduction must never cut off an original visible vertex");
+			}
+		}
+	}
+
 }
 
 int main()
@@ -211,5 +298,6 @@ int main()
 	CheckOptics();
 	CheckNasalLimits();
 	CheckManualRegression();
+	CheckAutomaticHeadsetFit();
 	std::cout << "PASS: headset optics, preview projection, nasal limits, independent eyes, manual regression, outer scaling and hard edges\n";
 }

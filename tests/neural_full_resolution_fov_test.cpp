@@ -17,6 +17,20 @@ namespace globals::game
 	bool isVR = true;
 }
 bool NeuralRendering::Runtime::IsInstalled() noexcept { return true; }
+namespace globals
+{
+	struct State
+	{
+		bool pendingPostLoadRuntimeReset = false;
+	} storage;
+	State* state = &storage;
+}
+struct FoveatedHeadsetSnapshot;
+std::optional<FoveatedHeadsetSnapshot> GetFoveatedHeadsetGeometry();
+bool loadingMenu = false;
+bool IsLoadingMenuContextActive() { return loadingMenu; }
+bool IsMainMenuContextActive() { return false; }
+bool IsVRMenuPresentationContextActive() { return false; }
 
 namespace globals::features
 {
@@ -36,6 +50,11 @@ struct Upscaling
 	};
 	struct Settings
 	{
+		bool foveatedVendorDispatch = true;
+		FoveatedMaskCalibration::Reference foveatedCalibrationReference;
+		FoveatedMaskCalibration::SetupConfirmation foveatedMaskSetup;
+		float foveatedAutomaticMaskScaling = 100;
+		bool operator==(const Settings&) const = default;
 		bool neuralRenderingEnabled = true, neuralRenderingFovOnly = true;
 		bool neuralRenderingRenderscaleFov = false;
 		bool foveatedPeripheryMaskVisualization = false, periphery_taa_enable = false;
@@ -52,12 +71,18 @@ struct Upscaling
 	} settings;
 	static bool IsNeuralRenderingEnabled(const Settings&) noexcept;
 #include "neural_full_resolution_fov_types.h"
-	bool available = true;
+	bool available = true, loaded = true;
+	struct
+	{
+		bool knownMenuContextActive = false, menuContextActive = false, loadingMenuActive = false;
+	} runtimeResolutionPlan;
+	bool PrepareFoveatedMaskCalibration(Settings&, FoveatedMaskCalibration::CaptureMode, float, std::string&) const;
 	std::array<float2, 2> fovOffsets{ float2{ -0.03f, 0.02f }, float2{ 0.04f, -0.01f } };
 	bool IsNeuralRenderingRequested() const { return settings.neuralRenderingEnabled; }
 	auto GetNeuralRenderingMode() const { return NeuralRendering::ClampRenderingMode(settings.neuralRenderingMode); }
 	UpscaleMethod method = UpscaleMethod::kDLSS;
 	UpscaleMethod GetRuntimeUpscaleMethod() const { return method; }
+	UpscaleMethod GetUpscaleMethod() const { return method; }
 	bool IsActiveUpscalingFoveatedProfileAvailable() const { return available; }
 	bool IsPeripheryTAAEnabled(UpscaleMethod) const { return available && settings.periphery_taa_enable; }
 	auto GetResolvedFoveatedMaskCenterOffsets(bool) const { return fovOffsets; }
@@ -68,9 +93,13 @@ struct Upscaling
 
 float ClampFoveatedCenterScale(float value) { return FoveatedCommon::ClampCenterScale(value); }
 float ClampFoveatedCenterHorizontalScale(float value) { return FoveatedCommon::ClampCenterHorizontalScale(value); }
-float ClampFoveatedMaskOffsetAdjustment(float value) { return value; }
+float ClampFoveatedMaskOffsetAdjustment(float value) { return std::clamp(value, FoveatedCommon::kMaskOffsetMin, FoveatedCommon::kMaskOffsetMax); }
+bool SupportsFoveatedVendorDispatch(Upscaling::UpscaleMethod method) { return method != Upscaling::UpscaleMethod::kNONE; }
+bool IsVRLoadingSubmitProtectionContextActive(const Upscaling&, const globals::State*) { return false; }
 
 #include "neural_full_resolution_fov_under_test.h"
+std::optional<FoveatedHeadsetSnapshot> liveHeadset;
+std::optional<FoveatedHeadsetSnapshot> GetFoveatedHeadsetGeometry() { return liveHeadset; }
 
 void Require(bool condition, const char* message)
 {
@@ -111,9 +140,64 @@ void CheckSharedPlan(Upscaling& upscaling)
 	}
 }
 
+void CheckHeadsetSetupTransaction()
+{
+	using namespace FoveatedMaskCalibration;
+	const Polygon rectangle{ { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+	liveHeadset = FoveatedHeadsetSnapshot{ .leftToRight = { 1, 0, -.19, 0, 1, 0, 0, 0, 1 }, .innerLimits = { 1, 0 }, .outlines = { rectangle, rectangle } };
+	Upscaling upscaling;
+	auto candidate = upscaling.settings;
+	candidate.periphery_taa_enable = false;
+	candidate.foveatedLeftEyeMaskOffsetX = .2f;
+	candidate.foveatedRightEyeMaskOffsetY = -.2f;
+	std::string error;
+	Require(upscaling.PrepareFoveatedMaskCalibration(candidate, CaptureMode::Headset, 100, error), "Automatic headset setup must accept prior manual geometry in FOV only");
+	Require(!candidate.periphery_taa_enable && candidate.foveatedCenterArea == 1 && UsesHeadsetOutline(candidate.foveatedCalibrationReference),
+		"Headset setup must select a conservative FOV-only baseline and save both outlines");
+	const auto baseline = candidate;
+	Require(upscaling.PrepareFoveatedMaskCalibration(candidate, CaptureMode::Reuse, 50, error), "Outer coverage must reuse the saved headset setup");
+	Require(candidate.foveatedCenterArea < 1 && candidate.foveatedAutomaticMaskScaling == 50 && candidate.foveatedCalibrationReference == baseline.foveatedCalibrationReference,
+		"Outer scaling must reduce coverage, update sliders and preserve the full headset reference");
+	const auto applied = CaptureFoveatedMaskReference(candidate, liveHeadset->leftToRight, liveHeadset->innerLimits);
+	auto fitting = candidate.foveatedCalibrationReference;
+	fitting.feather = GetNormalFoveatedBlendFeather(candidate, false);
+	Require(!CheckCoverage(fitting, 50, applied.outer, applied.centerScale, applied.fullImage, false).hasGap,
+		"Applied slider values must retain verified full-strength headset coverage");
+	const auto scaled = candidate;
+	Require(upscaling.PrepareFoveatedMaskCalibration(candidate, CaptureMode::Reuse, 100, error) && candidate == baseline,
+		"Returning to 100 percent must restore every fitted baseline control exactly");
+	for (bool hardEdge : { false, true }) {
+		candidate = scaled;
+		candidate.periphery_taa_enable = true;
+		candidate.foveatedDisableOuterFeather = hardEdge;
+		const auto locked = candidate;
+		Require(!upscaling.PrepareFoveatedMaskCalibration(candidate, CaptureMode::Reuse, 65, error) && candidate == locked,
+			"Outer coverage must remain locked in TAA mode with or without an outer feather");
+	}
+	candidate = scaled;
+	liveHeadset->outlines[0][0].y = .01;
+	Require(!upscaling.PrepareFoveatedMaskCalibration(candidate, CaptureMode::Reuse, 70, error) && candidate == scaled,
+		"Changed headset outline must invalidate reuse even when projection and nasal extent are unchanged");
+	liveHeadset->outlines[0][0].y = 0;
+	for (unsigned condition = 0; condition < 6; ++condition) {
+		globals::game::isVR = condition != 0;
+		upscaling.loaded = condition != 1;
+		loadingMenu = condition == 2;
+		globals::storage.pendingPostLoadRuntimeReset = condition == 3;
+		upscaling.method = condition == 4 ? Upscaling::UpscaleMethod::kNONE : Upscaling::UpscaleMethod::kDLSS;
+		if (condition == 5)
+			liveHeadset.reset();
+		Require(!upscaling.PrepareFoveatedMaskCalibration(candidate, CaptureMode::Headset, 100, error) && candidate == scaled && !error.empty(),
+			"Unavailable runtime, loading or missing optics must leave all mask settings untouched");
+	}
+	globals::game::isVR = upscaling.loaded = true;
+	loadingMenu = globals::storage.pendingPostLoadRuntimeReset = false;
+}
+
 int main()
 {
 	try {
+		CheckHeadsetSetupTransaction();
 		Upscaling upscaling;
 		const auto baseline = upscaling.GetActiveUpscalingFoveatedProfile();
 		for (float feather : { 0.0f, 0.001f, 0.01f, 0.0100005f, 0.05f, 0.10f }) {
@@ -245,7 +329,7 @@ int main()
 				Require(upscaling.BuildFoveatedDispatchRects(1007, 811, 1511, 1217, true,
 							scale, 0.02f, 1.1f, Upscaling::UpscaleMethod::kDLSS, false),
 					"Foveated reference plan failed");
-				const auto reference = upscaling.foveatedRectCache;
+				const auto referencePlan = upscaling.foveatedRectCache;
 				upscaling.settings.neuralRenderingMode = static_cast<uint>(NeuralRendering::RenderingMode::ReducedResolution);
 				for (const bool savedRestriction : { false, true }) {
 					upscaling.settings.neuralRenderingFovOnly = savedRestriction;
@@ -254,14 +338,14 @@ int main()
 								scale, 0.02f, 1.1f, Upscaling::UpscaleMethod::kDLSS, false),
 						"Renderscale FOV plan failed");
 					const auto& actual = upscaling.foveatedRectCache;
-					Require(actual.centerScale == reference.centerScale && actual.centerFeather == reference.centerFeather,
+					Require(actual.centerScale == referencePlan.centerScale && actual.centerFeather == referencePlan.centerFeather,
 						"Renderscale and Foveated must share mask scale and support feather");
 					for (uint eye = 0; eye < 2; ++eye) {
-						Require(Equal(actual.plan.eyes[eye].input, reference.plan.eyes[eye].input) &&
-									Equal(actual.plan.eyes[eye].output, reference.plan.eyes[eye].output),
+						Require(Equal(actual.plan.eyes[eye].input, referencePlan.plan.eyes[eye].input) &&
+									Equal(actual.plan.eyes[eye].output, referencePlan.plan.eyes[eye].output),
 							"Renderscale must preserve Foveated input/output coverage at odd dimensions and screen edges");
-						Require(actual.centerOffsets[eye].x == reference.centerOffsets[eye].x &&
-									actual.centerOffsets[eye].y == reference.centerOffsets[eye].y,
+						Require(actual.centerOffsets[eye].x == referencePlan.centerOffsets[eye].x &&
+									actual.centerOffsets[eye].y == referencePlan.centerOffsets[eye].y,
 							"Renderscale must retain independent eye offsets");
 					}
 					upscaling.settings.neuralRenderingRenderscaleFov = false;

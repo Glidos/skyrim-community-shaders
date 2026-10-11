@@ -51,6 +51,7 @@ struct Upscaling
 		float foveatedOuterBlendFeather = FoveatedCommon::kCenterFeather;
 		bool foveatedDisableOuterFeather = false;
 		FoveatedMaskCalibration::Reference foveatedCalibrationReference;
+		FoveatedMaskCalibration::SetupConfirmation foveatedMaskSetup;
 		float foveatedCenterHorizontalScale = 1.1f;
 		float foveatedLeftEyeMaskOffsetX = 0, foveatedLeftEyeMaskOffsetY = 0;
 		float foveatedRightEyeMaskOffsetX = 0, foveatedRightEyeMaskOffsetY = 0;
@@ -131,6 +132,7 @@ int main()
 		Upscaling upscaling;
 		upscaling.settings.foveatedCalibrationReference.version = FoveatedMaskCalibration::kReferenceVersion;
 		upscaling.settings.foveatedCalibrationReference.leftToRight = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+		upscaling.settings.foveatedMaskSetup = FoveatedMaskCalibration::CaptureSetupConfirmation(upscaling.settings);
 		Upscaling::VRRenderScaleProfileSnapshot profile{};
 		profile.valid = profile.active = true;
 		profile.method = Method::kDLSS;

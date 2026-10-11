@@ -572,6 +572,7 @@ public:
 		float periphery_taa_center_area = 0.3f;
 		bool foveatedPeripheryMaskVisualization = false;
 		FoveatedMaskCalibration::Reference foveatedCalibrationReference;
+		FoveatedMaskCalibration::SetupConfirmation foveatedMaskSetup;
 		float foveatedAutomaticMaskScaling = 100.0f;
 		bool periphery_taa_enable = false;
 		float periphery_taa_outer_scale = 0.80f;
@@ -2609,9 +2610,12 @@ public:
 	/** Draw the shared FOV-only and FOV + TAA blend controls. */
 	void DrawFoveatedBlendSettings();
 	/** Prepares calibrated settings without mutation; missing projections or infeasible fits retain the caller settings. */
-	bool PrepareFoveatedMaskCalibration(Settings& a_candidate, bool a_captureReference, float a_percent, std::string& a_error) const;
+	bool PrepareFoveatedMaskCalibration(Settings& a_candidate, FoveatedMaskCalibration::CaptureMode a_captureMode, float a_percent, std::string& a_error) const;
 	/** Checks configured shared-view coverage independently of the diagnostic overlay. */
-	FoveatedMaskCalibration::CoverageCheck GetFoveatedBinocularCoverage() const;
+	FoveatedMaskCalibration::CoverageCheck GetFoveatedBinocularCoverage() const { return GetFoveatedBinocularCoverage(settings); }
+	FoveatedMaskCalibration::CoverageCheck GetFoveatedBinocularCoverage(const Settings& a_settings) const;
+	/** Accept a checked FOV-only outer fit without modifying its geometry. */
+	bool ConfirmFoveatedMaskSetup(Settings& a_candidate, std::string& a_error) const;
 	void DrawFoveatedCalibration();
 	std::string foveatedCalibrationMessage;
 	std::optional<float> pendingFoveatedMaskScaling;

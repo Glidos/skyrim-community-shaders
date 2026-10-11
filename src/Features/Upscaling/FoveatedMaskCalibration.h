@@ -12,16 +12,24 @@
 
 namespace FoveatedMaskCalibration
 {
-	constexpr uint32_t kReferenceVersion = 2;
+	constexpr uint32_t kReferenceVersion = 3;
 	constexpr float kMinimumOffset = FoveatedCommon::kMaskOffsetMin;
 	constexpr float kMaximumOffset = FoveatedCommon::kMaskOffsetMax;
 	constexpr double kCoverageMargin = 1e-5;
 	constexpr float kManualContourTolerance = 0.005f;
-	constexpr float kMinimumPercent = 70.0f;
+	constexpr float kMinimumPercent = 50.0f;
 	constexpr float kMaximumPercent = 130.0f;
+	constexpr size_t kMaximumHeadsetOutlineVertices = 256;
+	enum class CaptureMode
+	{
+		Reuse,
+		Manual,
+		Headset
+	};
 	struct Point
 	{
 		double x = 0.0, y = 0.0;
+		bool operator==(const Point&) const = default;
 	};
 	using Projection = std::array<double, 9>;
 	using Polygon = std::vector<Point>;
@@ -41,6 +49,7 @@ namespace FoveatedMaskCalibration
 		Geometry outer;
 		Projection leftToRight{};
 		std::array<float, 2> innerLimits{ 1.0f, 0.0f };
+		std::array<Polygon, 2> headsetOutlines;
 		bool peripheryTaa = false;
 		bool fullImage = false;
 		float centerScale = 0.3f;
@@ -93,6 +102,27 @@ namespace FoveatedMaskCalibration
 		return result;
 	}
 
+	/** An empty outline pair denotes a manually captured outer fit. */
+	[[nodiscard]] inline bool UsesHeadsetOutline(const Reference& reference)
+	{
+		return !reference.headsetOutlines[0].empty();
+	}
+
+	/** Bound persisted and runtime mesh data before constructing calibration targets. */
+	[[nodiscard]] inline bool IsValidHeadsetOutline(const Polygon& outline)
+	{
+		if (outline.size() < 3 || outline.size() > kMaximumHeadsetOutlineVertices)
+			return false;
+		double area = 0;
+		for (size_t i = 0; i < outline.size(); ++i) {
+			const auto point = outline[i], next = outline[(i + 1) % outline.size()];
+			if (!std::isfinite(point.x) || !std::isfinite(point.y) || point.x < 0 || point.x > 1 || point.y < 0 || point.y > 1)
+				return false;
+			area += point.x * next.y - next.x * point.y;
+		}
+		return std::isfinite(area) && std::abs(area) > 1e-6;
+	}
+
 	[[nodiscard]] inline bool IsValid(const Reference& reference)
 	{
 		const auto finiteRange = [](float value, float minimum, float maximum) {
@@ -103,6 +133,15 @@ namespace FoveatedMaskCalibration
 			!finiteRange(reference.outer.horizontalScale, 1.0f, 2.0f) ||
 			!finiteRange(reference.centerScale, 0.25f, 1.0f) || !finiteRange(reference.feather, 0.0f, 0.1f))
 			return false;
+		if (reference.headsetOutlines[0].empty() != reference.headsetOutlines[1].empty())
+			return false;
+		if (UsesHeadsetOutline(reference)) {
+			if (reference.fullImage)
+				return false;
+			for (const auto& outline : reference.headsetOutlines)
+				if (!IsValidHeadsetOutline(outline))
+					return false;
+		}
 		for (float limit : reference.innerLimits)
 			if (!finiteRange(limit, 0.0f, 1.0f))
 				return false;
@@ -120,13 +159,37 @@ namespace FoveatedMaskCalibration
 		       (!peripheryTaa || (std::isfinite(centerScale) && std::abs(reference.centerScale - centerScale) <= 1e-6f));
 	}
 
-	/** A calibrated FOV-only mask owns the visible boundary in both modes. */
+	/** Explicit user acceptance of one outer fit; inner TAA controls are independent. */
+	struct SetupConfirmation
+	{
+		bool finished = false;
+		Geometry geometry;
+		float feather = FoveatedCommon::kCenterFeather;
+		bool operator==(const SetupConfirmation&) const = default;
+	};
+
+	/** Store unexpanded slider centres so every outer control participates in edit detection. */
+	template <class Settings>
+	[[nodiscard]] inline SetupConfirmation CaptureSetupConfirmation(const Settings& settings)
+	{
+		return { true, { settings.foveatedCenterArea, settings.foveatedCenterHorizontalScale, { settings.foveatedLeftEyeMaskOffsetX + 0.5f, settings.foveatedLeftEyeMaskOffsetY + 0.5f, settings.foveatedRightEyeMaskOffsetX + 0.5f, settings.foveatedRightEyeMaskOffsetY + 0.5f } },
+			settings.foveatedOuterBlendFeather };
+	}
+
+	/** Geometry edits invalidate acceptance; the debug outer-fade toggle preserves it. */
 	template <class Settings>
 	[[nodiscard]] inline bool HasFovOnlySetup(const Settings& settings)
 	{
-		return MatchesProfile(settings.foveatedCalibrationReference, false, settings.foveatedCenterArea,
-				   FoveatedCommon::GetOuterFeather(settings.foveatedOuterBlendFeather)) &&
-		       !settings.foveatedCalibrationReference.fullImage && FoveatedCommon::IsActiveCoverage(settings.foveatedCenterArea);
+		const auto current = CaptureSetupConfirmation(settings);
+		return settings.foveatedMaskSetup == current &&
+		       FoveatedCommon::IsActiveCoverage(current.geometry.scale) &&
+		       current.geometry.scale >= FoveatedCommon::kCenterScaleMin &&
+		       current.geometry.horizontalScale >= FoveatedCommon::kCenterHorizontalScaleMin &&
+		       current.geometry.horizontalScale <= FoveatedCommon::kCenterHorizontalScaleMax &&
+		       current.feather >= 0.0f && current.feather <= FoveatedCommon::kMaximumFeather &&
+		       std::all_of(current.geometry.centers.begin(), current.geometry.centers.end(), [](float value) {
+				   return std::isfinite(value) && value >= 0.5f + kMinimumOffset && value <= 0.5f + kMaximumOffset;
+			   });
 	}
 
 	/** Avoid shrinking feather support when the inherited outline exceeds the ring limit. */
@@ -138,14 +201,17 @@ namespace FoveatedMaskCalibration
 		return visibleScale + 2.0f * feather > 1.0f ? visibleScale : FoveatedCommon::kCenterScaleMin;
 	}
 
-	/** Keeps the centre-to-TAA fade inside the inherited hard outer boundary. */
+	/** Keeps the centre-to-TAA fade inside the inherited outer support. */
 	template <class Settings>
 	[[nodiscard]] inline float GetInnerFeather(const Settings& settings)
 	{
 		const float feather = FoveatedCommon::GetOuterFeather(settings.periphery_taa_center_blend_feather);
-		if (!settings.foveatedDisableOuterFeather)
-			return feather;
-		const float available = std::max(0.0f, (FoveatedCommon::ClampCenterScale(settings.periphery_taa_outer_scale) -
+		const float outerFeather = FoveatedCommon::GetOuterFeather(settings.foveatedOuterBlendFeather, settings.foveatedDisableOuterFeather);
+		const float support = FoveatedCommon::ClampCenterScale(settings.foveatedCenterArea) + 2.0f * outerFeather;
+		// Wide masks retain their existing centre support beyond the TAA ring's scale limit.
+		if (support > 1.0f)
+			return outerFeather;
+		const float available = std::max(0.0f, (support -
 												   FoveatedCommon::ClampCenterScale(settings.periphery_taa_center_area)) *
 												   0.5f);
 		// Sub-minimum fades would be enlarged by the shader and cross the hard boundary.
@@ -159,11 +225,13 @@ namespace FoveatedMaskCalibration
 		const float visibleScale = FoveatedCommon::ClampCenterScale(settings.foveatedCenterArea);
 		const float feather = FoveatedCommon::ClampBlendFeather(settings.foveatedOuterBlendFeather);
 		settings.periphery_taa_outer_scale = std::min(visibleScale + 2.0f * FoveatedCommon::GetOuterFeather(feather, settings.foveatedDisableOuterFeather), 1.0f);
-		settings.periphery_taa_center_blend_feather = feather;
+		settings.periphery_taa_center_blend_feather = FoveatedCommon::ClampBlendFeather(settings.periphery_taa_center_blend_feather);
 		settings.periphery_taa_center_area = std::clamp(FoveatedCommon::ClampCenterScale(settings.periphery_taa_center_area),
 			MinimumInnerScale(settings), visibleScale);
-		if (!HasFovOnlySetup(settings))
+		if (!HasFovOnlySetup(settings)) {
+			settings.foveatedMaskSetup = {};
 			settings.periphery_taa_enable = false;
+		}
 	}
 
 	inline Polygon ClipHalfPlane(Polygon polygon, double nx, double ny, double offset)
@@ -323,11 +391,38 @@ namespace FoveatedMaskCalibration
 		return scaled;
 	}
 
+	/** Move temporal and vertical boundaries while retaining each headset's nasal outline. */
+	[[nodiscard]] inline std::array<Polygon, 2> ScaleHeadsetOutlines(const Reference& reference, float percent)
+	{
+		std::array<Polygon, 2> targets;
+		const double scale = percent / 100.0;
+		for (unsigned eye = 0; eye < 2; ++eye) {
+			Polygon points;
+			for (bool temporal : { true, false }) {
+				auto half = Clip(reference.headsetOutlines[eye], 0, 0.5, temporal == (eye != 0));
+				for (auto point : half) {
+					if (temporal)
+						point.x = 0.5 + (point.x - 0.5) * scale;
+					point.y = 0.5 + (point.y - 0.5) * scale;
+					points.push_back(point);
+				}
+			}
+			targets[eye] = ConvexHull(ClipEye(ConvexHull(std::move(points))));
+		}
+		return targets;
+	}
+
 	/** Complete each eye's curved outer fit to its own headset nasal bound at full strength. */
 	[[nodiscard]] inline std::optional<std::array<Polygon, 2>> BuildTargets(const Reference& reference, float percent)
 	{
 		if (!IsValid(reference) || !std::isfinite(percent) || percent < kMinimumPercent || percent > kMaximumPercent)
 			return std::nullopt;
+		if (UsesHeadsetOutline(reference)) {
+			auto targets = ScaleHeadsetOutlines(reference, percent);
+			if (targets[0].size() < 3 || targets[1].size() < 3)
+				return std::nullopt;
+			return targets;
+		}
 		if (reference.fullImage && percent >= 100.0f)
 			return std::array<Polygon, 2>{ Polygon{ { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } }, Polygon{ { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } } };
 		const auto scaled = ScaleOuterReference(reference, percent);
@@ -350,6 +445,8 @@ namespace FoveatedMaskCalibration
 	/** Preserve the fitted outer fade without treating that fade as full-strength centre coverage. */
 	[[nodiscard]] inline std::array<Polygon, 2> BuildOuterSupport(const Reference& reference, float percent)
 	{
+		if (UsesHeadsetOutline(reference))
+			return {};
 		auto support = ScaleOuterReference(reference, percent);
 		support.outer.scale += 2.0f * reference.feather;
 		return { OuterHalf(support, 0), OuterHalf(support, 1) };

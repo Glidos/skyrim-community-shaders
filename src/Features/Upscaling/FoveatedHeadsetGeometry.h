@@ -60,6 +60,36 @@ namespace FoveatedHeadsetGeometry
 		return std::clamp(eye == 0 ? maximum[0] : minimum[0], 0.0f, 1.0f);
 	}
 
+	/** Copy a conservative convex visible outline; absent meshes cover the complete eye. */
+	template <class Vertex>
+	[[nodiscard]] inline std::optional<FoveatedMaskCalibration::Polygon> VisibleOutline(const Vertex* vertices, uint32_t count)
+	{
+		using FoveatedMaskCalibration::Polygon;
+		if (!InnerLimit(vertices, count, 0))
+			return std::nullopt;
+		if (!count)
+			return Polygon{ { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+		Polygon points;
+		points.reserve(count);
+		for (uint32_t i = 0; i < count; ++i)
+			points.push_back({ std::clamp(double(vertices[i].v[0]), 0.0, 1.0), std::clamp(double(vertices[i].v[1]), 0.0, 1.0) });
+		auto outline = FoveatedMaskCalibration::ConvexHull(std::move(points));
+		if (outline.size() > FoveatedMaskCalibration::kMaximumHeadsetOutlineVertices) {
+			Polygon bounds{ { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+			// Circumscribed planes retain all visible pixels while bounding persisted contour size.
+			for (unsigned i = 0; i < 64; ++i) {
+				const double angle = i * 6.283185307179586 / 64;
+				const double nx = std::cos(angle), ny = std::sin(angle);
+				double support = -2;
+				for (auto point : outline)
+					support = std::max(support, nx * point.x + ny * point.y);
+				bounds = FoveatedMaskCalibration::ClipHalfPlane(std::move(bounds), -nx, -ny, support);
+			}
+			outline = std::move(bounds);
+		}
+		return FoveatedMaskCalibration::IsValidHeadsetOutline(outline) ? std::optional{ std::move(outline) } : std::nullopt;
+	}
+
 	/** Encode an eye-UV homography for the preview shader's column-vector clip transform. */
 	template <class ClipMatrix>
 	[[nodiscard]] inline ClipMatrix ToClipProjection(const Projection& p)

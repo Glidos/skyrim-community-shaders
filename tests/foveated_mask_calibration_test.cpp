@@ -67,6 +67,10 @@ namespace
 			bool periphery_taa_enable = true;
 			bool foveatedDisableOuterFeather = false;
 			Reference foveatedCalibrationReference;
+			SetupConfirmation foveatedMaskSetup;
+			float foveatedCenterHorizontalScale = 1.0f;
+			float foveatedLeftEyeMaskOffsetX = 0, foveatedLeftEyeMaskOffsetY = 0;
+			float foveatedRightEyeMaskOffsetX = 0, foveatedRightEyeMaskOffsetY = 0;
 		} settings;
 		for (float invalid : { -1.0f, 1.0f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN() }) {
 			const auto configured = FoveatedCommon::ClampBlendFeather(invalid);
@@ -82,6 +86,7 @@ namespace
 		Require(!settings.periphery_taa_enable, "Uncalibrated saved TAA must fall back to FOV only");
 		for (const float outer : { 0.25f, 0.6f, 0.85f, 0.95f }) {
 			for (const float feather : { 0.0f, 0.05f, 0.1f }) {
+				settings.foveatedMaskSetup = {};
 				settings.foveatedCenterArea = outer;
 				settings.foveatedOuterBlendFeather = feather;
 				settings.foveatedCalibrationReference = { .version = FoveatedMaskCalibration::kReferenceVersion,
@@ -89,7 +94,11 @@ namespace
 					.leftToRight = { 1, 0, 0, 0, 1, 0, 0, 0, 1 },
 					.feather = std::max(feather, FoveatedCommon::kMinimumFeather) };
 				const auto reference = settings.foveatedCalibrationReference;
-				Require(HasFovOnlySetup(settings), "Valid FOV-only calibration must permit TAA");
+				Require(!HasFovOnlySetup(settings), "Calibration alone must not unlock TAA");
+				settings.foveatedMaskSetup = CaptureSetupConfirmation(settings);
+				const auto serialized = nlohmann::json(settings.foveatedMaskSetup);
+				settings.foveatedMaskSetup = serialized.get<SetupConfirmation>();
+				Require(HasFovOnlySetup(settings), "Explicit confirmation must survive JSON round trips");
 				for (const float inner : { 0.25f, 0.3f, 0.6f, 1.0f }) {
 					settings.periphery_taa_enable = true;
 					settings.periphery_taa_center_area = inner;
@@ -99,7 +108,7 @@ namespace
 						"Mode and inner changes must preserve FOV-only geometry and its reference");
 					Require(settings.periphery_taa_center_area <= outer && settings.periphery_taa_center_area >= MinimumInnerScale(settings),
 						"The inner area must stay bounded by inherited feather support");
-					Require(settings.periphery_taa_center_blend_feather == feather, "TAA must inherit FOV-only feathering");
+					Require(settings.periphery_taa_center_blend_feather == 0.02f, "TAA must retain its independent inner feather");
 					for (const float horizontal : { 1.0f, 1.8f }) {
 						for (const float offset : { -0.3f, 0.0f, 0.3f }) {
 							const auto original = FoveatedMaskVisualization::MeasureCoverage(outer, FoveatedCommon::GetOuterFeather(feather), horizontal, offset, 0.04f, false, 1.0f);
@@ -115,6 +124,8 @@ namespace
 		settings.foveatedCenterArea = 0.6f;
 		settings.foveatedOuterBlendFeather = 0.05f;
 		settings.foveatedCalibrationReference.feather = 0.05f;
+		settings.periphery_taa_center_blend_feather = 0.05f;
+		settings.foveatedMaskSetup = CaptureSetupConfirmation(settings);
 		const auto savedReference = settings.foveatedCalibrationReference;
 		for (bool disabled : { true, false, true }) {
 			settings.foveatedDisableOuterFeather = disabled;
@@ -139,14 +150,18 @@ namespace
 			Require(!disabled || GetInnerFeather(settings) == 0, "No TAA ring must not reintroduce outer feathering");
 		}
 		settings.foveatedDisableOuterFeather = false;
-		settings.foveatedCalibrationReference.peripheryTaa = true;
-		Require(!HasFovOnlySetup(settings), "A legacy TAA reference does not prove FOV-only setup");
-		settings.foveatedCalibrationReference.peripheryTaa = false;
-		settings.foveatedCalibrationReference.fullImage = true;
-		Require(!HasFovOnlySetup(settings), "Full-eye calibration has no bounded TAA periphery");
-		settings.foveatedCalibrationReference.fullImage = false;
-		settings.foveatedCalibrationReference.leftToRight = {};
-		Require(!HasFovOnlySetup(settings), "Corrupt saved projections must never enable TAA");
+		for (auto member : { &Settings::foveatedCenterArea, &Settings::foveatedCenterHorizontalScale,
+				 &Settings::foveatedLeftEyeMaskOffsetX, &Settings::foveatedLeftEyeMaskOffsetY,
+				 &Settings::foveatedRightEyeMaskOffsetX, &Settings::foveatedRightEyeMaskOffsetY,
+				 &Settings::foveatedOuterBlendFeather }) {
+			auto changed = settings;
+			changed.*member += 0.001f;
+			Require(!HasFovOnlySetup(changed), "Every outer slider edit must invalidate confirmation");
+			InheritFovOnlyBoundary(changed);
+			changed.*member = settings.*member;
+			Require(!HasFovOnlySetup(changed), "Returning a slider cannot silently restore confirmation");
+		}
+		settings.foveatedMaskSetup = {};
 		settings.periphery_taa_center_area = std::numeric_limits<float>::quiet_NaN();
 		InheritFovOnlyBoundary(settings);
 		Require(!settings.periphery_taa_enable && std::isfinite(settings.periphery_taa_center_area), "Corrupt saved inner values must sanitize safely");
@@ -161,8 +176,12 @@ namespace
 		legacy["version"] = 1;
 		legacy.erase("innerLimits");
 		Require(legacy.get<Reference>() == Reference{}, "Legacy calibration must expire without changing manual settings");
+		auto previous = saved;
+		previous["version"] = 2;
+		previous.erase("headsetOutlines");
+		Require(previous.get<Reference>() == reference, "Version-two manual references must remain usable without recalibration");
 		std::vector<nlohmann::json> corrupt;
-		for (auto version : { nlohmann::json(-1), nlohmann::json(3), nlohmann::json(1.5), nlohmann::json(4294967297ULL) }) {
+		for (auto version : { nlohmann::json(-1), nlohmann::json(4), nlohmann::json(1.5), nlohmann::json(4294967297ULL) }) {
 			auto changed = saved;
 			changed["version"] = version;
 			corrupt.push_back(changed);
@@ -338,7 +357,7 @@ int main()
 	CheckClipProjection();
 	CheckReferenceCompatibility();
 	Require(!Solve(Reference{}, 100), "An absent reference must not be interpreted as calibration");
-	for (float percent : { 0.0f, 69.0f, 131.0f, std::numeric_limits<float>::quiet_NaN() })
+	for (float percent : { 0.0f, 49.0f, 131.0f, std::numeric_limits<float>::quiet_NaN() })
 		Require(!Solve(reference, percent), "Invalid scaling must fail closed");
 	auto invalid = reference;
 	invalid.leftToRight = {};
