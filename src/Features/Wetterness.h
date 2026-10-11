@@ -175,7 +175,7 @@ public:
 		uint WetnessDistanceFadeRangePacked = 0;
 		float RainContactWetnessScale = 1.75f;
 		float GrassWetnessPhase = 0.0f;
-		float GrassControlPadding = 0.0f;
+		float NightFactor = 0.0f;
 		float GrassWetDarkeningStrength = 0.0f;
 		uint PuddleMaskMode = 0;
 	};
@@ -183,6 +183,7 @@ public:
 	static_assert(offsetof(PerFrame, settings) == 80, "Wetterness::PerFrame settings offset changed.");
 	static_assert(offsetof(PerFrame, PackedPostRainControl) == 240, "Wetterness::PerFrame tail-control offset changed.");
 	static_assert(offsetof(PerFrame, GrassWetnessPhase) == 256, "Wetterness::PerFrame grass controls offset changed.");
+	static_assert(offsetof(PerFrame, NightFactor) == 260, "Wetterness::PerFrame night factor offset changed.");
 	static_assert(offsetof(PerFrame, GrassWetDarkeningStrength) == 264, "Wetterness::PerFrame grass darkening offset changed.");
 	static_assert(offsetof(PerFrame, PuddleMaskMode) == 268, "Wetterness::PerFrame puddle mask mode offset changed.");
 	static_assert(sizeof(PerFrame) == 272, "Wetterness::PerFrame size changed; update wetness shader/CB contract.");

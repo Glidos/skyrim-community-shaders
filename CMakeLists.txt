@@ -2624,6 +2624,10 @@ if(BUILD_CONTROLLER_TESTS)
     )
     target_link_libraries(sharpener_bindings_test PRIVATE d3d11.lib)
     include("${PROJECT_SOURCE_DIR}/tests/d3d11_shader_test.cmake")
+    add_d3d_shader_test(
+        wetterness_highlights_test WetternessHighlights
+        tests/wetterness_highlights_test.cpp
+    )
     add_d3d_shader_test(lazy_shader_test LazyShader tests/lazy_shader_test.cpp)
     target_link_libraries(
         lazy_shader_test
