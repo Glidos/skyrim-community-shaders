@@ -5,6 +5,7 @@
 #include "Features/Upscaling/NeuralRendering/MemoryRecoveryPolicy.h"
 #include "Features/Upscaling/NeuralRendering/ModelResolutionPolicy.h"
 #include "Features/Upscaling/NeuralRendering/Runtime.h"
+#include "Features/Upscaling/NeuralRendering/StallRecoveryPolicy.h"
 
 #include <array>
 #include <cstdio>
@@ -527,6 +528,7 @@ namespace NeuralRendering
 			bool pressureResolutionEnabled = false;
 			unsigned effectiveModelResolutionPercent = 100;
 			std::string detail;
+			StallRecoveryPolicy stallRecovery{};
 			MemoryRecoveryPolicy memoryRecovery{};
 			MemoryConservationPolicy memoryConservation{};
 		} snapshot;

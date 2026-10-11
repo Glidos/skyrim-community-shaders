@@ -73,6 +73,7 @@ namespace REL
 	struct Relocation
 	{
 		Signature* callback = nullptr;
+		Signature* get() const { return callback; }
 		template <class... Args>
 		auto operator()(Args&&... args) const
 		{
@@ -189,6 +190,19 @@ struct TerrainBlending
 
 namespace globals::features
 {
+	struct GrassRenderer
+	{
+		using NativeDraw = void (*)(RE::BSRenderPass*, uint32_t, bool, uint32_t);
+		void DrawRenderPass(RE::BSRenderPass* pass, uint32_t techniqueID, bool alphaTest, uint32_t flags, NativeDraw draw)
+		{
+			draw(pass, techniqueID, alphaTest, flags);
+		}
+	};
+	struct
+	{
+		GrassRenderer renderer;
+		GrassRenderer& GetRenderer() { return renderer; }
+	} grassOptimizations;
 	TruePBR truePBR;
 	struct
 	{
