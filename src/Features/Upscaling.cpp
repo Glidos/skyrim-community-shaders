@@ -2005,9 +2005,8 @@ Optional: select FOV + TAA for further performance savings (not compatible with 
 		auto* openvr = RE::BSOpenVR::GetSingleton();
 		if (!openvr || !openvr->vrSystem)
 			return std::nullopt;
-		std::array<std::array<float, 4>, 2> tangents;
-		std::array<FoveatedMaskCalibration::Projection, 2> rotations;
-		FoveatedHeadsetSnapshot geometry{};
+		std::array<std::array<float, 4>, 2> tangents{};
+		std::array<FoveatedMaskCalibration::Projection, 2> rotations{};
 		for (unsigned eye = 0; eye < 2; ++eye) {
 			const auto vrEye = eye == 0 ? vr::Eye_Left : vr::Eye_Right;
 			auto& t = tangents[eye];
@@ -2016,30 +2015,33 @@ Optional: select FOV + TAA for further performance savings (not compatible with 
 			for (unsigned row = 0; row < 3; ++row)
 				for (unsigned column = 0; column < 3; ++column)
 					rotations[eye][row * 3 + column] = eyeToHead.m[row][column];
-			// Preview projection needs optics only; mesh capture belongs to coverage checks.
-			if (a_includeVisibleBounds) {
-				auto mesh = openvr->vrSystem->GetHiddenAreaMesh(vrEye, vr::k_eHiddenAreaMesh_LineLoop);
-				uint32_t vertices = mesh.unTriangleCount;
-				if (!vertices) {
-					mesh = openvr->vrSystem->GetHiddenAreaMesh(vrEye, vr::k_eHiddenAreaMesh_Inverse);
-					if (mesh.unTriangleCount > 4096)
-						return std::nullopt;
-					vertices = mesh.unTriangleCount * 3;
-				}
-				const auto limit = ::FoveatedHeadsetGeometry::InnerLimit(mesh.pVertexData, vertices, eye);
-				if (!limit)
-					return std::nullopt;
-				geometry.innerLimits[eye] = *limit;
-				const auto outline = ::FoveatedHeadsetGeometry::VisibleOutline(mesh.pVertexData, vertices);
-				if (!outline)
-					return std::nullopt;
-				geometry.outlines[eye] = *outline;
-			}
 		}
 		const auto projection = ::FoveatedHeadsetGeometry::BuildProjection(tangents, rotations);
 		if (!projection)
 			return std::nullopt;
-		geometry.leftToRight = *projection;
+		FoveatedHeadsetSnapshot geometry{ .leftToRight = *projection, .innerLimits = { 1.0f, 0.0f } };
+		// Preview projection needs optics only; mesh capture belongs to coverage checks.
+		if (!a_includeVisibleBounds)
+			return geometry;
+		geometry.outlines.fill(*::FoveatedHeadsetGeometry::VisibleOutline<vr::HmdVector2_t>(nullptr, 0));
+		for (unsigned eye = 0; eye < 2; ++eye) {
+			const auto vrEye = eye == 0 ? vr::Eye_Left : vr::Eye_Right;
+			const auto captureBounds = [&](const vr::HiddenAreaMesh_t& mesh, uint32_t verticesPerElement) {
+				if (!mesh.unTriangleCount || mesh.unTriangleCount > ::FoveatedHeadsetGeometry::kMaximumMeshVertices / verticesPerElement)
+					return false;
+				const auto vertices = mesh.unTriangleCount * verticesPerElement;
+				const auto limit = ::FoveatedHeadsetGeometry::InnerLimit(mesh.pVertexData, vertices, eye);
+				const auto outline = ::FoveatedHeadsetGeometry::VisibleOutline(mesh.pVertexData, vertices);
+				if (!limit || !outline)
+					return false;
+				geometry.innerLimits[eye] = *limit;
+				geometry.outlines[eye] = *outline;
+				return true;
+			};
+			// Visibility meshes are optional; retain full-eye bounds if neither mesh is usable.
+			if (!captureBounds(openvr->vrSystem->GetHiddenAreaMesh(vrEye, vr::k_eHiddenAreaMesh_LineLoop), 1))
+				captureBounds(openvr->vrSystem->GetHiddenAreaMesh(vrEye, vr::k_eHiddenAreaMesh_Inverse), 3);
+		}
 		return geometry;
 	}
 
@@ -19584,7 +19586,7 @@ bool Upscaling::PrepareFoveatedMaskCalibration(Settings& a_candidate, FoveatedMa
 	}
 	const auto headset = GetFoveatedHeadsetGeometry();
 	if (!headset) {
-		a_error = "Stereo projection is unavailable. Enter a loaded scene and try again.";
+		a_error = "Headset projection data is unavailable from the VR runtime. Check that your headset is active and try again.";
 		return false;
 	}
 	const auto& projection = headset->leftToRight;

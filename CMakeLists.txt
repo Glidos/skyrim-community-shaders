@@ -2476,7 +2476,32 @@ if(BUILD_CONTROLLER_TESTS)
         PROPERTIES TIMEOUT 30
     )
 
+    set(_foveated_headset_geometry_test_dir
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/foveated-headset-geometry-test"
+    )
+    set(_foveated_headset_geometry_header
+        "${_foveated_headset_geometry_test_dir}/foveated_headset_geometry_under_test.h"
+    )
+    add_custom_command(
+        OUTPUT "${_foveated_headset_geometry_header}"
+        COMMAND
+            "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
+            "-DOUTPUT_DIRECTORY=${_foveated_headset_geometry_test_dir}" -P
+            "${PROJECT_SOURCE_DIR}/tests/extract_foveated_headset_geometry.cmake"
+        DEPENDS
+            src/Features/Upscaling.cpp
+            tests/extract_foveated_headset_geometry.cmake
+        VERBATIM
+    )
     add_controller_test(foveated_headset_calibration_test FoveatedHeadsetCalibration tests/foveated_headset_calibration_test.cpp)
+    target_sources(
+        foveated_headset_calibration_test
+        PRIVATE "${_foveated_headset_geometry_header}"
+    )
+    target_include_directories(
+        foveated_headset_calibration_test
+        PRIVATE "${_foveated_headset_geometry_test_dir}"
+    )
     target_link_libraries(
         foveated_headset_calibration_test
         PRIVATE nlohmann_json::nlohmann_json

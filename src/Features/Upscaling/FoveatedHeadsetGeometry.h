@@ -5,6 +5,7 @@
 namespace FoveatedHeadsetGeometry
 {
 	using FoveatedMaskCalibration::Projection;
+	constexpr uint32_t kMaximumMeshVertices = 12288;
 
 	/** Build direction-only eye UV mapping from OpenVR optics, without scene-camera state or IPD parallax. */
 	[[nodiscard]] inline std::optional<Projection> BuildProjection(const std::array<std::array<float, 4>, 2>& tangents,
@@ -41,7 +42,7 @@ namespace FoveatedHeadsetGeometry
 	template <class Vertex>
 	[[nodiscard]] inline std::optional<float> InnerLimit(const Vertex* vertices, uint32_t count, unsigned eye)
 	{
-		if (eye > 1 || count > 12288 || (count && !vertices))
+		if (eye > 1 || count > kMaximumMeshVertices || (count && !vertices))
 			return std::nullopt;
 		if (!count)
 			return eye == 0 ? 1.0f : 0.0f;

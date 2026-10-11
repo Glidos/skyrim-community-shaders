@@ -5,8 +5,83 @@
 #include <iostream>
 #include <limits>
 
+namespace globals::game
+{
+	bool isVR = true;
+}
+namespace vr
+{
+	enum EVREye
+	{
+		Eye_Left,
+		Eye_Right
+	};
+	enum EHiddenAreaMeshType
+	{
+		k_eHiddenAreaMesh_LineLoop,
+		k_eHiddenAreaMesh_Inverse
+	};
+	struct HmdVector2_t
+	{
+		float v[2];
+	};
+	struct HiddenAreaMesh_t
+	{
+		const HmdVector2_t* pVertexData = nullptr;
+		uint32_t unTriangleCount = 0;
+	};
+	struct HmdMatrix34_t
+	{
+		float m[3][4]{};
+	};
+}
+struct HeadsetSystem
+{
+	std::array<std::array<float, 4>, 2> tangents{};
+	std::array<FoveatedMaskCalibration::Projection, 2> rotations{};
+	std::array<vr::HiddenAreaMesh_t, 2> loops{}, inverse{};
+	std::array<uint32_t, 2> loopReads{}, inverseReads{};
+	bool provideProjection = true;
+	void GetProjectionRaw(vr::EVREye eye, float* left, float* right, float* bottom, float* top) const
+	{
+		if (provideProjection) {
+			*left = tangents[eye][0];
+			*right = tangents[eye][1];
+			*bottom = tangents[eye][2];
+			*top = tangents[eye][3];
+		}
+	}
+	vr::HmdMatrix34_t GetEyeToHeadTransform(vr::EVREye eye) const
+	{
+		vr::HmdMatrix34_t result{};
+		for (unsigned row = 0; row < 3; ++row)
+			for (unsigned column = 0; column < 3; ++column)
+				result.m[row][column] = static_cast<float>(rotations[eye][row * 3 + column]);
+		return result;
+	}
+	vr::HiddenAreaMesh_t GetHiddenAreaMesh(vr::EVREye eye, vr::EHiddenAreaMeshType type)
+	{
+		if (type == vr::k_eHiddenAreaMesh_LineLoop) {
+			++loopReads[eye];
+			return loops[eye];
+		}
+		++inverseReads[eye];
+		return inverse[eye];
+	}
+};
+namespace RE
+{
+	struct BSOpenVR
+	{
+		inline static BSOpenVR* singleton = nullptr;
+		HeadsetSystem* vrSystem = nullptr;
+		static BSOpenVR* GetSingleton() { return singleton; }
+	};
+}
+
 namespace
 {
+#include "foveated_headset_geometry_under_test.h"
 	using namespace FoveatedMaskCalibration;
 	constexpr Projection identity{ 1, 0, 0, 0, 1, 0, 0, 0, 1 };
 	constexpr std::array<std::array<float, 4>, 2> optics{
@@ -89,6 +164,76 @@ namespace
 		corrupt[1].v[1] = 2;
 		Require(!InnerLimit(corrupt.data(), 4, 0), "Out-of-range mesh coordinates must fail closed");
 		Require(!InnerLimit(vertices.data(), 1, 0), "Degenerate visibility meshes cannot certify coverage");
+	}
+
+	void CheckRuntimeCapture()
+	{
+		HeadsetSystem system;
+		system.tangents = optics;
+		system.rotations = { identity, identity };
+		RE::BSOpenVR runtime{ &system };
+		RE::BSOpenVR::singleton = &runtime;
+		const std::array<vr::HmdVector2_t, 4> loop{
+			vr::HmdVector2_t{ .04f, .5f }, { .5f, 0 }, { .953f, .5f }, { .5f, 1 }
+		};
+		const std::array<vr::HmdVector2_t, 6> triangles{ loop[0], loop[1], loop[2], loop[0], loop[2], loop[3] };
+		system.loops.fill({ loop.data(), uint32_t(loop.size()) });
+		const auto baseline = GetFoveatedHeadsetGeometry();
+		Require(baseline && baseline->innerLimits == std::array{ .953f, .04f }, "Runtime capture must retain valid per-eye visibility bounds");
+		Require(system.inverseReads == std::array<uint32_t, 2>{}, "Valid line loops must not request inverse meshes");
+		const std::array<vr::HiddenAreaMesh_t, 4> invalidLoops{
+			vr::HiddenAreaMesh_t{ nullptr, 1 }, { loop.data(), 12289 }, { loop.data(), 1 }, { nullptr, 0 }
+		};
+		for (const auto mesh : invalidLoops) {
+			system.loops[0] = mesh;
+			system.inverse[0] = { triangles.data(), 2 };
+			const auto fallback = GetFoveatedHeadsetGeometry();
+			Require(fallback && fallback->leftToRight == baseline->leftToRight && fallback->outlines == baseline->outlines,
+				"Missing, malformed or oversized line loops must retry the valid inverse mesh without losing optics");
+		}
+		auto corrupt = loop;
+		for (float coordinate : { 2.0f, std::numeric_limits<float>::quiet_NaN() }) {
+			corrupt[0].v[0] = coordinate;
+			system.loops[0] = { corrupt.data(), uint32_t(corrupt.size()) };
+			const auto fallback = GetFoveatedHeadsetGeometry();
+			Require(fallback && fallback->outlines == baseline->outlines, "Invalid mesh coordinates must retry the inverse mesh");
+		}
+		system.loops[0] = { nullptr, 1 };
+		system.inverse[0] = { triangles.data(), 4097 };
+		const auto fullEye = GetFoveatedHeadsetGeometry();
+		const Polygon rectangle{ { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
+		Require(fullEye && fullEye->innerLimits[0] == 1 && fullEye->outlines[0] == rectangle &&
+					fullEye->innerLimits[1] == baseline->innerLimits[1] && fullEye->outlines[1] == baseline->outlines[1],
+			"Unusable visibility meshes must conservatively cover only the affected eye and keep calibration available");
+		Reference reference{ .version = kReferenceVersion, .leftToRight = fullEye->leftToRight, .innerLimits = fullEye->innerLimits, .centerScale = 1.0f };
+		reference.headsetOutlines = fullEye->outlines;
+		for (float feather : { .05f, 0.0f }) {
+			reference.feather = feather;
+			for (float percent : { 100.0f, 70.0f }) {
+				const auto fit = Solve(reference, percent);
+				Require(fit && !CheckCoverage(reference, percent, fit->geometry, fit->geometry.scale, fit->fullImage, false).hasGap,
+					"Mesh fallback must support automatic setup and outer scaling with feathered or hard boundaries");
+			}
+		}
+		system.loopReads = system.inverseReads = {};
+		Require(GetFoveatedHeadsetGeometry(false).has_value() && system.loopReads == std::array<uint32_t, 2>{} && system.inverseReads == std::array<uint32_t, 2>{},
+			"Preview projection must never access visibility meshes");
+		system.tangents[0][0] = std::numeric_limits<float>::quiet_NaN();
+		Require(!GetFoveatedHeadsetGeometry(), "Invalid optics must not be replaced with invented projection data");
+		system.tangents = optics;
+		system.provideProjection = false;
+		Require(!GetFoveatedHeadsetGeometry(), "A runtime that omits projection outputs must not leave uninitialized optics");
+		system.provideProjection = true;
+		system.rotations[1] = {};
+		Require(!GetFoveatedHeadsetGeometry(), "Missing eye rotations must fail closed even with mesh fallback");
+		system.rotations = { identity, identity };
+		runtime.vrSystem = nullptr;
+		Require(!GetFoveatedHeadsetGeometry(), "An unavailable VR system must fail closed");
+		RE::BSOpenVR::singleton = nullptr;
+		Require(!GetFoveatedHeadsetGeometry(), "An unavailable VR singleton must fail closed");
+		globals::game::isVR = false;
+		Require(!GetFoveatedHeadsetGeometry(), "Flat runtimes must not access headset interfaces");
+		globals::game::isVR = true;
 	}
 
 	double Distance(const Geometry& geometry, unsigned eye, Point uv, float padding = 0)
@@ -297,6 +442,7 @@ int main()
 {
 	CheckOptics();
 	CheckNasalLimits();
+	CheckRuntimeCapture();
 	CheckManualRegression();
 	CheckAutomaticHeadsetFit();
 	std::cout << "PASS: headset optics, preview projection, nasal limits, independent eyes, manual regression, outer scaling and hard edges\n";
