@@ -17024,6 +17024,7 @@ void Upscaling::DrawSettingsHeaderControls()
 					"RTX 3000 series: start with F; compare E.");
 			}
 			if (showFovStatus) {
+				const char* fovNotice = nullptr;
 				if (SupportsFoveatedVendorDispatch(upscaleMethod)) {
 					const auto foveatedProfile = GetActiveUpscalingFoveatedProfile();
 					const bool fovActive = foveatedProfile.available && FoveatedCommon::IsActiveCoverage(foveatedProfile.sharedVisibleScale);
@@ -17032,10 +17033,18 @@ void Upscaling::DrawSettingsHeaderControls()
 																		  "FOV: inactive",
 						fovActive);
 					if (!fovActive && fovConfigured)
-						ImGui::TextWrapped("FOV is configured; waiting for runtime upscaling.");
+						fovNotice = "FOV is configured; waiting for runtime upscaling.";
 				} else {
 					drawLabel("FOV: unavailable");
-					ImGui::TextWrapped("Choose DLSS or FSR to enable foveated upscaling.");
+					fovNotice = "Choose DLSS or FSR to enable foveated upscaling.";
+				}
+				if (fovNotice) {
+					const float inlineWidth = ImGui::CalcTextSize(fovNotice).x + ImGui::CalcTextSize("Configure in").x +
+					                          ImGui::CalcTextSize("VR > FOV").x + ImGui::GetStyle().ItemSpacing.x * 2;
+					const bool linkFitsInline = ImGui::GetContentRegionAvail().x >= inlineWidth;
+					ImGui::TextWrapped("%s", fovNotice);
+					if (linkFitsInline)
+						ImGui::SameLine();
 				}
 				DrawFovSettingsLink();
 			}

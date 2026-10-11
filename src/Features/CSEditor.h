@@ -32,7 +32,8 @@ public:
 	virtual void DataLoaded() override;
 	virtual void Prepass() override;
 
-	void DrawLauncherButton(float width = -1.0f);
+	/** Draw the editor launcher as a regular sidebar feature row. */
+	void DrawLauncherRow(float width, float height);
 
 	static void OpenEditorWindow();
 	static void ToggleEditorWindow();

@@ -1,4 +1,5 @@
 #include "CSEditor.h"
+#include <fmt/format.h>
 
 #include "State.h"
 #include "Util.h"
@@ -413,16 +414,15 @@ void LerpDirectional(RE::BGSDirectionalAmbientLightingColors::Directional& oldCo
 	LerpColor(oldColor.z.min, newColor.z.min, changePct);
 }
 
-void CSEditor::DrawLauncherButton(float width)
+void CSEditor::DrawLauncherRow(float width, float height)
 {
 	auto* state = globals::state;
 	const bool canOpen = loaded && CanOpenEditor();
-	ImGui::BeginDisabled(!canOpen);
-	ImGui::PushStyleVar(ImGuiStyleVar_ButtonTextAlign, ImVec2(0.5f, 0.5f));
-	if (ImGui::Button("Open CS Editor", { width, 0 }))
-		OpenEditorWindow();
-	ImGui::PopStyleVar();
-	ImGui::EndDisabled();
+	{
+		auto disabled = Util::DisableGuard(!canOpen);
+		if (ImGui::Selectable(fmt::format("    {} ", GetDisplayName()).c_str(), false, ImGuiSelectableFlags_None, { width, height }))
+			OpenEditorWindow();
+	}
 
 	if (!canOpen) {
 		if (auto _tt = Util::HoverTooltipWrapper()) {

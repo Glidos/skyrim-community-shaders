@@ -46,6 +46,8 @@ namespace
 	// Core built-in menu names that always appear before the feature list.
 	constexpr std::array<const char*, 6> CORE_MENU_NAMES = { "Home", "General", "Advanced", "Profiling", PERFORMANCE_TUNING_MENU_NAME, "Display" };
 
+	constexpr std::array<std::string_view, 3> displayFeatureOrder{ "Upscaling", "NeuralRendering", "TextureStreaming" };
+
 	constexpr float sidebarTextScale = 14.0f / 12.0f;
 	struct SidebarFontScope
 	{
@@ -726,7 +728,13 @@ std::vector<FeatureListRenderer::MenuFuncInfo> FeatureListRenderer::BuildMenuLis
 
 	// Sort features within each category
 	for (auto& [category, features] : categorizedFeatures) {
-		std::ranges::sort(features, [vrFirst = category == utilityCategory](Feature* a, Feature* b) {
+		std::ranges::sort(features, [vrFirst = category == utilityCategory, displayFirst = category == FeatureCategories::kDisplay](Feature* a, Feature* b) {
+			if (displayFirst) {
+				const auto aOrder = std::ranges::find(displayFeatureOrder, a->GetShortName());
+				const auto bOrder = std::ranges::find(displayFeatureOrder, b->GetShortName());
+				if (aOrder != bOrder)
+					return aOrder < bOrder;
+			}
 			if (vrFirst) {
 				const bool aIsVR = a == &globals::features::vr;
 				const bool bIsVR = b == &globals::features::vr;
@@ -1029,14 +1037,14 @@ void FeatureListRenderer::ListMenuVisitor::operator()(Feature* feat)
 	}
 
 	ImGui::PushStyleColor(ImGuiCol_Text, textColor);
-	if (feat == &globals::features::csEditor) {
-		ImGui::SetCursorScreenPos({ rowStart.x, rowStart.y + std::max(0.0f, (rowHeight - ImGui::GetFrameHeight()) * .5f) });
-		globals::features::csEditor.DrawLauncherButton(labelWidth);
-	} else {
+	{
 		ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, { 0, .5f });
 		const SKSE::stl::scope_exit restoreAlign([] { ImGui::PopStyleVar(); });
-		if (ImGui::Selectable(fmt::format("    {} ", feat->GetDisplayName()).c_str(), false, ImGuiSelectableFlags_None, { labelWidth, rowHeight }))
+		if (feat == &globals::features::csEditor) {
+			globals::features::csEditor.DrawLauncherRow(labelWidth, rowHeight);
+		} else if (ImGui::Selectable(fmt::format("    {} ", feat->GetDisplayName()).c_str(), false, ImGuiSelectableFlags_None, { labelWidth, rowHeight })) {
 			selectedMenuRef = listId;
+		}
 	}
 	ImGui::PopStyleColor();
 	if (external ? external->HasUnsavedChanges() : globals::menu->HasUnsavedFeatureSettings(feat->GetName())) {

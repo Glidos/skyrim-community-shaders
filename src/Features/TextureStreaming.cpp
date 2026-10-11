@@ -933,7 +933,7 @@ TextureStreaming& TextureStreaming::Instance()
 }
 std::pair<std::string, std::vector<std::string>> TextureStreaming::GetFeatureSummary()
 {
-	return { "Reduces resident texture mips when GPU memory is under pressure.",
+	return { "Reduces texture detail on static objects when GPU memory is tight.",
 		{ "Conservative static DDS coverage with optional categories", "Stereo and mip-bias aware detail", "Bounded restoration with shared NR and render-scale headroom" } };
 }
 void TextureStreaming::PostPostLoad()
@@ -1105,21 +1105,18 @@ void TextureStreaming::DrawSettings()
 			if (Util::Widgets::SliderInt("Maximum mip levels removed", &maximum, 1, Policy::MaximumDrop))
 				Configure(enabled, maximum);
 		}
-		MenuUI::DetailNote("Detail follows both eyes, output resolution and shader mip bias. Neural Rendering scale does not lower texture detail.");
-		MenuUI::DetailText("Streams suitable static DDS materials within the enabled categories. Disabling restores textures gradually as memory permits.");
+		MenuUI::DetailText("Static objects only, such as buildings and rocks. Reduces detail when GPU memory is tight; restores it as memory allows.");
 	}
 	if (page.Is("categories")) {
 		const auto disabled = Util::DisableGuard(!available);
 		bool changed = Util::Widgets::Checkbox("Landscape textures on static meshes", &categories.landscapeStatics);
-		MenuUI::DetailText("Includes ordinary static meshes using landscape-folder textures. Terrain and distant LOD remain protected.");
+		MenuUI::DetailText("Includes ordinary static meshes using landscape-folder textures.");
 		changed |= Util::Widgets::Checkbox("Alpha-tested static surfaces", &categories.alphaTestedStatics);
-		MenuUI::DetailText("Includes non-animated cutout surfaces. Reduced mips can change fine edges; blended transparency remains protected.");
+		MenuUI::DetailText("Includes non-animated cutout surfaces. Lower detail can change fine edges.");
 		changed |= Util::Widgets::Checkbox("Emissive static surfaces", &categories.emissiveStatics);
-		MenuUI::DetailText("Includes diffuse and normal maps on static emissive materials. Glow maps remain protected.");
+		MenuUI::DetailText("Includes diffuse and normal maps on static emissive materials.");
 		if (changed)
 			Configure(enabled, maximum, categories);
-		MenuUI::DetailNote("All optional categories default off. Turning one off queues restoration as memory permits.");
-		MenuUI::DetailText("Characters, clothing, skin, terrain, LOD, water, parallax and runtime-generated textures remain protected.");
 	}
 	if (page.Is("status")) {
 		MenuUI::DetailNote(detail.c_str());
@@ -1134,4 +1131,5 @@ void TextureStreaming::DrawSettings()
 		}
 		MenuUI::DetailText("Logical capacity is not a measurement of physical VRAM reclaimed.");
 	}
+	MenuUI::DetailText("Excluded: characters, clothing, skin, terrain, distant LOD, water, parallax, blended transparency, glow maps and runtime-generated textures.");
 }
