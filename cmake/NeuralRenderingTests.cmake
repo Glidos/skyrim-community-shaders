@@ -19,6 +19,34 @@ foreach(_target _test IN ZIP_LISTS _nr_model_targets _nr_model_tests)
     target_include_directories(${_target} PRIVATE "${_nr_accounting_directory}")
 endforeach()
 target_compile_definitions(nr_model_resolution_shader_bridge_test PRIVATE DEVBENCH_BRIDGE_ENABLED)
+set(_neural_failure_dir "${CMAKE_CURRENT_BINARY_DIR}/neural_failure_diagnostics")
+set(_neural_failure_headers
+    "${_neural_failure_dir}/neural_failure_diagnostics_under_test.h"
+    "${_neural_failure_dir}/neural_failure_quarantine_under_test.h"
+    "${_neural_failure_dir}/neural_failure_resource_key_under_test.h"
+    "${_neural_failure_dir}/neural_failure_stage_under_test.h"
+    "${_neural_failure_dir}/neural_failure_capture_under_test.h"
+    "${_neural_failure_dir}/neural_stall_service_under_test.h")
+add_custom_command(
+    OUTPUT ${_neural_failure_headers}
+    COMMAND "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
+        "-DOUTPUT_DIRECTORY=${_neural_failure_dir}" -P
+        "${PROJECT_SOURCE_DIR}/tests/extract_neural_failure_diagnostics.cmake"
+    DEPENDS src/Features/Upscaling/NeuralRendering/Renderer.cpp
+        src/Features/Upscaling/NeuralRendering/Renderer.h
+        tests/extract_neural_failure_diagnostics.cmake tests/extract_source_region.cmake
+    VERBATIM)
+foreach(_bridge IN ITEMS on off)
+    add_controller_test(neural_failure_diagnostics_${_bridge}_test NeuralFailureDiagnostics_${_bridge}
+        tests/neural_failure_diagnostics_test.cpp)
+    target_sources(neural_failure_diagnostics_${_bridge}_test PRIVATE ${_neural_failure_headers})
+    target_include_directories(neural_failure_diagnostics_${_bridge}_test PRIVATE "${_neural_failure_dir}")
+    target_compile_definitions(neural_failure_diagnostics_${_bridge}_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(neural_failure_diagnostics_${_bridge}_test PRIVATE spdlog::spdlog)
+endforeach()
+target_compile_definitions(neural_failure_diagnostics_on_test PRIVATE DEVBENCH_BRIDGE_ENABLED)
+
+add_controller_test(neural_stall_recovery_policy_test NeuralStallRecoveryPolicy tests/neural_stall_recovery_policy_test.cpp)
 add_controller_test(neural_memory_recovery_test NeuralMemoryRecovery tests/neural_memory_recovery_test.cpp)
 add_controller_test(neural_memory_retirement_test NeuralMemoryRetirement tests/neural_memory_retirement_test.cpp)
 set(_neural_runtime_retirement_dir "${CMAKE_CURRENT_BINARY_DIR}/neural_runtime_retirement")

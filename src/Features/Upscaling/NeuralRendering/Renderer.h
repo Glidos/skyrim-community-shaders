@@ -6,6 +6,7 @@
 #include "MemoryRetirementPolicy.h"
 #include "ModelResolutionPolicy.h"
 #include "RoiDescriptor.h"
+#include "StallRecoveryPolicy.h"
 #ifdef DEVBENCH_BRIDGE_ENABLED
 #	include "LifetimeDiagnostics.h"
 #endif
@@ -189,6 +190,7 @@ namespace NeuralRendering
 		bool useAutoMask = true;
 		RendererCounters counters{};
 		RendererPerformanceTelemetry performance{};
+		StallRecoveryPolicy stallRecovery{};
 		MemoryRecoveryPolicy memoryRecovery{};
 		MemoryConservationPolicy memoryConservation{};
 		MemoryRetirementPolicy memoryRetirement{};
@@ -300,14 +302,16 @@ namespace NeuralRendering
 		/** Drains both APIs; optional retention applies only to a completely healthy backend. */
 		bool Reset(bool a_clearTransportRejections = false,
 			BackendRetirementPolicy a_policy = BackendRetirementPolicy::ReleaseBackend);
-		/** End-of-frame maintenance is inactive unless an empty initialized backend is retained. */
-		void ServiceRetainedBackend(bool a_requested);
+		/** Services retained resources or a latched transient stall; otherwise performs no sampling. */
+		void ServiceBackendMaintenance(bool a_requested);
 		void ResetShaderCache();
 
 		[[nodiscard]] RendererSnapshot GetSnapshot() const;
 		/** Queues recovery without GPU work; the caller must gate this on requested NR. */
 		bool NotifyDlssMemoryPressure();
 #ifdef DEVBENCH_BRIDGE_ENABLED
+		/** Injects a logical backpressure timeout; recovery still requires real fence completion. */
+		bool SimulateTransientStall();
 		static constexpr std::uint32_t kMaximumMemorySimulationMilliseconds = 30000;
 		/** Elevates pressure for at most 30 seconds; conservationOnly targets the early reclamation stage. */
 		bool SimulateMemoryPressure(std::uint32_t a_durationMilliseconds, bool a_conservationOnly = false);

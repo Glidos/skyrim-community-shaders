@@ -120,6 +120,10 @@ namespace NeuralRendering
 		/** Permanently detaches unsafe interop ownership without releasing it. */
 		void AbandonUnsafe() noexcept;
 
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		/** Injects only a logical timeout; no queue commands or device loss are simulated. */
+		bool SimulateBackpressureTimeout();
+#endif
 		[[nodiscard]] bool IsInitialized() const;
 		[[nodiscard]] bool IsRecording() const;
 		[[nodiscard]] ID3D12Device* Device() const;

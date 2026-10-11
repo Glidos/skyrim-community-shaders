@@ -226,14 +226,14 @@ class MemoryRecoveryContracts(unittest.TestCase):
         self.assertIn("SetOwnerWork(Util::GpuMemoryBudget::Owner::NeuralRendering, false, 0)", service)
         self.assertNotIn("memoryResolution_.OnRetired", service)
         self.assertNotIn("memoryRecovery_.Suspend", service)
-        maintenance = body(RENDERER, "void Renderer::ServiceRetainedBackend(")
-        self.assertLess(maintenance.index("retainedBackendPending_.load"), maintenance.index("std::unique_lock"))
+        maintenance = body(RENDERER, "void Renderer::ServiceBackendMaintenance(")
+        self.assertLess(maintenance.index("backendMaintenancePending_.load"), maintenance.index("std::unique_lock"))
         self.assertIn("std::try_to_lock", maintenance)
-        self.assertLess(maintenance.index("retainedBackendPending_.load"), maintenance.index("Util::RendererOwnership owner"))
+        self.assertLess(maintenance.index("backendMaintenancePending_.load"), maintenance.index("Util::RendererOwnership owner"))
         self.assertLess(maintenance.index("Util::RendererOwnership owner"), maintenance.index("std::unique_lock"))
         self.assertLess(maintenance.index("if (!owner)"), maintenance.index("state_->ServiceRetainedBackendLocked("))
         frame = body(UPSCALING, "void Upscaling::Reset()", "")
-        self.assertLess(frame.index("ServiceRetainedBackend(settings.neuralRenderingEnabled)"), frame.index("!globals::game::isVR"))
+        self.assertLess(frame.index("ServiceBackendMaintenance(settings.neuralRenderingEnabled)"), frame.index("!globals::game::isVR"))
         reset = body(RENDERER, "bool Renderer::Reset(")
         self.assertIn("state_->ResetLocked(false, false, a_policy)", reset)
 
@@ -332,6 +332,48 @@ class MemoryRecoveryContracts(unittest.TestCase):
         self.assertIn('!warning.is_boolean() || !warning.get<bool>() || a_args.contains("durationMilliseconds")', warning)
         self.assertLess(warning.index("RunWithRendererOwnership("), warning.index("NotifyDlssMemoryPressure()"))
         self.assertLess(warning.index("IsNeuralRenderingRequested()"), warning.index("NotifyDlssMemoryPressure()"))
+
+
+    def test_stall_recovery_is_failure_only_and_requires_completion_before_reset(self):
+        failure = body(RENDERER, "bool Renderer::State::FailLocked(")
+        for token in ("a_stage == RendererStage::CommandBegin", "HRESULT_FROM_WIN32(ERROR_TIMEOUT)",
+                      'interop_.LastOperation() == "BeginD3D12 backpressure"', "snapshot_.stallRecovery.Arm(GetTickCount64())"):
+            self.assertIn(token, failure)
+        recovery = body(RENDERER, "bool Renderer::State::ServiceStallRecoveryLocked(")
+        self.assertLess(recovery.index("recovery.ShouldPoll(now)"), recovery.index("GetDeviceRemovalReasonLocked(S_OK)"))
+        self.assertLess(recovery.index("GetDeviceRemovalReasonLocked(S_OK)"), recovery.index("interop_.GetLifetimeSnapshot()"))
+        self.assertLess(recovery.index("StallRecoveryDecision::Recover"), recovery.index("ResetLocked(false, false)"))
+        self.assertLess(recovery.index("recovery.BeginAttempt()"), recovery.index("ResetLocked(false, false)"))
+        self.assertIn("RendererStage::ResetWait", recovery)
+        self.assertIn("Runtime::kFeatureSlotCount, true, true, false", recovery)
+        teardown = body(RENDERER, "bool Renderer::State::TeardownBackendLocked(")
+        self.assertLess(teardown.index("interop_.WaitForIdle("), teardown.index("runtime.ResetFeatures()"))
+        self.assertIn("snapshot_.stallRecovery.Cancel()", teardown)
+        self.assertNotIn("stallRecovery = {}", teardown)
+
+    def test_stall_recovery_action_and_schema_use_real_fences_under_ownership(self):
+        descriptor = read_descriptor()
+        self.assertIn("nr_stall_recovery", descriptor["inputSchema"]["properties"]["action"]["enum"])
+        self.assertEqual(descriptor["inputSchema"]["properties"]["simulateTransientStall"]["const"], True)
+        output = descriptor["outputSchema"]["properties"]["neuralRendering"]["properties"]["renderer"]["properties"]["stallRecovery"]
+        serializer = body(BRIDGE, "json NeuralStallRecoveryJson(")
+        self.assertEqual(set(re.findall(r'\{ "(\w+)",', serializer)), set(output["properties"]))
+        self.assertEqual(set(output["required"]), set(output["properties"]))
+        self.assertEqual(output["properties"]["maximumAttempts"]["const"], 3)
+        self.assertEqual(output["properties"]["cooldownMilliseconds"]["enum"], [0, 10000, 20000, 30000])
+        self.assertEqual(output["properties"]["maximumWaitMilliseconds"]["const"], 60000)
+        self.assertIn("policy.fences.completedKnown ? json(policy.fences.completed) : json(nullptr)", serializer)
+        handler = body(BRIDGE, 'if (action == "nr_stall_recovery") {', "\t\t")
+        self.assertLess(handler.index("RunWithRendererOwnership("), handler.index("SimulateTransientStall()"))
+        self.assertIn("upscaling.IsNeuralRenderingRequested()", handler)
+        self.assertIn('!simulation.is_boolean() || !simulation.get<bool>()', handler)
+        self.assertIn('"mutationApplied", mutated', handler)
+        self.assertIn('applied || (!wasQuarantined && renderer.IsQuarantined())', handler)
+        interop = (NR / "D3D12Interop.cpp").read_text()
+        simulation = body(interop, "bool D3D12Interop::SimulateBackpressureTimeout(")
+        self.assertIn("!initialized_ || recording_ || unfencedSubmission_", simulation)
+        self.assertNotIn("queue12_->", simulation)
+        self.assertNotIn("fenceValue_", simulation)
 
 
 if __name__ == "__main__":

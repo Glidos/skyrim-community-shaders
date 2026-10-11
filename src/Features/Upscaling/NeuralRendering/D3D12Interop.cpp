@@ -566,6 +566,17 @@ namespace NeuralRendering
 		});
 	}
 
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	bool D3D12Interop::SimulateBackpressureTimeout()
+	{
+		std::scoped_lock lock(mutex_);
+		if (!initialized_ || recording_ || unfencedSubmission_)
+			return false;
+		(void)RecordFailureLocked(HRESULT_FROM_WIN32(ERROR_TIMEOUT), "BeginD3D12 backpressure");
+		return true;
+	}
+#endif
+
 	bool D3D12Interop::BeginD3D12(ID3D12GraphicsCommandList** a_commandList, const std::shared_ptr<ExecutionEvidence>& a_evidence)
 	{
 		std::scoped_lock lock(mutex_);

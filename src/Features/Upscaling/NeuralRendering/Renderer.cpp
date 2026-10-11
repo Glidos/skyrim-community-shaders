@@ -25,6 +25,8 @@
 
 #include <DirectXTex.h>
 #include <SKSE/SKSE.h>
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -677,8 +679,9 @@ namespace NeuralRendering
 		bool ResetLocked(bool a_resetShader, bool a_destruction,
 			BackendRetirementPolicy a_policy = BackendRetirementPolicy::ReleaseBackend);
 		bool ServiceRetainedBackendLocked(bool a_requested = true);
+		bool ServiceStallRecoveryLocked(bool a_requested);
 		MemoryRetirementPolicy memoryRetirement_{};
-		std::atomic_bool retainedBackendPending_{ false };
+		std::atomic_bool backendMaintenancePending_{ false };
 		std::uint64_t nextRetainedBackendCheckMs_ = 0;
 		bool RetireMemoryPressureLocked();
 		void FinishMemoryRecoveryLocked(bool a_succeeded, RendererApplyOutcome& a_outcome);
@@ -905,6 +908,8 @@ namespace NeuralRendering
 		[[nodiscard]] std::uint32_t ActiveFeatureSlotOrLocked(
 			std::uint32_t a_fallback) const noexcept;
 		HRESULT GetDeviceRemovalReasonLocked(HRESULT a_candidate) const noexcept;
+		/** Observes a terminal failure before ownership detaches, without GPU commands or waits. */
+		void LogFailureDiagnosticsLocked(RendererStage a_stage, HRESULT a_result, std::uint32_t a_slot) noexcept;
 		bool FailLocked(
 			RendererStage a_stage,
 			HRESULT a_result,
@@ -1544,6 +1549,69 @@ namespace NeuralRendering
 		return IsDeviceLossResult(a_candidate) ? a_candidate : S_OK;
 	}
 
+	void Renderer::State::LogFailureDiagnosticsLocked(
+		RendererStage a_stage, HRESULT a_result, std::uint32_t a_slot) noexcept
+	{
+		if (quarantined_)
+			return;
+		try {
+			if (!spdlog::should_log(spdlog::level::err))
+				return;
+			const auto fences = interop_.GetLifetimeSnapshot();
+			auto* device12 = interop_.Device();
+			const HRESULT reason11 = device_ ? device_->GetDeviceRemovedReason() : E_POINTER;
+			const HRESULT reason12 = device12 ? device12->GetDeviceRemovedReason() : E_POINTER;
+			Util::GpuMemoryBudget::Snapshot memory;
+			bool memoryQueryThrew = false;
+			if (device_) {
+				try {
+					memory = Util::GpuMemoryBudget::Get().Sample(device_.Get(), 0, true);
+				} catch (...) {
+					memory.result = E_FAIL;
+					memoryQueryThrew = true;
+				}
+			} else {
+				memory.result = E_POINTER;
+			}
+			const auto observedAtMs = GetTickCount64();
+			logger::error(
+				"[DLSSNR][Failure] stage={}, hr=0x{:08X}, slot={}, requested_model_percent={}, effective_model_percent={}",
+				ToString(a_stage), static_cast<std::uint32_t>(a_result), a_slot,
+				snapshot_.requestedModelResolutionPercent, snapshot_.effectiveModelResolutionPercent);
+			logger::error(
+				"[DLSSNR][Failure] fences: initialized={}, recording={}, issued={}, completed={}, completed_known={}, device_removed={}, contexts=[{},{},{}]",
+				fences.initialized, fences.recording, fences.issued, fences.completed,
+				fences.completedKnown, fences.deviceRemoved, fences.contexts[0], fences.contexts[1], fences.contexts[2]);
+			logger::error(
+				"[DLSSNR][Failure] devices: d3d11_present={}, d3d11_removal_hr=0x{:08X}, d3d12_present={}, d3d12_removal_hr=0x{:08X}",
+				static_cast<bool>(device_), static_cast<std::uint32_t>(reason11),
+				device12 != nullptr, static_cast<std::uint32_t>(reason12));
+			logger::error(
+				"[DLSSNR][Failure] memory: query_attempted={}, query_threw={}, hr=0x{:08X}, fresh={}, observed_at_ms={}, sampled_at_ms={}, sequence={}, generation={}, usage_bytes={}, budget_bytes={}, reservation_bytes={}, available_reservation_bytes={}, pending_bytes={}, recovery_demand_bytes={}, priority_work={}",
+				static_cast<bool>(device_), memoryQueryThrew, static_cast<std::uint32_t>(memory.result), memory.Fresh(observedAtMs),
+				observedAtMs, memory.sampledAtMs, memory.sequence, memory.generation,
+				memory.local.CurrentUsage, memory.local.Budget, memory.local.CurrentReservation,
+				memory.local.AvailableForReservation, memory.pendingBytes, memory.recoveryDemandBytes, memory.priorityWork);
+			for (std::size_t index = 0; index < slots_.size(); ++index) {
+				const auto& slot = slots_[index];
+				if (!slot.resourcesValid)
+					continue;
+				const auto& key = slot.resourceKey;
+				logger::error(
+					"[DLSSNR][Failure] resident_slot={}: color={}x{}, guide={}x{}, output={}x{}, mask={}x{}, upscaling={}, history_valid={}, last_success_frame={}, last_success_source_frame={}",
+					index, key.colorWidth, key.colorHeight, key.guideWidth, key.guideHeight,
+					key.outputWidth, key.outputHeight, key.controlMaskWidth, key.controlMaskHeight,
+					key.featureUpscaling, slot.historyValid, slot.lastSuccessfulFrame, slot.lastSuccessfulSourceWorldFrame);
+			}
+		} catch (...) {
+			try {
+				logger::error("[DLSSNR][Failure] Diagnostic snapshot failed; renderer failure handling continues");
+			} catch (...) {
+				OutputDebugStringA("[DLSSNR][Failure] Diagnostic snapshot and logging failed; renderer failure handling continues\n");
+			}
+		}
+	}
+
 	bool Renderer::State::FailLocked(
 		RendererStage a_stage,
 		HRESULT a_result,
@@ -1553,6 +1621,7 @@ namespace NeuralRendering
 		bool a_forceQuarantine,
 		bool a_countApplyFailure)
 	{
+		const HRESULT originalResult = a_result;
 		SetActiveFeatureSlotLocked(a_slot);
 		if (a_countApplyFailure) {
 			Increment(snapshot_.counters.failures);
@@ -1591,6 +1660,8 @@ namespace NeuralRendering
 		}
 
 		if (deviceRemoved || a_forceQuarantine) {
+			LogFailureDiagnosticsLocked(a_stage, originalResult, a_slot);
+			snapshot_.stallRecovery.Cancel();
 			const bool enteringQuarantine = !quarantined_;
 			if (enteringQuarantine)
 				Increment(snapshot_.counters.quarantines);
@@ -1605,11 +1676,21 @@ namespace NeuralRendering
 			snapshot_.memoryRecovery = memoryRecovery_;
 			logger::warn("[DLSSNR][Memory] Recoverable allocation failure; retiring NR before automatic retry");
 		} else if (a_latch) {
+			if (!failureLatched_)
+				LogFailureDiagnosticsLocked(a_stage, originalResult, a_slot);
+			if (!failureLatched_ && a_stage == RendererStage::CommandBegin &&
+				a_result == HRESULT_FROM_WIN32(ERROR_TIMEOUT) && interop_.LastOperation() == "BeginD3D12 backpressure") {
+				if (snapshot_.stallRecovery.Arm(GetTickCount64()))
+					logger::warn("[DLSSNR][Recovery] Transient queue stall; waiting for completion and {} ms cooldown before attempt {}/{}",
+						snapshot_.stallRecovery.CooldownMs(), snapshot_.stallRecovery.attempts + 1, StallRecoveryPolicy::kMaximumAttempts);
+				else
+					logger::error("[DLSSNR][Recovery] Automatic stall recovery attempts exhausted; NR remains paused");
+			}
 			failureLatched_ = true;
 		}
 		if (failureLatched_ || quarantined_) {
 			memoryRetirement_.Released();
-			retainedBackendPending_.store(false, std::memory_order_relaxed);
+			backendMaintenancePending_.store(snapshot_.stallRecovery.pending, std::memory_order_relaxed);
 			Util::GpuMemoryBudget::Get().SetOwnerWork(Util::GpuMemoryBudget::Owner::NeuralRendering, false, 0);
 		}
 
@@ -1674,7 +1755,7 @@ namespace NeuralRendering
 		bool a_countApplyFailure, const std::shared_ptr<ExecutionEvidence>& a_evidence,
 		BackendRetirementPolicy a_policy)
 	{
-		retainedBackendPending_.store(false, std::memory_order_relaxed);
+		backendMaintenancePending_.store(false, std::memory_order_relaxed);
 		const bool retainBackend = a_policy == BackendRetirementPolicy::RetainHealthyBackend &&
 		                           !a_resetShader && !a_destruction && !failureLatched_ && !quarantined_ &&
 		                           runtimeReady_ && interop_.IsInitialized() && Runtime::Instance().Status() == RuntimeStatus::Initialized &&
@@ -1799,10 +1880,11 @@ namespace NeuralRendering
 			if (newlyRetained)
 				logger::info("[DLSSNR][Memory] Released NR textures and model features; retaining healthy initialized backend");
 			nextRetainedBackendCheckMs_ = 0;
-			retainedBackendPending_.store(true, std::memory_order_relaxed);
+			backendMaintenancePending_.store(true, std::memory_order_relaxed);
 		} else {
 			memoryRetirement_.Released();
 		}
+		snapshot_.stallRecovery.Cancel();
 		failureLatched_ = false;
 		quarantined_ = false;
 		Increment(snapshot_.counters.resetSuccesses);
@@ -1854,8 +1936,10 @@ namespace NeuralRendering
 		bool a_applyFailure,
 		std::uint64_t a_failuresBefore) noexcept
 	{
+		LogFailureDiagnosticsLocked(a_stage, E_FAIL, a_slot);
+		snapshot_.stallRecovery.Cancel();
 		memoryRetirement_.Released();
-		retainedBackendPending_.store(false, std::memory_order_relaxed);
+		backendMaintenancePending_.store(false, std::memory_order_relaxed);
 		Util::GpuMemoryBudget::Get().SetOwnerWork(Util::GpuMemoryBudget::Owner::NeuralRendering, false, 0);
 		if (a_applyFailure && snapshot_.counters.failures == a_failuresBefore) {
 			Increment(snapshot_.counters.failures);
@@ -2104,13 +2188,48 @@ namespace NeuralRendering
 		return true;
 	}
 
+	bool Renderer::State::ServiceStallRecoveryLocked(bool a_requested)
+	{
+		auto& recovery = snapshot_.stallRecovery;
+		if (!recovery.pending)
+			return false;
+		if (!a_requested || quarantined_ || !failureLatched_) {
+			recovery.Cancel();
+			backendMaintenancePending_.store(memoryRetirement_.backendRetained, std::memory_order_relaxed);
+			return false;
+		}
+		const auto now = GetTickCount64();
+		if (!recovery.ShouldPoll(now))
+			return false;
+		const HRESULT removed = GetDeviceRemovalReasonLocked(S_OK);
+		if (FAILED(removed))
+			return FailLocked(RendererStage::DeviceRemoved, removed,
+				"device removal detected while waiting for transient stall recovery", Runtime::kFeatureSlotCount, true, true, false);
+		const auto decision = recovery.Observe(now, interop_.GetLifetimeSnapshot());
+		if (decision == StallRecoveryDecision::Waiting)
+			return false;
+		if (decision != StallRecoveryDecision::Recover)
+			return FailLocked(RendererStage::ResetWait,
+				decision == StallRecoveryDecision::Expired ? HRESULT_FROM_WIN32(ERROR_TIMEOUT) : E_UNEXPECTED,
+				"outstanding GPU completion could not be established; automatic recovery is unsafe",
+				Runtime::kFeatureSlotCount, true, true, false);
+		recovery.BeginAttempt();
+		backendMaintenancePending_.store(false, std::memory_order_relaxed);
+		activeStage_ = RendererStage::ResetWait;
+		if (!ResetLocked(false, false))
+			return false;
+		logger::info("[DLSSNR][Recovery] Queue work completed and safe teardown succeeded; automatic retry {}/{} may rebuild NR",
+			recovery.attempts, StallRecoveryPolicy::kMaximumAttempts);
+		return true;
+	}
+
 	bool Renderer::State::ServiceRetainedBackendLocked(bool a_requested)
 	{
 		if (!memoryRetirement_.backendRetained)
 			return true;
 		if (failureLatched_ || quarantined_) {
 			memoryRetirement_.Released();
-			retainedBackendPending_.store(false, std::memory_order_relaxed);
+			backendMaintenancePending_.store(false, std::memory_order_relaxed);
 			return false;
 		}
 		auto now = GetTickCount64();
@@ -2394,7 +2513,7 @@ namespace NeuralRendering
 		const bool admitted = memoryRecovery_.Admit(sample, *additionalBytes, nowMs, pendingBytes);
 		if (admitted && memoryRetirement_.backendRetained) {
 			memoryRetirement_.Released();
-			retainedBackendPending_.store(false, std::memory_order_relaxed);
+			backendMaintenancePending_.store(false, std::memory_order_relaxed);
 		}
 		Util::GpuMemoryBudget::Get().SetOwnerWork(Util::GpuMemoryBudget::Owner::NeuralRendering,
 			memoryRecovery_.phase == MemoryRecoveryPhase::Retiring || (admitted && *additionalBytes != 0),
@@ -4150,9 +4269,9 @@ namespace NeuralRendering
 		}
 	}
 
-	void Renderer::ServiceRetainedBackend(bool a_requested)
+	void Renderer::ServiceBackendMaintenance(bool a_requested)
 	{
-		if (!state_->retainedBackendPending_.load(std::memory_order_relaxed))
+		if (!state_->backendMaintenancePending_.load(std::memory_order_relaxed))
 			return;
 		Util::RendererOwnership owner(Util::GetRendererContextLock(globals::game::renderer, globals::d3d::context));
 		if (!owner)
@@ -4161,7 +4280,10 @@ namespace NeuralRendering
 		if (!lock.owns_lock())
 			return;
 		try {
-			(void)state_->ServiceRetainedBackendLocked(a_requested);
+			if (state_->snapshot_.stallRecovery.pending)
+				(void)state_->ServiceStallRecoveryLocked(a_requested);
+			else
+				(void)state_->ServiceRetainedBackendLocked(a_requested);
 		} catch (...) {
 			state_->QuarantineAfterUnexpectedFailureLocked(
 				RendererStage::Quarantined, Runtime::kFeatureSlotCount, false, 0);
@@ -4310,6 +4432,26 @@ namespace NeuralRendering
 	{
 		std::scoped_lock lock(state_->mutex_);
 		return state_->lifetimeDiagnostics_.Snapshot();
+	}
+
+	bool Renderer::SimulateTransientStall()
+	{
+		std::scoped_lock lock(state_->mutex_);
+		if (state_->failureLatched_ || state_->quarantined_ ||
+			state_->snapshot_.stallRecovery.attempts >= StallRecoveryPolicy::kMaximumAttempts)
+			return false;
+		const auto failuresBefore = state_->snapshot_.counters.failures;
+		try {
+			if (!state_->interop_.SimulateBackpressureTimeout())
+				return false;
+			logger::warn("[DLSSNR][Recovery] DevBench injected a logical timeout; hardware fence completion remains required");
+			(void)state_->FailLocked(RendererStage::CommandBegin, HRESULT_FROM_WIN32(ERROR_TIMEOUT),
+				"DevBench simulated transient backpressure timeout", Runtime::kFeatureSlotCount, true);
+			return true;
+		} catch (...) {
+			state_->QuarantineAfterUnexpectedFailureLocked(RendererStage::CommandBegin, Runtime::kFeatureSlotCount, true, failuresBefore);
+			return false;
+		}
 	}
 
 	bool Renderer::SimulateMemoryPressure(std::uint32_t a_durationMilliseconds, bool a_conservationOnly)

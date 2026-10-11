@@ -11,7 +11,7 @@ parser.add_argument("--compiler", required=True)
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
 public_symbols = {
-    "Renderer.cpp": set(),
+    "Renderer.cpp": {"GetLifetimeSnapshot"},
     "Renderer.h": set(),
     "D3D12Interop.cpp": {"GetLifetimeSnapshot", "LifetimeFenceSnapshot"},
     "D3D12Interop.h": {"GetLifetimeSnapshot", "LifetimeFenceSnapshot"},
@@ -50,6 +50,28 @@ with tempfile.TemporaryDirectory(prefix="csx-nr-bridge-gate-") as temporary:
             name, "bridge diagnostic positive control differs", diagnostics)
         for enabled, text in compiled.items():
             if name == "Renderer.cpp":
+                first = text.index("void Renderer::State::LogFailureDiagnosticsLocked(")
+                last = text.index("bool Renderer::State::FailLocked(", first)
+                capture = text[first:last]
+                assert capture.count("interop_.GetLifetimeSnapshot()") == 1
+                assert "Sample(device_.Get(), 0, true)" in capture
+                for control in ("WaitForIdle(", "Flush(", "BeginD3D12(", "EndD3D12("):
+                    assert control not in capture, (name, enabled, "failure capture issues GPU work", control)
+                if not enabled:
+                    recovery_start = text.index("bool Renderer::State::ServiceStallRecoveryLocked(")
+                    recovery_end = text.index("bool Renderer::State::ServiceRetainedBackendLocked(", recovery_start)
+                    recovery = text[recovery_start:recovery_end]
+                    assert recovery.index("recovery.ShouldPoll(now)") < recovery.index("interop_.GetLifetimeSnapshot()")
+                    assert recovery.index("StallRecoveryDecision::Recover") < recovery.index("ResetLocked(false, false)")
+                    assert "GetLifetimeSnapshot" not in text[:first] + text[last:recovery_start] + text[recovery_end:], (
+                        name, "production fence observation escaped failure-only capture and recovery")
+                failure = text[last:text.index("void Renderer::State::SucceedLocked(", last)]
+                quarantine_start = text.index("void Renderer::State::QuarantineAfterUnexpectedFailureLocked(")
+                quarantine = text[quarantine_start:text.index("bool Renderer::State::EnsureBackendLocked(", quarantine_start)]
+                assert failure.count("LogFailureDiagnosticsLocked(") == 2
+                assert quarantine.count("LogFailureDiagnosticsLocked(") == 1
+                assert text.count("LogFailureDiagnosticsLocked(") == 5, (
+                    name, enabled, "diagnostic call escaped the terminal failure handlers")
                 for control in ("interop_.WaitForIdle(", "interop_.BeginD3D12(",
                                 "interop_.EndD3D12(", "interop_.AbortD3D12("):
                     assert control in text, (name, enabled, "missing production fence control", control)

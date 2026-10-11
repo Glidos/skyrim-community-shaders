@@ -18590,6 +18590,9 @@ void Upscaling::DrawNeuralRenderingMasterControl(bool a_showDiagnostics)
 	}
 	if (status.quarantined) {
 		Util::Text::WrappedError("Neural Rendering cannot recover safely in this session. Restart the game to try again.");
+	} else if (status.failureLatched && status.stallRecovery.pending) {
+		Util::Text::WrappedWarning("NR paused after a transient GPU stall. Waiting for GPU completion and cooldown before automatic retry %u/%u. Settings are kept.",
+			status.stallRecovery.attempts + 1, NeuralRendering::StallRecoveryPolicy::kMaximumAttempts);
 	} else if (status.failureLatched) {
 		Util::Text::WrappedError("NR paused after an error. Use Reset Neural Rendering Runtime below to retry. Settings are kept.");
 	} else if (IsNeuralRenderingRequested() && status.memoryRecovery.phase == NeuralRendering::MemoryRecoveryPhase::Probation) {
@@ -51112,7 +51115,7 @@ void Upscaling::SetupRenderTargetResources()
 
 void Upscaling::Reset()
 {
-	NeuralRendering::Renderer::Instance().ServiceRetainedBackend(settings.neuralRenderingEnabled);
+	NeuralRendering::Renderer::Instance().ServiceBackendMaintenance(settings.neuralRenderingEnabled);
 	if (!globals::game::isVR)
 		return;
 
