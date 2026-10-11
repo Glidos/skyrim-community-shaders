@@ -19546,17 +19546,38 @@ FoveatedMaskCalibration::CoverageCheck Upscaling::GetFoveatedBinocularCoverage(c
 	return CheckCoverage(reference, percent, geometry, visibleScale, !FoveatedCommon::IsActiveCoverage(centerScale), true, saved ? 0.0f : kManualContourTolerance);
 }
 
-bool Upscaling::ConfirmFoveatedMaskSetup(Settings& a_candidate, std::string& a_error) const
+bool Upscaling::ValidateFoveatedMaskSetupContext(const Settings& a_settings, std::string& a_error) const
 {
 	a_error.clear();
+	if (!globals::game::isVR || !loaded || !globals::state || !a_settings.foveatedVendorDispatch ||
+		!SupportsFoveatedVendorDispatch(GetUpscaleMethod())) {
+		a_error = "Calibration requires enabled VR FOV with DLSS or FSR.";
+		return false;
+	}
+	if (globals::state->pendingPostLoadRuntimeReset || IsMainMenuContextActive() || IsLoadingMenuContextActive() ||
+		IsVRLoadingSubmitProtectionContextActive(*this, globals::state) || IsVRMenuPresentationContextActive() ||
+		runtimeResolutionPlan.knownMenuContextActive || runtimeResolutionPlan.menuContextActive || runtimeResolutionPlan.loadingMenuActive) {
+		a_error = "Calibration requires a loaded scene. Close game menus and try again.";
+		return false;
+	}
+	return true;
+}
+
+bool Upscaling::ConfirmFoveatedMaskSetup(Settings& a_candidate, std::string& a_error) const
+{
+	if (!ValidateFoveatedMaskSetupContext(a_candidate, a_error))
+		return false;
 	if (a_candidate.periphery_taa_enable || !FoveatedCommon::IsActiveCoverage(a_candidate.foveatedCenterArea)) {
 		a_error = "Fit a smaller visible mask in FOV only before finishing setup.";
 		return false;
 	}
 	const auto coverage = GetFoveatedBinocularCoverage(a_candidate);
-	if (!coverage.available || coverage.hasGap) {
-		a_error = coverage.available ? "Shared-view gap detected. Calibrate Masks and check the fit again." :
-		                               "Shared-view coverage cannot be checked automatically. Keep FOV only, check each eye separately, then with both eyes open, and save settings.";
+	if (!coverage.available && GetFoveatedHeadsetGeometry(false)) {
+		a_error = "Shared-view coverage could not be verified. Run Automatic Headset Setup or Calibrate Masks, then check again.";
+		return false;
+	}
+	if (coverage.available && coverage.hasGap) {
+		a_error = "Shared-view gap detected. Calibrate Masks and check the fit again.";
 		return false;
 	}
 	auto confirmed = a_candidate;
@@ -19572,21 +19593,11 @@ bool Upscaling::ConfirmFoveatedMaskSetup(Settings& a_candidate, std::string& a_e
 bool Upscaling::PrepareFoveatedMaskCalibration(Settings& a_candidate, FoveatedMaskCalibration::CaptureMode a_captureMode, float a_percent, std::string& a_error) const
 {
 	using namespace FoveatedMaskCalibration;
-	a_error.clear();
-	if (!globals::game::isVR || !loaded || !globals::state || !a_candidate.foveatedVendorDispatch ||
-		!SupportsFoveatedVendorDispatch(GetUpscaleMethod())) {
-		a_error = "Calibration requires enabled VR FOV with DLSS or FSR.";
+	if (!ValidateFoveatedMaskSetupContext(a_candidate, a_error))
 		return false;
-	}
-	if (globals::state->pendingPostLoadRuntimeReset || IsMainMenuContextActive() || IsLoadingMenuContextActive() ||
-		IsVRLoadingSubmitProtectionContextActive(*this, globals::state) || IsVRMenuPresentationContextActive() ||
-		runtimeResolutionPlan.knownMenuContextActive || runtimeResolutionPlan.menuContextActive || runtimeResolutionPlan.loadingMenuActive) {
-		a_error = "Calibration requires a loaded scene. Close game menus and try again.";
-		return false;
-	}
 	const auto headset = GetFoveatedHeadsetGeometry();
 	if (!headset) {
-		a_error = "Automatic setup is unavailable because the VR runtime has not provided valid viewing angles for both eyes. Set up masks manually in FOV only using size, R/L expansion and each eye's X/Y sliders. Check each eye separately, then with both eyes open, and save settings.";
+		a_error = "Automatic setup is unavailable because the VR runtime has not provided valid viewing angles for both eyes. Set up masks manually in FOV only using size, R/L expansion and each eye's X/Y sliders. Check each eye separately, then with both eyes open. When both eyes look clear, click Mask setup finished, then Save settings.";
 		return false;
 	}
 	const auto& projection = headset->leftToRight;
@@ -19702,7 +19713,7 @@ void Upscaling::DrawFoveatedCalibration()
 		}
 	}
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::TextWrapped("Check both eyes for clear coverage. Confirms this outer fit and unlocks FOV + TAA. Changing the outer mask requires confirmation again.");
+		ImGui::TextWrapped("Check each eye separately, then with both eyes open. Confirms this outer fit and unlocks FOV + TAA. Available shared-view checks must pass. Changing the outer mask requires confirmation again.");
 	if (!foveatedCalibrationMessage.empty()) {
 		if (foveatedCalibrationWarning)
 			Util::Text::WrappedWarning("%s", foveatedCalibrationMessage.c_str());
@@ -19710,7 +19721,9 @@ void Upscaling::DrawFoveatedCalibration()
 			ImGui::TextWrapped("%s", foveatedCalibrationMessage.c_str());
 	}
 	if (FoveatedMaskCalibration::HasFovOnlySetup(settings))
-		ImGui::TextUnformatted("Mask setup finished. FOV + TAA is available. Save settings to keep this fit.");
+		ImGui::TextUnformatted(IsNeuralRenderingEnabled(settings) ?
+								   "Mask setup finished. FOV + TAA is unavailable while NR is enabled. Save settings to keep this fit." :
+								   "Mask setup finished. FOV + TAA is available. Save settings to keep this fit.");
 }
 
 void Upscaling::DrawFoveatedSetupInstructions()

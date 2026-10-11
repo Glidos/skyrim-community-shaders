@@ -2614,7 +2614,9 @@ public:
 	/** Checks configured shared-view coverage independently of the diagnostic overlay. */
 	FoveatedMaskCalibration::CoverageCheck GetFoveatedBinocularCoverage() const { return GetFoveatedBinocularCoverage(settings); }
 	FoveatedMaskCalibration::CoverageCheck GetFoveatedBinocularCoverage(const Settings& a_settings) const;
-	/** Accept a checked FOV-only outer fit without modifying its geometry. */
+	/** Require enabled VR FOV and a loaded scene for calibration or explicit confirmation. */
+	bool ValidateFoveatedMaskSetupContext(const Settings& a_settings, std::string& a_error) const;
+	/** Accept a user-checked FOV-only fit; reject any available shared-view gap. */
 	bool ConfirmFoveatedMaskSetup(Settings& a_candidate, std::string& a_error) const;
 	void DrawFoveatedCalibration();
 	std::string foveatedCalibrationMessage;

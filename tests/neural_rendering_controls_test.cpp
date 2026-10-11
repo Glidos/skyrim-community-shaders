@@ -73,12 +73,14 @@ namespace NeuralRendering
 		}
 	};
 }
+bool headsetProjectionAvailable = true;
+std::optional<int> GetFoveatedHeadsetGeometry(bool) { return headsetProjectionAvailable ? std::optional{ 1 } : std::nullopt; }
 constexpr int ImGuiHoveredFlags_AllowWhenDisabled = 1;
 namespace ImGui
 {
 	int disabled = 0, selectedMode = -1;
 	bool taaDisabled = false;
-	std::string tooltip, renderedMessage;
+	std::string tooltip, renderedMessage, unformattedText;
 	bool captureCalibration = false, captureHeadset = false, finishSetup = false;
 	bool Button(const char* label) { return disabled ? false : std::string(label) == "Automatic Headset Setup" ? captureHeadset :
 		                                                   std::string(label) == "Mask setup finished"         ? finishSetup :
@@ -89,7 +91,7 @@ namespace ImGui
 	template <class... T>
 	void TextWrapped(const char*, T&&...)
 	{}
-	void TextUnformatted(const char*) {}
+	void TextUnformatted(const char* text) { unformattedText = text; }
 	struct ComboBox
 	{
 		ComboBox(const char*, const char*) {}
@@ -198,6 +200,12 @@ struct Upscaling
 	std::string foveatedCalibrationMessage;
 	bool foveatedCalibrationWarning = false;
 	void DrawFoveatedCalibration();
+	bool setupContextAvailable = true;
+	bool ValidateFoveatedMaskSetupContext(const Settings&, std::string& error) const
+	{
+		error = setupContextAvailable ? "" : "FOV setup requires enabled VR FOV in a loaded scene.";
+		return setupContextAvailable;
+	}
 	bool ConfirmFoveatedMaskSetup(Settings&, std::string&) const;
 	bool coverageAvailable = true, coverageGap = false;
 	FoveatedMaskCalibration::CoverageCheck GetFoveatedBinocularCoverage(const Settings&) const { return { .available = coverageAvailable, .hasGap = coverageGap }; }
@@ -412,13 +420,14 @@ void CheckMaskSetupConfirmation()
 	upscaling.DrawPeripheryTAAControl();
 	Require(ImGui::taaDisabled && !upscaling.settings.periphery_taa_enable, "TAA must start locked");
 	const auto before = upscaling.settings;
-	for (const bool available : { false, true }) {
-		upscaling.coverageAvailable = available;
-		upscaling.coverageGap = available;
-		ImGui::finishSetup = true;
-		upscaling.DrawFoveatedCalibration();
-		Require(upscaling.settings == before, "Unavailable or gapped coverage must not confirm the mask");
-	}
+	ImGui::finishSetup = true;
+	upscaling.setupContextAvailable = false;
+	upscaling.DrawFoveatedCalibration();
+	Require(upscaling.settings == before, "An unavailable scene must not confirm the mask");
+	upscaling.setupContextAvailable = true;
+	upscaling.coverageGap = true;
+	upscaling.DrawFoveatedCalibration();
+	Require(upscaling.settings == before, "A detected shared-view gap must not confirm the mask");
 	upscaling.coverageGap = false;
 	upscaling.DrawFoveatedCalibration();
 	ImGui::finishSetup = false;
@@ -453,6 +462,54 @@ void CheckMaskSetupConfirmation()
 				FoveatedMaskCalibration::HasFovOnlySetup(upscaling.settings),
 		"DevBench must share the finish-button policy");
 	ImGui::selectedMode = -1;
+}
+
+void CheckManualSetupConfirmation()
+{
+	NeuralRendering::Renderer::Instance() = {};
+	headsetProjectionAvailable = false;
+	for (const bool hardEdge : { false, true }) {
+		Upscaling upscaling;
+		upscaling.coverageAvailable = false;
+		upscaling.settings.foveatedDisableOuterFeather = hardEdge;
+		const auto before = upscaling.settings;
+		ImGui::finishSetup = true;
+		upscaling.DrawFoveatedCalibration();
+		ImGui::finishSetup = false;
+		auto expected = before;
+		expected.foveatedMaskSetup = FoveatedMaskCalibration::CaptureSetupConfirmation(expected);
+		Require(upscaling.settings == expected && FoveatedMaskCalibration::HasFovOnlySetup(upscaling.settings),
+			"Explicit manual confirmation must accept unavailable headset checks without changing the mask");
+		Require(!upscaling.GetFoveatedBinocularCoverage(upscaling.settings).available,
+			"Manual acceptance must not invent an automatic coverage result");
+		ImGui::selectedMode = 1;
+		upscaling.DrawPeripheryTAAControl();
+		ImGui::selectedMode = -1;
+		Require(!ImGui::taaDisabled && upscaling.settings.periphery_taa_enable,
+			"A manually confirmed fit must unlock TAA with feathered or hard outer boundaries");
+		upscaling.settings.neuralRenderingEnabled = true;
+		upscaling.settings.periphery_taa_enable = false;
+		ImGui::selectedMode = 1;
+		upscaling.DrawPeripheryTAAControl();
+		upscaling.DrawFoveatedCalibration();
+		ImGui::selectedMode = -1;
+		Require(ImGui::taaDisabled && !upscaling.settings.periphery_taa_enable &&
+					ImGui::unformattedText.find("unavailable while NR") != std::string::npos,
+			"Manual confirmation must keep NR incompatible with TAA and explain its unavailability");
+		upscaling.settings = before;
+		FoveationConfigurationRequest finish;
+		finish.maskSetupFinished = true;
+		upscaling.setupContextAvailable = false;
+		Require(ApplyFoveationConfiguration(upscaling, finish, "foveation_configure", false).at("ok") == false && upscaling.settings == before,
+			"DevBench confirmation must retain settings when the setup context is unavailable");
+		upscaling.setupContextAvailable = true;
+		Require(ApplyFoveationConfiguration(upscaling, finish, "foveation_configure", false).at("ok") == true &&
+					FoveatedMaskCalibration::HasFovOnlySetup(upscaling.settings) && upscaling.settings.foveatedMaskSetup == expected.foveatedMaskSetup &&
+					upscaling.settings.foveatedDisableOuterFeather == hardEdge && upscaling.settings.foveatedCalibrationReference == before.foveatedCalibrationReference &&
+					upscaling.settings.foveatedAutomaticMaskScaling == before.foveatedAutomaticMaskScaling,
+			"DevBench must share the manual-confirmation path without changing the outer fit or inventing calibration data");
+	}
+	headsetProjectionAvailable = true;
 }
 
 void CheckConfirmedCalibrationFailure()
@@ -493,6 +550,7 @@ int main()
 {
 	CheckConfirmedCalibrationFailure();
 	CheckMaskSetupConfirmation();
+	CheckManualSetupConfirmation();
 	CheckOuterFeatherMenuTransactions();
 	CheckFoveationTransactions();
 	auto& renderer = NeuralRendering::Renderer::Instance();
