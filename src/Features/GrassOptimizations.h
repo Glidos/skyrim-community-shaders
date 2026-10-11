@@ -56,6 +56,8 @@ struct GrassOptimizations : Feature
 	GrassBucketRenderer& GetRenderer() { return *renderer; }
 #ifdef DEVBENCH_BRIDGE_ENABLED
 	void SetDiagnosticsEnabled(bool enabled);
+	/** @brief Request lightweight cache and frame-work telemetry for DevBench. */
+	void RequestTelemetry();
 	json GetDiagnostics() const;
 #endif
 private:

@@ -30,6 +30,8 @@ public:
 	void DrawRenderPass(RE::BSRenderPass*, uint32_t, bool, uint32_t, RenderPass);
 #ifdef DEVBENCH_BRIDGE_ENABLED
 	void SetDiagnosticsEnabled(bool enabled);
+	/** @brief Request a rate-limited render-thread snapshot without enabling shader counters. */
+	void RequestTelemetry();
 	json GetDiagnostics() const;
 #endif
 private:

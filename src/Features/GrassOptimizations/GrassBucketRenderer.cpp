@@ -10,6 +10,7 @@
 #include "GrassHiZ.h"
 #include "GrassPassCache.h"
 #include "GrassRuntime.h"
+#include "GrassTelemetry.h"
 #include "ShaderCache.h"
 #include "State.h"
 #include "TruePBR.h"
@@ -24,6 +25,10 @@
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
+#ifdef DEVBENCH_BRIDGE_ENABLED
+#	include <chrono>
+#	include <unordered_set>
+#endif
 
 namespace
 {
@@ -581,6 +586,13 @@ struct GrassBucketRenderer::Impl
 	GrassPolicy::Settings frameSettings;
 #ifdef DEVBENCH_BRIDGE_ENABLED
 	std::atomic_bool diagnostics{ false };
+	GrassTelemetry::Channel telemetry;
+	GrassTelemetry::Work frameWork;
+	D3D11_VIEWPORT telemetryViewport{};
+	uint32_t telemetryViewportCount = 0;
+	std::atomic_uint64_t publishedResultBytes{ 0 };
+	std::atomic_bool telemetryFailed{ false };
+	void PublishTelemetry();
 	Util::LazyShader<ID3D11ComputeShader> diagnosticShader;
 	std::unique_ptr<Buffer> gpuCounters;
 	std::array<winrt::com_ptr<ID3D11Buffer>, 4> readbacks;
@@ -1152,6 +1164,16 @@ void GrassBucketRenderer::Impl::PrepareFrame()
 	const auto now = globals::state->frameCount;
 	if (frame == now)
 		return;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	try {
+		PublishTelemetry();
+	} catch (const std::exception&) {
+		// Reporting failures must not disable rendering or allocate while handling low memory.
+		telemetryFailed.store(true, std::memory_order_relaxed);
+	}
+	frameWork = {};
+	telemetryViewportCount = 0;
+#endif
 	frameSettings = globals::features::grassOptimizations.GetSettings();
 	frameSettings.Enabled &= globals::features::grassOptimizations.loaded;
 	current = nullptr;
@@ -1308,6 +1330,9 @@ void GrassBucketRenderer::Impl::PrepareFrame()
 		if (bucket.result.output)
 			resultBytes += uint64_t(bucket.result.capacity) * bucket.result.slots * 56 + 192;
 	for (auto& bucket : dormantBuckets) bucket.result = {};
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	publishedResultBytes.store(resultBytes, std::memory_order_relaxed);
+#endif
 }
 
 // The caller holds captureMutex so native fades and generation snapshots agree.
@@ -1459,6 +1484,9 @@ bool GrassBucketRenderer::Impl::EnsureResult(Bucket& bucket, uint32_t slots)
 	replacement.slots = slots;
 	result = std::move(replacement);
 	resultBytes = resultBytes - previous + next;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	publishedResultBytes.store(resultBytes, std::memory_order_relaxed);
+#endif
 	return true;
 }
 
@@ -1754,6 +1782,10 @@ void GrassBucketRenderer::Impl::PrepareCulling(RE::BSRenderPass* pass, RE::BSSha
 	}
 	UploadCulling();
 	cullingPrepared = true;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	telemetryViewport = viewport;
+	telemetryViewportCount = count;
+#endif
 }
 
 bool GrassBucketRenderer::Impl::DrawBucket(Bucket& bucket, Outcome& outcome)
@@ -2012,6 +2044,7 @@ void GrassBucketRenderer::Impl::DispatchBucket(Bucket& bucket, [[maybe_unused]] 
 			++uploadedRecordBuckets;
 			uploadedRecordBytes += uploadedBytes;
 		}
+		frameWork.uploadedRecordBytes += uploadedBytes;
 #endif
 	} else {
 #ifdef DEVBENCH_BRIDGE_ENABLED
@@ -2048,6 +2081,9 @@ void GrassBucketRenderer::Impl::DispatchBucket(Bucket& bucket, [[maybe_unused]] 
 	context->CSSetUnorderedAccessViews(0, UINT(uavs.size()), uavs.data(), nullptr);
 	context->Dispatch((params.instances + 63) / 64, 1, 1);
 #ifdef DEVBENCH_BRIDGE_ENABLED
+	++frameWork.dispatches;
+	frameWork.candidateInstances += params.instances;
+	frameWork.candidateEyeInstances += uint64_t(params.instances) * params.eyes;
 	if (diagnostics.load(std::memory_order_relaxed))
 		++cullingDispatches;
 #endif
@@ -2088,6 +2124,9 @@ void GrassBucketRenderer::Impl::EmitDraws(const Bucket& bucket)
 			CS_GPU_PASS("GrassOptimizations::DrawIndirect");
 #endif
 			context->DrawIndexedInstancedIndirect(bucket.result.arguments->resource.get(), slot * 32 + 12);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			++frameWork.indirectDraws;
+#endif
 		}
 	}
 }
@@ -2304,6 +2343,76 @@ void GrassBucketRenderer::Impl::PollCounters()
 		counterFrame = frame;
 	}
 }
+void GrassBucketRenderer::Impl::PublishTelemetry()
+{
+	if (!telemetry.Requested() || frame == UINT32_MAX)
+		return;
+	const auto now = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+	if (!telemetry.BeginSample(now))
+		return;
+	GrassTelemetry::Snapshot snapshot;
+	snapshot.frame = frame;
+	snapshot.publishedSteadyMilliseconds = now;
+	snapshot.enabled = frameSettings.Enabled;
+	snapshot.hiZRequested = frameSettings.EnableOcclusionCulling;
+	snapshot.meshLODRequested = frameSettings.EnableMeshLOD;
+	snapshot.cullingPrepared = cullingPrepared;
+	snapshot.work = frameWork;
+	{
+		std::scoped_lock lock(captureMutex);
+		snapshot.identities = identities.size();
+		snapshot.residentSources = residents.size();
+		snapshot.cpuSnapshotPayloadBytes = cpuRecordBytes;
+		for (const auto& [identity, source] : residents) {
+			snapshot.residentGroups += source.groups.size();
+			for (const auto& group : source.groups)
+				snapshot.residentInstances += group.count;
+		}
+	}
+	const auto bytes = [](const std::unique_ptr<Buffer>& buffer) -> uint64_t { return buffer ? buffer->desc.ByteWidth : 0; };
+	snapshot.buckets = buckets.size();
+	snapshot.dormantBuckets = dormantBuckets.size();
+	for (const auto& bucket : buckets) {
+		snapshot.activeRecordBytes += bytes(bucket.records);
+		snapshot.cullingBufferBytes += bytes(bucket.result.output) + bytes(bucket.result.extras) + bytes(bucket.result.arguments);
+	}
+	for (const auto& bucket : dormantBuckets)
+		snapshot.dormantRecordBytes += bytes(bucket.records);
+	snapshot.scratchBufferBytes = bytes(table) + bytes(disabled);
+	for (const auto& buffer : frameConstants)
+		snapshot.scratchBufferBytes += bytes(buffer);
+	snapshot.diagnosticBufferBytes = bytes(gpuCounters);
+	for (const auto& buffer : readbacks)
+		if (buffer) {
+			D3D11_BUFFER_DESC desc{};
+			buffer->GetDesc(&desc);
+			snapshot.diagnosticBufferBytes += desc.ByteWidth;
+		}
+	snapshot.lodModels = lodMeshes.size();
+	std::unordered_set<ID3D11Buffer*> referenced;
+	for (const auto& [model, variants] : lodMeshes) {
+		snapshot.lodVariants += variants.size();
+		for (const auto& [descriptor, meshes] : variants)
+			for (const auto& mesh : meshes)
+				for (auto buffer : { mesh.vertices.get(), mesh.indices.get() })
+					if (buffer && referenced.insert(buffer).second) {
+						D3D11_BUFFER_DESC desc{};
+						buffer->GetDesc(&desc);
+						snapshot.lodReferencedBufferBytes += desc.ByteWidth;
+					}
+	}
+	snapshot.viewportCount = telemetryViewportCount;
+	if (telemetryViewportCount == 1) {
+		snapshot.viewportWidth = telemetryViewport.Width;
+		snapshot.viewportHeight = telemetryViewport.Height;
+	}
+	snapshot.hiZWidth = hiZ.Width();
+	snapshot.hiZHeight = hiZ.Height();
+	snapshot.hiZMips = hiZ.Mips();
+	telemetry.Publish(snapshot);
+	telemetryFailed.store(false, std::memory_order_relaxed);
+}
+void GrassBucketRenderer::RequestTelemetry() { impl->telemetry.Request(); }
 void GrassBucketRenderer::SetDiagnosticsEnabled(bool enabled)
 {
 	impl->diagnostics.store(enabled, std::memory_order_relaxed);
@@ -2343,7 +2452,31 @@ json GrassBucketRenderer::GetDiagnostics() const
 		modelMismatches[mismatchNames[i]] = value(self.sameModelMismatches[i]);
 	const auto observation = self.hiZ.ObservedFailures();
 	const auto lastHiZFailure = self.hiZ.LastFailure();
-	return { { "hookInstalled", self.installed }, { "renderingAvailable", IsRenderingAvailable() }, { "diagnosticsEnabled", self.diagnostics.load(std::memory_order_relaxed) },
+	json telemetry = nullptr;
+	if (const auto snapshot = self.telemetry.Read()) {
+		const auto& s = *snapshot;
+		telemetry = { { "frame", s.frame }, { "publishedSteadyMilliseconds", s.publishedSteadyMilliseconds },
+			{ "ageMilliseconds", uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()) - s.publishedSteadyMilliseconds },
+			{ "enabled", s.enabled }, { "hiZRequested", s.hiZRequested }, { "meshLODRequested", s.meshLODRequested },
+			{ "cullingPrepared", s.cullingPrepared }, { "identities", s.identities }, { "residentSources", s.residentSources },
+			{ "residentGroups", s.residentGroups }, { "residentInstances", s.residentInstances },
+			{ "buckets", s.buckets }, { "dormantBuckets", s.dormantBuckets }, { "lodModels", s.lodModels }, { "lodVariants", s.lodVariants },
+			{ "cpuSnapshotPayloadBytes", s.cpuSnapshotPayloadBytes }, { "activeRecordBytes", s.activeRecordBytes },
+			{ "dormantRecordBytes", s.dormantRecordBytes }, { "cullingBufferBytes", s.cullingBufferBytes },
+			{ "scratchBufferBytes", s.scratchBufferBytes }, { "diagnosticBufferBytes", s.diagnosticBufferBytes },
+			{ "lodReferencedBufferBytes", s.lodReferencedBufferBytes },
+			{ "hiZWidth", s.hiZWidth }, { "hiZHeight", s.hiZHeight }, { "hiZMips", s.hiZMips },
+			{ "viewportCount", s.viewportCount },
+			{ "viewportWidth", s.viewportCount == 1 ? json(s.viewportWidth) : json(nullptr) },
+			{ "viewportHeight", s.viewportCount == 1 ? json(s.viewportHeight) : json(nullptr) },
+			{ "work", { { "dispatches", s.work.dispatches }, { "candidateInstances", s.work.candidateInstances },
+						  { "candidateEyeInstances", s.work.candidateEyeInstances }, { "indirectDraws", s.work.indirectDraws },
+						  { "uploadedRecordBytes", s.work.uploadedRecordBytes } } } };
+	}
+	return { { "telemetrySchema", 1 }, { "telemetry", std::move(telemetry) },
+		{ "telemetryError", self.telemetryFailed.load(std::memory_order_relaxed) ? json("snapshot_failed") : json(nullptr) },
+		{ "telemetryScope", "resources at publication; work and main-depth culling viewport from last completed grass frame; CPU bytes cover resident snapshot payloads; buffer bytes exclude HiZ textures and native asset ownership; LOD references may be shared with native assets" },
+		{ "hookInstalled", self.installed }, { "renderingAvailable", IsRenderingAvailable() }, { "diagnosticsEnabled", self.diagnostics.load(std::memory_order_relaxed) },
 		{ "captureAttempts", value(self.captureAttempts) }, { "capturedSources", value(self.capturedSources) },
 		{ "admittedSources", value(self.admittedSources) }, { "drawAttempts", value(self.drawAttempts) },
 		{ "captureRejections", std::move(captureReasons) }, { "drawRejections", std::move(drawReasons) },
@@ -2353,7 +2486,7 @@ json GrassBucketRenderer::GetDiagnostics() const
 		{ "cachedSources", value(self.cachedSources) }, { "nativeVisibilityBypassed", value(self.nativeVisibilityBypassed) },
 		{ "queuedRepresentatives", value(self.queuedRepresentatives) }, { "queueDuplicates", value(self.queueDuplicates) },
 		{ "cullingDispatches", value(self.cullingDispatches) }, { "cullingUploadMaps", value(self.cullingUploadMaps) },
-		{ "drawsUsingFrameCulling", value(self.reusedCullingDraws) }, { "residentCullingBytes", self.resultBytes },
+		{ "drawsUsingFrameCulling", value(self.reusedCullingDraws) }, { "residentCullingBytes", value(self.publishedResultBytes) },
 		{ "expiredResidents", 0 }, { "pressureEvictions", value(self.pressureEvictions) },
 		{ "reusedRecordBuckets", value(self.reusedRecordBuckets) }, { "uploadedRecordBuckets", value(self.uploadedRecordBuckets) },
 		{ "uploadedRecordBytes", value(self.uploadedRecordBytes) }, { "uncachedRecordBuckets", 0 },

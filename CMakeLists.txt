@@ -1865,6 +1865,11 @@ if(BUILD_CONTROLLER_TESTS)
 
     add_controller_test(grass_draw_batch_test GrassOptimizationPolicy tests/grass_draw_batch_test.cpp)
     add_controller_test(grass_pass_cache_test GrassPassCache tests/grass_pass_cache_test.cpp)
+    add_controller_test(grass_telemetry_test GrassTelemetry tests/grass_telemetry_test.cpp)
+    target_compile_definitions(
+        grass_telemetry_test
+        PRIVATE DEVBENCH_BRIDGE_ENABLED
+    )
     add_controller_test(grass_runtime_layout_test GrassRuntimeLayout tests/grass_runtime_layout_test.cpp)
     target_link_libraries(
         grass_runtime_layout_test

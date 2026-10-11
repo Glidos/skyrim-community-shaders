@@ -228,6 +228,7 @@ void GrassOptimizations::DrawControls(bool advanced, std::string_view section)
 }
 #ifdef DEVBENCH_BRIDGE_ENABLED
 void GrassOptimizations::SetDiagnosticsEnabled(bool enabled) { renderer->SetDiagnosticsEnabled(enabled); }
+void GrassOptimizations::RequestTelemetry() { renderer->RequestTelemetry(); }
 json GrassOptimizations::GetDiagnostics() const
 {
 	auto result = renderer->GetDiagnostics();
