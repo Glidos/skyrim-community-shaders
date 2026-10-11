@@ -131,6 +131,102 @@ class ShaderCompileIdentityTests(unittest.TestCase):
                 self.assertGreater(len(tasks), 1000)
                 self.assertEqual(len(compile_task_defines(tasks)), len(tasks))
 
+    def test_category_cache_covers_both_runtime_layouts(self) -> None:
+        flags = BUILDER.character_category_flags(REPO)
+        self.assertEqual(flags, {
+            "Lighting": 1 << 5, "Grass": 1 << 9, "DistantTree": 1 << 9,
+            "Sky": 1 << 9, "Effect": 1 << 9,
+        })
+        with tempfile.TemporaryDirectory() as temporary:
+            for runtime, name in (("SE", "shader-validation.yaml"), ("VR", "shader-validation-vr.yaml")):
+                filtered = BUILDER.filter_profile_defines(
+                    REPO / ".github/configs" / name,
+                    Path(temporary) / f"{runtime}.yaml", yaml,
+                    BUILDER.SHIPPED_CACHE_PROFILE,
+                )
+                tasks = parse_shader_configs(str(filtered))
+                canonical = compile_task_defines(tasks)
+                pairs = 0
+                families = set()
+                for source, stage, entry, defines in tasks:
+                    names = {value.partition("=")[0] for value in defines}
+                    if "CHARACTER_CATEGORY" not in names:
+                        continue
+                    self.assertEqual(stage, "PSHADER")
+                    family, label, descriptor = entry.split(":")
+                    if family != "Grass":
+                        self.assertIn("DEFERRED", names)
+                    flag = flags[family]
+                    self.assertTrue(int(descriptor, 16) & flag)
+                    base_descriptor = int(descriptor, 16) & ~flag
+                    base_key = (Path(source).stem, f"{base_descriptor:X}.pso")
+                    self.assertIn(base_key, canonical)
+                    base = compile_task_defines([(
+                        source, stage, f"{family}:{label}:{base_descriptor:X}",
+                        [value for value in defines if value.partition("=")[0] != "CHARACTER_CATEGORY"],
+                    )])
+                    self.assertEqual(base[base_key], canonical[base_key])
+                    families.add(family)
+                    pairs += 1
+                self.assertEqual(families, set(flags))
+                self.assertGreater(pairs, 500)
+
+    def test_category_overlay_is_idempotent_and_retains_captured_entries(self) -> None:
+        config = {
+            "captured_shader_variants": 2,
+            "shaders": [{"file": "Lighting.hlsl", "configs": {
+                "PSHADER": {"common_defines": [], "entries": [
+                    {"entry": "Lighting:Pixel:1", "defines": ["DEFERRED", "VC"]},
+                    {"entry": "Lighting:Pixel:2", "defines": ["VC"]},
+                ]},
+                "VSHADER": {"common_defines": [], "entries": [
+                    {"entry": "Lighting:Vertex:1", "defines": ["DEFERRED"]},
+                ]},
+            }}],
+        }
+        self.assertEqual(BUILDER.append_character_category_variants(config, REPO), 1)
+        entries = config["shaders"][0]["configs"]["PSHADER"]["entries"]
+        self.assertEqual(entries[2], {
+            "entry": "Lighting:Pixel:21",
+            "defines": ["DEFERRED", "VC", "CHARACTER_CATEGORY"],
+        })
+        self.assertEqual(BUILDER.append_character_category_variants(config, REPO), 0)
+        self.assertEqual(len(entries), 3)
+        self.assertEqual(config["captured_shader_variants"], 2)
+        self.assertEqual(len(config["shaders"][0]["configs"]["VSHADER"]["entries"]), 1)
+
+    def test_category_overlay_rejects_conflicting_inputs(self) -> None:
+        from copy import deepcopy
+        config = {"shaders": [{"file": "Lighting.hlsl", "configs": {
+            "PSHADER": {"common_defines": [], "entries": [
+                {"entry": "Lighting:Pixel:1", "defines": ["DEFERRED"]},
+                {"entry": "Lighting:Pixel:21", "defines": ["DEFERRED", "CHARACTER_CATEGORY", "VC"]},
+            ]},
+        }}]}
+        with self.assertRaisesRegex(SystemExit, "conflicting category"):
+            BUILDER.append_character_category_variants(deepcopy(config), REPO)
+        pair = config["shaders"][0]["configs"]["PSHADER"]["entries"]
+        pair[0]["defines"] = ["DEFERRED", "VALUE=1", "VALUE=2"]
+        pair[1]["defines"] = ["DEFERRED", "CHARACTER_CATEGORY", "VALUE=2", "VALUE=1"]
+        with self.assertRaisesRegex(SystemExit, "conflicting category"):
+            BUILDER.append_character_category_variants(deepcopy(config), REPO)
+        config["shaders"][0]["configs"]["PSHADER"]["entries"].pop()
+        config["shaders"][0]["configs"]["PSHADER"]["entries"][0]["entry"] = "Lighting:Pixel:21"
+        with self.assertRaisesRegex(SystemExit, "flag/macros disagree"):
+            BUILDER.append_character_category_variants(config, REPO)
+
+    def test_category_flags_fail_closed_on_unknown_runtime_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "src").mkdir()
+            (root / "src/ShaderCache.h").write_text(
+                "static unsigned GetCharacterCategoryFlag(int type) {\n"
+                "case RE::BSShader::Type::Lighting: return ChangedFlag;\n\t\t}",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(SystemExit, "unsupported runtime"):
+                BUILDER.character_category_flags(root)
+
     def test_lighting_inventory_keys_match_runtime_flag_mask(self) -> None:
         flags = {"SPECULAR", "SOFT_LIGHTING", "RIM_LIGHTING", "BACK_LIGHTING"}
         mask = sum(1 << bit for bit in (9, 10, 11, 12))

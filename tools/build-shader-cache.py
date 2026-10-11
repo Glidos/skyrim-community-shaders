@@ -53,6 +53,7 @@ from build_provenance import (
 from shader_cache_manifest import (
     SCHEMA_VERSION as MANIFEST_SCHEMA_VERSION,
     STAGE_EXTENSIONS,
+    compile_task_defines,
     prepare_fxc_defines,
 )
 from shader_bytecode import validate_dxbc
@@ -1704,6 +1705,101 @@ def validate_captured_variant_count(config: dict[str, object], config_path: Path
         print(f"shader config: validated {actual} captured variants from {config_path}")
 
 
+def character_category_flags(source_root: Path) -> dict[str, int]:
+    """Read reserved descriptor bits from the runtime's category accessor."""
+    header = (source_root / "src/ShaderCache.h").read_text(encoding="utf-8")
+    accessor = re.search(
+        r"GetCharacterCategoryFlag\([^)]*\)\s*\{(.*?)\n\t\t\}",
+        header,
+        re.DOTALL,
+    )
+    if accessor is None:
+        raise SystemExit("cannot locate runtime character category flags")
+    flags: dict[str, int] = {}
+    for cases, bit_text in re.findall(
+        r"((?:\s*case RE::BSShader::Type::\w+:)+)\s*return 1u << (\d+);",
+        accessor[1],
+    ):
+        bit = int(bit_text)
+        if bit >= 32:
+            raise SystemExit("character category bit exceeds shader descriptor")
+        for family in re.findall(r"case RE::BSShader::Type::(\w+):", cases):
+            if family in flags:
+                raise SystemExit("duplicate runtime character category family")
+            flags[family] = 1 << bit
+    families = re.findall(r"case RE::BSShader::Type::(\w+):", accessor[1])
+    if not flags or set(families) != set(flags):
+        raise SystemExit("unsupported runtime character category flag layout")
+    return flags
+
+
+def append_character_category_variants(
+    config: dict[str, Any], source_root: Path
+) -> int:
+    """Cover both deferred output layouts without changing captured provenance."""
+    flags = character_category_flags(source_root)
+    added = 0
+    for shader in config["shaders"]:
+        source = shader["file"]
+        family = "Grass" if source == "RunGrass.hlsl" else Path(source).stem
+        if family not in flags:
+            continue
+        stage = shader["configs"].get("PSHADER")
+        if stage is None:
+            continue
+        shared_defines = [
+            *config.get("common_defines", []),
+            *config.get("common_pshader_defines", []),
+            *config.get("file_common_defines", {}).get(source, {}).get("PSHADER", []),
+            *stage.get("common_defines", []),
+        ]
+        shared_names = {normalized_define_name(value) for value in shared_defines}
+        if "CHARACTER_CATEGORY" in shared_names:
+            raise SystemExit("character category must be scoped to a pixel entry")
+        entries = stage["entries"]
+        by_key = {entry["entry"]: entry for entry in entries}
+        if len(by_key) != len(entries):
+            raise SystemExit(f"duplicate pixel entries for {source}")
+        for entry in tuple(entries):
+            defines = entry.get("defines", [])
+            names = {normalized_define_name(value) for value in defines}
+            # Grass defines its deferred output layout inside the source.
+            if family != "Grass" and "DEFERRED" not in names | shared_names:
+                continue
+            match = re.fullmatch(
+                rf"{family}:Pixel:([0-9A-F]{{1,8}})", entry["entry"]
+            )
+            if match is None:
+                raise SystemExit(f"invalid deferred pixel entry for {source}")
+            descriptor = int(match[1], 16)
+            flag = flags[family]
+            if bool(descriptor & flag) != ("CHARACTER_CATEGORY" in names):
+                raise SystemExit(f"category flag/macros disagree: {entry['entry']}")
+            other_descriptor = descriptor ^ flag
+            other_defines = [
+                value for value in defines
+                if normalized_define_name(value) != "CHARACTER_CATEGORY"
+            ]
+            if other_descriptor & flag:
+                other_defines.append("CHARACTER_CATEGORY")
+            other_key = f"{family}:Pixel:{other_descriptor:X}"
+            existing = by_key.get(other_key)
+            if existing is not None:
+                def identity(defines: list[str]) -> dict[tuple[str, str], str]:
+                    return compile_task_defines([(
+                        source, "PSHADER", other_key,
+                        [value if "=" in value else value + "=" for value in defines],
+                    )])
+                if identity(existing.get("defines", [])) != identity(other_defines):
+                    raise SystemExit(f"conflicting category variant: {other_key}")
+                continue
+            other = {**entry, "entry": other_key, "defines": other_defines}
+            entries.append(other)
+            by_key[other_key] = other
+            added += 1
+    return added
+
+
 def filter_profile_defines(
     config_path: Path,
     out_path: Path,
@@ -1713,6 +1809,7 @@ def filter_profile_defines(
     additional_excluded_defines: frozenset[str] = frozenset(),
     additional_file_defines: dict[str, tuple[str, ...]] | None = None,
     add_cross_modlist_variants: bool = False,
+    source_root: Path = REPO,
 ) -> Path:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     if not isinstance(config, dict):
@@ -1726,6 +1823,8 @@ def filter_profile_defines(
         additional_file_defines=additional_file_defines,
         add_cross_modlist_variants=add_cross_modlist_variants,
     )
+    category_count = append_character_category_variants(config, source_root)
+    print(f"shader config: added {category_count} deferred character category variants")
     prepare_fxc_defines(config)
     out_path.write_text(
         yaml.safe_dump(config, sort_keys=False),
@@ -2800,10 +2899,9 @@ def build_runtime(
             additional_excluded_defines=additional_excluded_defines,
             additional_file_defines=additional_file_defines,
             add_cross_modlist_variants=add_cross_modlist,
+            source_root=source_root,
         )
         from hlslkit.compile_shaders import parse_shader_configs
-        from shader_cache_manifest import compile_task_defines
-
         compile_tasks = parse_shader_configs(str(filtered_config))
         compile_task_defines(compile_tasks)
         command = [

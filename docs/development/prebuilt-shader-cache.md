@@ -77,6 +77,16 @@ Lighting pixel inventories omit the specular, soft, rim and back lighting bits
 outside LOD techniques, matching `State::ModifyShaderLookup`; these flags
 remain available to shaders through the per-draw descriptor. Rebuild both
 runtime caches when changing this mapping.
+The builder also pairs every captured deferred pixel permutation with its
+Neural Rendering category-output variant for Lighting, Grass, DistantTree,
+Sky and Effect. It reads the reserved descriptor bits from
+`ShaderCache::GetCharacterCategoryFlag` and scopes `CHARACTER_CATEGORY` to
+those additional pixel entries. Both layouts remain available when Neural
+Rendering is disabled or enabled. The overlay applies to SE/AE and VR,
+preserves captured-count metadata, and rejects conflicting descriptor or
+macro inputs. Rebuild the cache after changing the supported category layout;
+a new trace is unnecessary when its base permutations are already captured.
+
 Both bundled profiles apply `PBR_GRASS=1` and the empty
 `GRASS_OPTIMIZATIONS` macro to RunGrass vertex and pixel stages only. Macro
 values must match the native factory: empty `PBR_GRASS` is a different cache
