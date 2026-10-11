@@ -97,7 +97,7 @@ class MemoryRecoveryContracts(unittest.TestCase):
         schema = descriptor["inputSchema"]
         setting = schema["properties"]["pressureResolutionEnabled"]
         self.assertEqual(setting["type"], "boolean")
-        self.assertFalse(setting["default"])
+        self.assertTrue(setting["default"])
         configure = next(rule for rule in schema["allOf"] if rule["if"].get("properties", {}).get("action", {}).get("const") == "nr_configure")
         self.assertIn("pressureResolutionEnabled", configure["then"]["propertyNames"]["enum"])
         handler = BRIDGE.split('if (action == "nr_configure") {', 1)[1]

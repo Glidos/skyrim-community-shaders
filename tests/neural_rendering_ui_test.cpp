@@ -96,7 +96,7 @@ namespace globals
 				bool neuralCharacterCreaturesEnabled = true, neuralCharacterAnimalsEnabled = true, neuralCharacterOtherActorsEnabled = true;
 				unsigned neuralRenderingMode = 0;
 				unsigned neuralRenderingModelResolutionPercent = 100;
-				bool neuralRenderingPressureResolutionEnabled = false;
+				bool neuralRenderingPressureResolutionEnabled = true;
 				bool neuralRenderingPrewarmEnabled = false;
 				unsigned neuralRenderingCentralAreaPercent = 100, neuralRenderingCentralFeatherPixels = 64;
 				unsigned neuralRenderingPreset = 1, neuralRenderingStyle = 0;
@@ -621,7 +621,11 @@ int main()
 	};
 	{
 		Upscaling::Settings settings;
-		require(!settings.neuralRenderingPressureResolutionEnabled, "Automatic pressure resolution must be opt-in");
+		require(settings.neuralRenderingPressureResolutionEnabled, "Automatic pressure resolution defaults on");
+		ImGui::Clear("Lower NR resolution under memory pressure");
+		DrawNeuralModelResolutionSettings(settings);
+		require(!settings.neuralRenderingPressureResolutionEnabled && settings.neuralRenderingModelResolutionPercent == 100,
+			"Opting out of pressure reduction must retain the requested resolution");
 		ImGui::Clear("Lower NR resolution under memory pressure");
 		DrawNeuralModelResolutionSettings(settings);
 		require(settings.neuralRenderingPressureResolutionEnabled && settings.neuralRenderingModelResolutionPercent == 100, "Pressure toggle changed requested model resolution");
@@ -738,6 +742,7 @@ int main()
 			auto& upscaling = globals::features::upscaling;
 			upscaling.settings = {};
 			upscaling.settings.neuralRenderingMode = mode;
+			upscaling.settings.neuralRenderingEnabled = true;
 			upscaling.settings.neuralCharacterHumansEnabled = false;
 			upscaling.settings.neuralCharacterArmorEnabled = true;
 			ImGui::Clear();
@@ -806,6 +811,7 @@ int main()
 		ImGui::sliderEditValue = 0.375f;
 	}
 	globals::features::upscaling.settings = {};
+	globals::features::upscaling.settings.neuralRenderingEnabled = true;
 	ImGui::sliderEditValue = 50.0f;
 	State state;
 	globals::state = &state;
@@ -996,9 +1002,9 @@ int main()
 			const bool previous = upscaling.settings.*member;
 			ImGui::Clear(label);
 			upscaling.DrawSelectionControls();
-			require(!ImGui::Disabled(label) && upscaling.settings.*member == !previous &&
+			require(ImGui::Disabled(label) == !masterEnabled && upscaling.settings.*member == (masterEnabled ? !previous : previous) &&
 						upscaling.settings.neuralRenderingEnabled == masterEnabled,
-				"Actor category preferences must remain editable independently of the healthy master");
+				"Actor category controls follow the master and retain their saved choices while off");
 			const auto editedPreferences = upscaling.settings;
 			drawMaster("Enabled");
 			requirePreferences(editedPreferences);
@@ -1012,6 +1018,56 @@ int main()
 				"Category edits and subsequent master cycles must restore UI scopes");
 		}
 	}
+	const auto savedSettings = upscaling.settings;
+	const auto savedColour = registry.configuration;
+	const auto savedState = globals::state;
+	const auto savedLevel = state.level;
+	for (const bool isVR : { false, true }) {
+		globals::game::isVR = isVR;
+		globals::state = &state;
+		state.level = spdlog::level::debug;
+		for (unsigned blocker = 0; blocker < 3; ++blocker) {
+			upscaling.settings = savedSettings;
+			upscaling.settings.neuralRenderingMode = 0;
+			upscaling.settings.neuralRenderingEnabled = blocker != 0;
+			upscaling.settings.neuralRenderingCentralAreaPercent = 55;
+			upscaling.settings.neuralCharacterRenderingEnabled = true;
+			NeuralRendering::runtimeInstalled = blocker != 1;
+			upscaling.neuralRenderingFeatureAvailable = blocker != 2;
+			const auto previous = upscaling.settings;
+			ImGui::Clear("Intensity");
+			upscaling.DrawSelectionControls();
+			for (const char* label : { "After upscaling", "Before DLSS", "Preset", "Intensity", "Style",
+					 "NR Model Resolution", "Lower NR resolution under memory pressure", "Limit NR to central area",
+					 "NR central area", "NR central feather", "Entire scene", "Humans", "Faces" })
+				require(ImGui::Seen(label) && ImGui::Disabled(label),
+					"Off, missing DLL and unavailable NR must grey out every child control, including mask sliders");
+			require(upscaling.settings.neuralRenderingIntensity == previous.neuralRenderingIntensity &&
+						upscaling.settings.neuralRenderingCentralAreaPercent == previous.neuralRenderingCentralAreaPercent &&
+						upscaling.settings.neuralRenderingPressureResolutionEnabled == previous.neuralRenderingPressureResolutionEnabled,
+				"Blocked NR input must retain saved appearance, mask and memory preferences");
+			if (blocker == 0)
+				require(!ImGui::Disabled("Enabled"), "NR's master remains usable while child controls are off");
+			if (isVR)
+				require(ImGui::Seen("Prewarm NR while loading") && ImGui::Disabled("Prewarm NR while loading"),
+					"The VR prewarm control follows the same inactive NR guard");
+			if (blocker == 1)
+				require(ImGui::Seen(NeuralRendering::Runtime::kMissingRuntimeNotice), "Missing DLL still shows its installation warning");
+			ImGui::Clear("Enable colour processing");
+			feature.DrawColourSettings();
+			for (const char* label : { "Enable colour processing", "Original", "Preserve source", "Lighting preservation", "Detail contribution" })
+				require(ImGui::Seen(label) && ImGui::Disabled(label), "Colour child controls follow NR availability");
+			require(registry.configuration.settings == savedColour.settings && registry.configuration.experiments == savedColour.experiments,
+				"Inactive colour controls must not modify saved choices");
+			require(ImGui::disableDepth == 0 && ImGui::comboDepth == 0, "Inactive panels must balance their UI scopes");
+		}
+	}
+	globals::game::isVR = true;
+	globals::state = savedState;
+	state.level = savedLevel;
+	NeuralRendering::runtimeInstalled = true;
+	upscaling.neuralRenderingFeatureAvailable = true;
+	upscaling.settings = savedSettings;
 	upscaling.settings.neuralRenderingEnabled = false;
 	const auto recoveryPreferences = upscaling.settings;
 	renderer.snapshot = { .failureLatched = true, .detail = "Recoverable NR failure" };
@@ -1110,12 +1166,15 @@ int main()
 								upscaling.neuralRenderingFeatureAvailable = true;
 								require(ImGui::disableDepth == 0 && ImGui::comboDepth == 0, "Routing controls must restore UI state");
 							}
+							ImGui::Clear("Enabled");
+							upscaling.DrawSelectionControls();
+							require(upscaling.settings.neuralRenderingEnabled, "Enable NR before editing child controls");
 							if (!isVR && mode != 1 && !fovOnly && !characters) {
 								ImGui::Clear("Actors only");
 								upscaling.DrawSelectionControls();
 								require(!ImGui::Disabled("Actors only") && upscaling.settings.neuralCharacterRenderingEnabled,
 									"Both flat modes must allow character selection without VR FOV");
-								ImGui::Clear("Enabled");
+								ImGui::Clear();
 								upscaling.DrawSelectionControls();
 								require(upscaling.IsNeuralRenderingRequested(), "Enabled flat character selection must reach the shared mono route");
 							}
@@ -1165,6 +1224,7 @@ int main()
 	state.level = spdlog::level::debug;
 	upscaling.settings = {};
 	upscaling.settings.neuralRenderingMode = 2;
+	upscaling.settings.neuralRenderingEnabled = true;
 	upscaling.settings.neuralRenderingRenderscaleFov = true;
 	upscaling.settings.neuralRenderingCentralAreaPercent = 55;
 	for (const auto expected : { 100u, 55u, 100u, 55u }) {
@@ -1218,6 +1278,7 @@ int main()
 	for (const auto mode : { ModeChoice::FullResolution, ModeChoice::ReducedResolution }) {
 		upscaling.settings = {};
 		upscaling.settings.neuralRenderingMode = static_cast<unsigned>(mode);
+		upscaling.settings.neuralRenderingEnabled = true;
 		upscaling.settings.foveatedVendorDispatch = false;
 		upscaling.settings.neuralCharacterRenderingEnabled = true;
 		for (const auto* category : { "Faces", "Skin", "Hair" }) {
@@ -1238,6 +1299,7 @@ int main()
 			 Upscaling::UpscaleMethod::kFSR, Upscaling::UpscaleMethod::kDLSS }) {
 		upscaling.settings = {};
 		upscaling.method = method;
+		upscaling.settings.neuralRenderingEnabled = true;
 		upscaling.settings.neuralCharacterRenderingEnabled = true;
 		ImGui::Clear("Before DLSS");
 		upscaling.DrawSelectionControls();
@@ -1245,7 +1307,7 @@ int main()
 		require(ImGui::Disabled("Before DLSS") == !dlss &&
 					upscaling.GetNeuralRenderingMode() == (dlss ? ModeChoice::ReducedResolution : ModeChoice::FullResolution),
 			"Flat reduced mode requires DLSS; unavailable choices preserve Full resolution");
-		for (const bool enabled : { true, false }) {
+		for (const bool enabled : { false, true }) {
 			ImGui::Clear("Enabled");
 			upscaling.DrawSelectionControls();
 			require(!ImGui::Disabled("Enabled") && upscaling.settings.neuralRenderingEnabled == enabled,
@@ -1651,6 +1713,7 @@ int main()
 									(mode == ModeChoice::FullResolution || method == Upscaling::UpscaleMethod::kDLSS || method == Upscaling::UpscaleMethod::kFSR),
 							"Full resolution supports ordinary upscaling; Foveated NR supports DLSS and FSR");
 					}
+					upscaling.settings.neuralRenderingEnabled = true;
 					ImGui::Clear("After upscaling");
 					upscaling.DrawSelectionControls();
 					require(!ImGui::Disabled("After upscaling") && upscaling.GetNeuralRenderingMode() == ModeChoice::FullResolution,
@@ -1859,6 +1922,7 @@ int main()
 	upscaling.method = Upscaling::UpscaleMethod::kDLSS;
 	upscaling.settings = {};
 	upscaling.settings.neuralRenderingMode = static_cast<unsigned>(ModeChoice::Foveated);
+	upscaling.settings.neuralRenderingEnabled = true;
 	upscaling.settings.neuralRenderingCentralAreaPercent = 75;
 	state.level = spdlog::level::debug;
 	ImGui::Clear();

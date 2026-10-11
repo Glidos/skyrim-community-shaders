@@ -17117,8 +17117,8 @@ void Upscaling::DrawSettings()
 											   { "mode", "Mode", "Choose your upscaler and quality first.", "Upscaler and image quality", true, true, "Choose the rendering foundation" },
 											   { "scale", "Render scale", "Choose whether to render a smaller scene before upscaling.", "Scaled scene rendering", globals::game::isVR, true, nullptr },
 											   { "tuning", "Tuning", "Refine FSR stability and detail.", "FSR stability and detail", GetUpscaleMethod() == UpscaleMethod::kFSR, true, "Refine image quality" },
-											   { "look", "Look", "Refine sharpening after choosing the rendering mode.", "Sharpening and clarity", true, true, nullptr },
-											   { "motion", "Motion", "Choose extra frames and latency controls.", "Frame generation and latency", !globals::game::isVR || streamline.reflexSupportedOnCurrentAdapter, true, "Refine motion" },
+											   { "look", "Sharpening", "Refine sharpening after choosing the rendering mode.", "Sharpening and clarity", true, true, nullptr },
+											   { "motion", "Reflex", "Choose extra frames and latency controls.", "Frame generation and latency", !globals::game::isVR || streamline.reflexSupportedOnCurrentAdapter, true, "Refine motion" },
 											   { "diagnostics", "Diagnostics", "Inspect upscaler status and diagnostic views.", "Backend status and views", true, false, nullptr },
 										   });
 
@@ -18780,7 +18780,7 @@ namespace
 	{
 		if (globals::game::isVR) {
 			Util::Widgets::Checkbox("Prewarm NR while loading", &settings.neuralRenderingPrewarmEnabled);
-			Util::AddTooltip("Prepare NR during the main menu or loading when enough GPU memory is available. Supports Before DLSS at 100% NR resolution, full coverage and automatic masking, with actor controls and adaptive NR resolution disabled. Other settings wait for normal gameplay initialization.");
+			Util::AddTooltip("Prepare NR during the main menu or loading when GPU memory permits. Requires Before DLSS, 100% NR resolution, full coverage and automatic masking, with Actors only, scene category adjustments and Lower NR resolution under memory pressure off. Other configurations initialize during gameplay.");
 		}
 		DrawNeuralIntegerSetting("NR Model Resolution", settings.neuralRenderingModelResolutionPercent,
 			NeuralRendering::kMinimumModelResolutionPercent, NeuralRendering::kMaximumModelResolutionPercent, "%d%%");
@@ -18899,7 +18899,7 @@ void Upscaling::DrawNeuralRenderingSettings(UpscaleMethod a_upscaleMethod, const
 			IsFoveatedVendorDispatchRequested(settings, a_upscaleMethod);
 		const bool fovAvailable = IsNeuralRenderingFovConfigurationAvailable(a_upscaleMethod);
 		DrawNeuralRenderingMasterControl(showDiagnostics);
-		auto runtimeAvailabilityGuard = Util::DisableGuard(!NeuralRendering::Runtime::IsInstalled() || !IsNeuralRenderingHardwareSupported());
+		auto settingsAvailabilityGuard = Util::DisableGuard(!IsNeuralRenderingEnabled());
 		ApplyNeuralRenderingFovConstraint(settings);
 		DrawNeuralRenderingFovWarning(true);
 		const bool usesFov = NeuralRendering::RequiresFoveatedMask(GetNeuralRenderingMode(), settings.neuralRenderingFovOnly, globals::game::isVR, settings.neuralRenderingRenderscaleFov);

@@ -303,7 +303,7 @@ public:
 		bool StabilizeRenderScaleDesktopMirror = false;           ///< Publish render-scale eye outputs to the desktop mirror
 
 		// CSX menu navigation settings
-		bool UseRuntimeDefaultMenuNavigation = true;                              ///< Use mouse navigation by default until the user selects a mode explicitly
+		bool UseRuntimeDefaultMenuNavigation = false;                             ///< Retain automatic mouse navigation only when explicitly saved
 		bool EnableWandPointing = true;                                           ///< True uses wand/ray-cast navigation, false uses mouse/thumbstick navigation
 		float WandAimPitchTrimDegrees = Config::kDefaultWandAimPitchTrimDegrees;  ///< Optional local pitch trim after resolving the runtime aim component
 

@@ -44,6 +44,10 @@ struct Feature
 };
 namespace globals
 {
+	namespace game
+	{
+		bool isVR = true;
+	}
 	struct FakeProfiler
 	{
 		bool enabled = true, initialized = true;
@@ -373,7 +377,8 @@ struct Upscaling
 	struct Settings
 	{
 		uint32_t neuralRenderingModelResolutionPercent = 100;
-		bool neuralRenderingPressureResolutionEnabled = false;
+		bool neuralRenderingPressureResolutionEnabled = true;
+		bool neuralRenderingPrewarmEnabled = false;
 		uint32_t neuralRenderingCentralAreaPercent = 100, neuralRenderingCentralFeatherPixels = 64;
 	};
 };
