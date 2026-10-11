@@ -3909,11 +3909,11 @@ namespace NeuralRendering
 			return;
 		try {
 			std::scoped_lock lock(state_->mutex_);
-			state_->ResetEarlyMaskBounds();
+			state_->earlyMaskShader_.Reset();
+			state_->earlyMaskShaderFailed_ = false;
 			state_->shader_.Reset();
 			state_->supportShader_.Reset();
 			state_->supportShaderCompileFailed_ = false;
-			state_->constants_.Reset();
 			state_->shaderCompileFailed_ = false;
 			state_->captureShader_.Reset();
 			state_->captureShaderCompileFailed_ = false;

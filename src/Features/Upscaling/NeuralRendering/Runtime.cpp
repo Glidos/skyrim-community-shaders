@@ -1470,6 +1470,147 @@ namespace NeuralRendering
 		return true;
 	}
 
+	bool Runtime::PrepareFeature(
+		ID3D12GraphicsCommandList* a_commandList, std::uint32_t a_slot,
+		const NativeEvaluationLayout& a_layout, ID3D12Resource* a_color,
+		ID3D12Resource* a_controlMask, bool a_providerBlending,
+		RuntimeExecutionEvidence* a_evidence)
+	{
+		if (a_evidence)
+			*a_evidence = {};
+		std::scoped_lock lock(mutex_);
+		if (abandonRequested_.load(std::memory_order_acquire) || abandoned_)
+			return false;
+		if (status_ != RuntimeStatus::Initialized || !a_commandList || a_slot >= kFeatureSlotCount ||
+			!GetNativeEvaluationLayoutViolation(a_layout, a_controlMask != nullptr).empty() ||
+			(a_providerBlending && (!a_color || !a_controlMask || a_layout.color != a_layout.output))) {
+			SetFailureLocked(RuntimeStatus::FeatureCreateFailed, RuntimeFailureStage::FeatureCreate,
+				"Feature 18 creation prerequisites are invalid", static_cast<std::uint32_t>(E_INVALIDARG));
+			return false;
+		}
+		return PrepareFeatureLocked(a_commandList, a_slot, a_layout, a_color, a_controlMask, a_providerBlending, a_evidence);
+	}
+
+	bool Runtime::PrepareFeatureLocked(
+		ID3D12GraphicsCommandList* a_commandList, std::uint32_t a_slot,
+		const NativeEvaluationLayout& a_layout, ID3D12Resource* a_color,
+		ID3D12Resource* a_controlMask, bool a_providerBlending,
+		RuntimeExecutionEvidence* a_evidence)
+	{
+		const bool configurationChanged = !featureConfigurations_[a_slot].Matches(a_layout) ||
+		                                  featureConfigurations_[a_slot].providerBlending != a_providerBlending;
+		if (featureHandles_[a_slot] && configurationChanged) {
+			if (a_evidence)
+				a_evidence->createReason = "live_configuration_change_rejected";
+			SetFailureLocked(
+				RuntimeStatus::FeatureConfigurationChanged,
+				RuntimeFailureStage::FeatureConfiguration,
+				std::format(
+					"Feature 18 slot {} configuration changed while its handle is live; caller must prove GPU idle and reset the slot",
+					a_slot),
+				static_cast<std::uint32_t>(E_PENDING));
+			return false;
+		}
+
+		if (!featureHandles_[a_slot]) {
+			const auto createFeature = reinterpret_cast<CreateFeature>(runtimeExports_.createFeature);
+			RuntimeCallerPathCall pathProxy(static_cast<HMODULE>(module_));
+			lastPathProxyInstalled_ = pathProxy.IsInstalled();
+			if (!createFeature || !lastPathProxyInstalled_) {
+				SetFailureLocked(RuntimeStatus::FeatureCreateFailed, RuntimeFailureStage::FeatureCreate,
+					"Feature 18 create export or caller-path proxy is unavailable");
+				return false;
+			}
+			auto* parameters = static_cast<NVSDK_NGX_Parameter*>(parameters_);
+			parameters->Reset();
+			parameters->Set("Width", a_layout.creation.output.width);
+			parameters->Set("Height", a_layout.creation.output.height);
+			parameters->Set("OutWidth", a_layout.creation.output.width);
+			parameters->Set("OutHeight", a_layout.creation.output.height);
+			parameters->Set("DLSSNR.Width", a_layout.creation.output.width);
+			parameters->Set("DLSSNR.Height", a_layout.creation.output.height);
+			parameters->Set("DLSSNR.InputWidth", a_layout.creation.input.width);
+			parameters->Set("DLSSNR.InputHeight", a_layout.creation.input.height);
+			parameters->Set("DLSSNR.OutputWidth", a_layout.creation.output.width);
+			parameters->Set("DLSSNR.OutputHeight", a_layout.creation.output.height);
+			parameters->Set("DLSSNR.Output.Width", a_layout.creation.output.width);
+			parameters->Set("DLSSNR.Output.Height", a_layout.creation.output.height);
+			parameters->Set(
+				"DLSSNR.Scale", static_cast<float>(a_layout.creation.output.width) / a_layout.creation.input.width);
+			parameters->Set("DLSSNR.Upscaling", a_layout.featureUpscaling ? 1u : 0u);
+			parameters->Set(
+				"DLSSNR.ScalingRatio",
+				static_cast<float>(a_layout.creation.output.width) / a_layout.creation.input.width);
+			parameters->Set("DLSSNR.Hint.Render.Preset", 0u);
+
+			if (a_providerBlending) {
+				parameters->Set("DLSSNR.ControlMask", static_cast<ID3D12Resource*>(nullptr));
+				parameters->Set("DLSSNR.UIAlpha", a_controlMask);
+				parameters->Set("DLSSNR.Backbuffer", a_color);
+				parameters->Set("DLSSNR.UICorrection", 1u);
+				parameters->Set("DLSSNR.UseAutoMask", 1u);
+			}
+			NVSDK_NGX_Handle* handle = nullptr;
+			const auto createStarted = a_evidence ? DiagnosticNow() : std::chrono::steady_clock::time_point{};
+			if (a_evidence) {
+				a_evidence->createAttempted = true;
+				a_evidence->createReason = "missing_feature";
+			}
+
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			++lifecycleCounts_.creates;
+#endif
+			const auto createResult = createFeature(
+				a_commandList, kFeatureDlssNr, parameters, &handle);
+			if (a_evidence) {
+				a_evidence->createCpuMicroseconds = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+					DiagnosticNow() - createStarted)
+						.count());
+				a_evidence->createSucceeded = !NVSDK_NGX_FAILED(createResult) && handle;
+				a_evidence->createResult = static_cast<std::uint32_t>(createResult);
+			}
+			ngxResult_ = static_cast<std::uint32_t>(createResult);
+			lastPathProxyHits_ = pathProxy.Hits();
+			if (NVSDK_NGX_FAILED(createResult) || !handle) {
+				// A failed private feature create may still transfer a handle. Keep it
+				// owned so bounded teardown can release or intentionally abandon it.
+				if (handle)
+					featureHandles_[a_slot] = handle;
+				SetFailureLocked(
+					RuntimeStatus::FeatureCreateFailed,
+					RuntimeFailureStage::FeatureCreate,
+					std::format(
+						"Feature 18 create failed slot={} result=0x{:08X} trust={} proxyHits={}",
+						a_slot, ngxResult_, ToString(trust_), lastPathProxyHits_),
+					ngxResult_);
+				return false;
+			}
+
+			featureHandles_[a_slot] = handle;
+			featureConfigurations_[a_slot] = {
+				.colorBacking = a_layout.color.backing,
+				.creation = a_layout.creation,
+				.featureUpscaling = a_layout.featureUpscaling,
+				.providerBlending = a_providerBlending,
+				.valid = true,
+			};
+			detail_ = std::format(
+				"Feature 18 created slot={} upscaling={} color={}x{} guides={}x{} output={}x{}",
+				a_slot, a_layout.featureUpscaling, a_layout.color.backing.width, a_layout.color.backing.height,
+				a_layout.creation.input.width, a_layout.creation.input.height, a_layout.creation.output.width, a_layout.creation.output.height);
+			LogOnceLocked(featureCreateLogEmitted_, "create", true);
+			firstEvaluationResetMask_.fetch_or(1u << a_slot, std::memory_order_relaxed);
+		}
+
+		return true;
+	}
+
+	void Runtime::AcknowledgePresentedFeatures(std::uint32_t a_slotMask)
+	{
+		if (firstEvaluationResetMask_.load(std::memory_order_relaxed) & a_slotMask)
+			firstEvaluationResetMask_.fetch_and(~a_slotMask, std::memory_order_relaxed);
+	}
+
 	bool Runtime::Execute(
 		ID3D12GraphicsCommandList* a_commandList, std::uint32_t a_slot,
 		ID3D12Resource* a_color, ID3D12Resource* a_depth,
@@ -1514,6 +1655,10 @@ namespace NeuralRendering
 			return false;
 		}
 
+		if (!PrepareFeatureLocked(a_commandList, a_slot, a_layout, a_color, a_controlMask, a_providerBlending, a_evidence))
+			return false;
+		a_reset = a_reset || (firstEvaluationResetMask_.load(std::memory_order_relaxed) & (1u << a_slot)) != 0;
+
 		const auto runtime = static_cast<HMODULE>(module_);
 		const auto createFeature =
 			reinterpret_cast<CreateFeature>(runtimeExports_.createFeature);
@@ -1535,98 +1680,6 @@ namespace NeuralRendering
 				RuntimeFailureStage::FeatureCreate,
 				"failed to install the NGX caller-path proxy for Feature 18");
 			return false;
-		}
-
-		const bool configurationChanged = !featureConfigurations_[a_slot].Matches(a_layout) ||
-		                                  featureConfigurations_[a_slot].providerBlending != a_providerBlending;
-		if (featureHandles_[a_slot] && configurationChanged) {
-			if (a_evidence)
-				a_evidence->createReason = "live_configuration_change_rejected";
-			SetFailureLocked(
-				RuntimeStatus::FeatureConfigurationChanged,
-				RuntimeFailureStage::FeatureConfiguration,
-				std::format(
-					"Feature 18 slot {} configuration changed while its handle is live; caller must prove GPU idle and reset the slot",
-					a_slot),
-				static_cast<std::uint32_t>(E_PENDING));
-			return false;
-		}
-
-		if (!featureHandles_[a_slot]) {
-			parameters->Reset();
-			parameters->Set("Width", a_layout.creation.output.width);
-			parameters->Set("Height", a_layout.creation.output.height);
-			parameters->Set("OutWidth", a_layout.creation.output.width);
-			parameters->Set("OutHeight", a_layout.creation.output.height);
-			parameters->Set("DLSSNR.Width", a_layout.creation.output.width);
-			parameters->Set("DLSSNR.Height", a_layout.creation.output.height);
-			parameters->Set("DLSSNR.InputWidth", a_layout.creation.input.width);
-			parameters->Set("DLSSNR.InputHeight", a_layout.creation.input.height);
-			parameters->Set("DLSSNR.OutputWidth", a_layout.creation.output.width);
-			parameters->Set("DLSSNR.OutputHeight", a_layout.creation.output.height);
-			parameters->Set("DLSSNR.Output.Width", a_layout.creation.output.width);
-			parameters->Set("DLSSNR.Output.Height", a_layout.creation.output.height);
-			parameters->Set(
-				"DLSSNR.Scale", static_cast<float>(a_layout.creation.output.width) / a_layout.creation.input.width);
-			parameters->Set("DLSSNR.Upscaling", a_layout.featureUpscaling ? 1u : 0u);
-			parameters->Set(
-				"DLSSNR.ScalingRatio",
-				static_cast<float>(a_layout.creation.output.width) / a_layout.creation.input.width);
-			parameters->Set("DLSSNR.Hint.Render.Preset", 0u);
-
-			if (a_providerBlending) {
-				parameters->Set("DLSSNR.ControlMask", static_cast<ID3D12Resource*>(nullptr));
-				parameters->Set("DLSSNR.UIAlpha", a_controlMask);
-				parameters->Set("DLSSNR.Backbuffer", a_color);
-				parameters->Set("DLSSNR.UICorrection", 1u);
-				parameters->Set("DLSSNR.UseAutoMask", 1u);
-			}
-			NVSDK_NGX_Handle* handle = nullptr;
-			const auto createStarted = a_evidence ? DiagnosticNow() : std::chrono::steady_clock::time_point{};
-			if (a_evidence) {
-				a_evidence->createAttempted = true;
-				a_evidence->createReason = "missing_feature";
-			}
-			const auto createResult = createFeature(
-				a_commandList, kFeatureDlssNr, parameters, &handle);
-			if (a_evidence) {
-				a_evidence->createCpuMicroseconds = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-					DiagnosticNow() - createStarted)
-						.count());
-				a_evidence->createSucceeded = !NVSDK_NGX_FAILED(createResult) && handle;
-				a_evidence->createResult = static_cast<std::uint32_t>(createResult);
-			}
-			ngxResult_ = static_cast<std::uint32_t>(createResult);
-			lastPathProxyHits_ = pathProxy.Hits();
-			if (NVSDK_NGX_FAILED(createResult) || !handle) {
-				// A failed private feature create may still transfer a handle. Keep it
-				// owned so bounded teardown can release or intentionally abandon it.
-				if (handle)
-					featureHandles_[a_slot] = handle;
-				SetFailureLocked(
-					RuntimeStatus::FeatureCreateFailed,
-					RuntimeFailureStage::FeatureCreate,
-					std::format(
-						"Feature 18 create failed slot={} result=0x{:08X} trust={} proxyHits={}",
-						a_slot, ngxResult_, ToString(trust_), lastPathProxyHits_),
-					ngxResult_);
-				return false;
-			}
-
-			featureHandles_[a_slot] = handle;
-			featureConfigurations_[a_slot] = {
-				.colorBacking = a_layout.color.backing,
-				.creation = a_layout.creation,
-				.featureUpscaling = a_layout.featureUpscaling,
-				.providerBlending = a_providerBlending,
-				.valid = true,
-			};
-			detail_ = std::format(
-				"Feature 18 created slot={} upscaling={} color={}x{} guides={}x{} output={}x{}",
-				a_slot, a_layout.featureUpscaling, a_layout.color.backing.width, a_layout.color.backing.height,
-				a_layout.creation.input.width, a_layout.creation.input.height, a_layout.creation.output.width, a_layout.creation.output.height);
-			LogOnceLocked(featureCreateLogEmitted_, "create", true);
-			a_reset = true;
 		}
 
 		parameters->Reset();
@@ -1748,6 +1801,7 @@ namespace NeuralRendering
 		}
 		if (!featureHandles_[a_slot]) {
 			featureConfigurations_[a_slot] = {};
+			firstEvaluationResetMask_.fetch_and(~(1u << a_slot), std::memory_order_relaxed);
 			return true;
 		}
 		if (!module_) {
@@ -1771,6 +1825,9 @@ namespace NeuralRendering
 			return false;
 		}
 
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		++lifecycleCounts_.releases;
+#endif
 		const auto releaseResult = releaseFeature(
 			static_cast<NVSDK_NGX_Handle*>(featureHandles_[a_slot]));
 		ngxResult_ = static_cast<std::uint32_t>(releaseResult);
@@ -1788,12 +1845,29 @@ namespace NeuralRendering
 
 		featureHandles_[a_slot] = nullptr;
 		featureConfigurations_[a_slot] = {};
+		firstEvaluationResetMask_.fetch_and(~(1u << a_slot), std::memory_order_relaxed);
 		if (device_) {
 			status_ = RuntimeStatus::Initialized;
 			failureStage_ = RuntimeFailureStage::None;
 		}
 		return true;
 	}
+
+	bool Runtime::HasCompatibleFeature(std::uint32_t slot, const NativeEvaluationLayout& layout, bool providerBlending) const
+	{
+		std::scoped_lock lock(mutex_);
+		return slot < kFeatureSlotCount && featureHandles_[slot] &&
+		       featureConfigurations_[slot].Matches(layout) &&
+		       featureConfigurations_[slot].providerBlending == providerBlending;
+	}
+
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	Runtime::LifecycleCounts Runtime::GetLifecycleCounts() const
+	{
+		std::scoped_lock lock(mutex_);
+		return lifecycleCounts_;
+	}
+#endif
 
 	std::uint32_t Runtime::GetResidentFeatureMask() const
 	{
@@ -1968,6 +2042,7 @@ namespace NeuralRendering
 		detail_.clear();
 		featureHandles_ = {};
 		featureConfigurations_ = {};
+		firstEvaluationResetMask_.store(0, std::memory_order_relaxed);
 		status_ = RuntimeStatus::NotProbed;
 		trust_ = RuntimeTrust::Unknown;
 		failureStage_ = RuntimeFailureStage::None;
@@ -2008,6 +2083,7 @@ namespace NeuralRendering
 		parameterCoreExports_ = {};
 		featureHandles_ = {};
 		featureConfigurations_ = {};
+		firstEvaluationResetMask_.store(0, std::memory_order_relaxed);
 		lastPathProxyInstalled_ = !pathProxyRestored;
 		failureStage_ = RuntimeFailureStage::UnsafeAbandon;
 		status_ = RuntimeStatus::UnsafeAbandoned;

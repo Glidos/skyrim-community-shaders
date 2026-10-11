@@ -74,6 +74,17 @@ int main()
 	for (bool enabled : { false, true }) {
 		NeuralRenderingConfigurationRequest request;
 		json error;
+		require(TryParseNeuralRenderingConfiguration({ { "action", "nr_configure" }, { "prewarmEnabled", enabled } }, request, error));
+		require(request.HasAnyControl() && request.prewarmEnabled == enabled && !request.HasCharacterControls());
+	}
+	for (const auto& value : { json(1), json("true"), json(nullptr) }) {
+		NeuralRenderingConfigurationRequest request;
+		json error;
+		require(!TryParseNeuralRenderingConfiguration({ { "action", "nr_configure" }, { "prewarmEnabled", value } }, request, error));
+	}
+	for (bool enabled : { false, true }) {
+		NeuralRenderingConfigurationRequest request;
+		json error;
 		require(TryParseNeuralRenderingConfiguration({ { "action", "nr_configure" }, { "characterSceneStrengthsEnabled", enabled } }, request, error));
 		require(request.HasAnyControl() && request.HasCharacterControls() && request.characterSceneStrengthsEnabled == enabled);
 		require(TryParseNeuralRenderingConfiguration({ { "action", "nr_configure" }, { "characterProviderBlending", enabled } }, request, error));

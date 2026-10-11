@@ -50,6 +50,8 @@ namespace Util
 			Reservation& operator=(Reservation&& other) noexcept;
 			void Reset() noexcept;
 			explicit operator bool() const noexcept { return service != nullptr; }
+			/** Logical pending allocation allowance owned by this ticket. */
+			[[nodiscard]] std::uint64_t Bytes() const noexcept { return service ? bytes : 0; }
 
 		private:
 			friend class GpuMemoryBudget;

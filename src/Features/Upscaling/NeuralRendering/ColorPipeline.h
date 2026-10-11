@@ -134,6 +134,8 @@ namespace NeuralRendering::Color
 		bool Reconstruct(ID3D11DeviceContext*, Work&, ID3D11Resource* neural,
 			ID3D11ShaderResourceView* neuralSRV, ID3D11ShaderResourceView* preparedSRV, const Configuration&);
 		void Commit(ID3D11DeviceContext*, const Work&, ID3D11Resource* destination);
+		/** Invalidate shader references and compilation latches while retaining work and diagnostic identity. */
+		void InvalidateShaders() noexcept;
 		void Reset() noexcept;
 		void Abandon() noexcept;
 

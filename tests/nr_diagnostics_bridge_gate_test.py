@@ -12,8 +12,11 @@ root = Path(__file__).resolve().parents[1]
 empty_units = ["src/Features/Upscaling/NeuralRendering/ExposureCapture.cpp",
                "src/Features/ScreenshotNeuralDiagnostics.cpp"]
 checks = {
-    "src/Features/Upscaling/NeuralRendering/Renderer.cpp": ["modelPreparationEvidence_", "MergeModelPreparationEvidenceLocked", "SimulateTransientStall"],
-    "src/Features/Upscaling/NeuralRendering/Renderer.h": ["SimulateTransientStall"],
+    "src/Features/Upscaling/NeuralRendering/Renderer.cpp": ["modelPreparationEvidence_", "MergeModelPreparationEvidenceLocked", "SimulateTransientStall", "prewarmReservedBytes", "stageMicroseconds"],
+    "src/Features/Upscaling/NeuralRendering/Renderer.h": ["SimulateTransientStall", "prewarmReservedBytes", "shaderGenerationApplied"],
+    "src/Features/Upscaling/NeuralRendering/Runtime.cpp": ["GetLifecycleCounts", "lifecycleCounts_"],
+    "src/Features/Upscaling/NeuralRendering/Runtime.h": ["LifecycleCounts", "lifecycleCounts_"],
+    "src/Features/Upscaling/NeuralRendering/PrewarmPolicy.h": ["stageMicroseconds"],
     "src/Features/Upscaling/NeuralRendering/D3D12Interop.cpp": ["SimulateBackpressureTimeout"],
     "src/Features/Upscaling/NeuralRendering/D3D12Interop.h": ["SimulateBackpressureTimeout"],
     "src/Features/Upscaling/NeuralRendering/ExecutionEvidence.h": ["MergeResourcePreparation"],

@@ -582,18 +582,25 @@ namespace NeuralRendering::Color
 		D3D11_BOX box{ 0, 0, 0, roi.width, roi.height, 1 };
 		context->CopySubresourceRegion(destination, 0, roi.baseX, roi.baseY, 0, work.result.resource.Get(), 0, &box);
 	}
-	void Pipeline::Reset() noexcept
+	void Pipeline::InvalidateShaders() noexcept
 	{
 		prepare_.Reset();
 		reconstruct_.Reset();
 #ifdef DEVBENCH_BRIDGE_ENABLED
 		measure_.Reset();
 #endif
-		constants_.Reset();
 		compileFailed_ = false;
 #ifdef DEVBENCH_BRIDGE_ENABLED
 		measureCompileAttempted_ = false;
 #endif
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		ExposureCapture::Instance().InvalidateShaders();
+#endif
+	}
+	void Pipeline::Reset() noexcept
+	{
+		InvalidateShaders();
+		constants_.Reset();
 #ifdef DEVBENCH_BRIDGE_ENABLED
 		ExposureCapture::Instance().Reset();
 #endif

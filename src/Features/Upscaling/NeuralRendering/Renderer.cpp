@@ -4,12 +4,14 @@
 #include "GpuPass.h"
 
 #include "CapacityFallback.h"
+#include "CharacterRendering.h"
 #include "ColorPipeline.h"
 #include "ComputeStateGuard.h"
 #include "D3D12Interop.h"
 #include "MemoryResolutionPolicy.h"
 #include "ModelResolution.h"
 #include "PipelinePolicy.h"
+#include "ShaderInvalidation.h"
 #include "Utils/ComIdentity.h"
 #include "Utils/D3D.h"
 #include "Utils/GpuMemoryBudget.h"
@@ -678,6 +680,14 @@ namespace NeuralRendering
 		bool ApplyRegionBatchLocked(std::span<const RendererApplyArgs> a_args, RendererApplyOutcome& a_outcome, bool a_memoryAdmitted = false);
 		bool ResetLocked(bool a_resetShader, bool a_destruction,
 			BackendRetirementPolicy a_policy = BackendRetirementPolicy::ReleaseBackend);
+		void ApplyShaderInvalidationLocked();
+		void ServicePrewarmLocked(const PrewarmKey*, const char*, std::uint64_t);
+		void PreparePrewarmFeatureLocked();
+		PrewarmPolicy prewarm_{};
+		Util::GpuMemoryBudget::Reservation prewarmReservation_;
+		std::atomic<bool> prewarmPending_{ false };
+
+		ShaderInvalidation shaderInvalidation_;
 		bool ServiceRetainedBackendLocked(bool a_requested = true);
 		bool ServiceStallRecoveryLocked(bool a_requested);
 		MemoryRetirementPolicy memoryRetirement_{};
@@ -742,6 +752,14 @@ namespace NeuralRendering
 
 		RendererSnapshot SnapshotLocked()
 		{
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			snapshot_.prewarm = prewarm_;
+			snapshot_.nativeLifecycle = Runtime::Instance().GetLifecycleCounts();
+			snapshot_.prewarmSubmission = interop_.GetLifetimeSnapshot();
+			snapshot_.prewarmReservedBytes = prewarmReservation_.Bytes();
+			snapshot_.shaderGenerationRequested = shaderInvalidation_.Requested();
+			snapshot_.shaderGenerationApplied = shaderInvalidation_.Applied();
+#endif
 			RefreshInteropTelemetryLocked();
 			snapshot_.memoryConservation = memoryConservation_;
 			snapshot_.memoryRetirement = memoryRetirement_;
@@ -941,6 +959,7 @@ namespace NeuralRendering
 		bool copyDepthGuideCompileFailed_ = false;
 		ComPtr<ID3D11ComputeShader> actorProtectionCS_;
 		ComPtr<ID3D11Buffer> actorProtectionCB_;
+		bool actorProtectionCompileFailed_ = false;
 		bool PrepareActorProtection(const RendererApplyArgs&, Slot&);
 		RendererSnapshot snapshot_{};
 		bool runtimeReady_ = false;
@@ -1855,6 +1874,9 @@ namespace NeuralRendering
 		}
 
 		slots_ = {};
+		prewarmReservation_.Reset();
+		prewarm_ = {};
+		prewarmPending_.store(false, std::memory_order_relaxed);
 		colorPipeline_.Reset();
 		modelResolution_.Reset();
 		if (!retainBackend) {
@@ -1864,6 +1886,7 @@ namespace NeuralRendering
 		if (a_resetShader) {
 			copyDepthGuideCS_.Reset();
 			actorProtectionCS_.Reset();
+			actorProtectionCompileFailed_ = false;
 			actorProtectionCB_.Reset();
 #ifdef DEVBENCH_BRIDGE_ENABLED
 			copyCompactDepthGuideCS_.Reset();
@@ -2312,7 +2335,10 @@ namespace NeuralRendering
 			const bool replacing = replacingBackend || !slot.resourcesValid || slot.resourceKey != resource.resourceKey;
 			if (replacing) {
 				const auto& layout = resource.nativeLayout;
-				additionalBytes += MemoryRecoveryPolicy::kNativeFeatureReserve;
+				const bool preparedNative = !replacingBackend && (prewarm_.unusedMask & FeatureSlotBit(a_args[index].featureSlot)) &&
+				                            Runtime::Instance().HasCompatibleFeature(a_args[index].featureSlot, layout, resource.resourceKey.providerBlending);
+				if (!preparedNative)
+					additionalBytes += MemoryRecoveryPolicy::kNativeFeatureReserve;
 				if (!append(resource.resourceKey.colorFormat, layout.color.backing) ||
 					!append(DXGI_FORMAT_R32_FLOAT, layout.depth.backing) ||
 					!append(resource.resourceKey.motionFormat, layout.motion.backing) ||
@@ -2457,6 +2483,9 @@ namespace NeuralRendering
 		std::span<const RendererApplyArgs> a_args,
 		std::span<const ValidatedResources> a_resources, std::uint64_t a_additionalBytes)
 	{
+		// A failed optional create must retire before the first real native call.
+		if (prewarm_.failed && prewarm_.backendOwned)
+			return false;
 		const auto& first = a_args.front();
 		SetRequestTelemetryLocked(first);
 		if (!ServiceRetainedBackendLocked())
@@ -2547,7 +2576,7 @@ namespace NeuralRendering
 	bool Renderer::State::RetireSlotLocked(std::uint32_t a_slot, const std::shared_ptr<ExecutionEvidence>& a_evidence)
 	{
 		auto& slot = slots_[a_slot];
-		if (!slot.resourcesValid)
+		if (!slot.resourcesValid && !(prewarm_.unusedMask & FeatureSlotBit(a_slot)))
 			return true;
 		SetActiveFeatureSlotLocked(a_slot);
 #ifdef DEVBENCH_BRIDGE_ENABLED
@@ -2612,8 +2641,11 @@ namespace NeuralRendering
 		if (slot.resourcesValid && slot.resourceKey == a_resources.resourceKey)
 			return true;
 
-		if (!RetireSlotLocked(a_slot, a_evidence))
+		const bool prepared = !slot.resourcesValid && (prewarm_.unusedMask & FeatureSlotBit(a_slot)) &&
+		                      Runtime::Instance().HasCompatibleFeature(a_slot, a_resources.nativeLayout, a_resources.resourceKey.providerBlending);
+		if (!prepared && !RetireSlotLocked(a_slot, a_evidence))
 			return false;
+		prewarm_.Adopt(a_slot, prepared);
 
 		activeStage_ = RendererStage::DeviceCompatibility;
 		std::string formatDetail;
@@ -2698,11 +2730,15 @@ namespace NeuralRendering
 
 	bool Renderer::State::PrepareActorProtection(const RendererApplyArgs& args, Slot& slot)
 	{
+		if (actorProtectionCompileFailed_)
+			return false;
 		if (!actorProtectionCS_) {
+			actorProtectionCompileFailed_ = true;
 			actorProtectionCS_.Attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
 				L"Data/Shaders/DLSS5ActorProtectionCS.hlsl", {}, "cs_5_0", "main")));
 			if (!actorProtectionCS_)
 				return false;
+			actorProtectionCompileFailed_ = false;
 			Util::SetResourceName(actorProtectionCS_.Get(), "NeuralRendering::ActorProtectionCS");
 		}
 		struct Constants
@@ -4114,6 +4150,8 @@ namespace NeuralRendering
 				succeeded = state_->ApplyLocked(args, outcome);
 			state_->FinishMemoryResolutionLocked({ &args, 1 }, succeeded);
 			state_->FinishMemoryRecoveryLocked(succeeded, outcome);
+			if (succeeded)
+				Runtime::Instance().AcknowledgePresentedFeatures(outcome.evaluationSucceededFeatureSlotMask);
 			state_->FinishCapture(outcome);
 			if (a_outcome)
 				*a_outcome = outcome;
@@ -4157,6 +4195,8 @@ namespace NeuralRendering
 				succeeded = state_->ApplyStereoLocked(args, outcome);
 			state_->FinishMemoryResolutionLocked(args, succeeded);
 			state_->FinishMemoryRecoveryLocked(succeeded, outcome);
+			if (succeeded)
+				Runtime::Instance().AcknowledgePresentedFeatures(outcome.evaluationSucceededFeatureSlotMask);
 			if (!outcome.memoryPressureBypass)
 				Increment(succeeded ? state_->snapshot_.counters.stereoSuccesses : state_->snapshot_.counters.stereoFailures);
 			state_->FinishCapture(outcome);
@@ -4202,6 +4242,8 @@ namespace NeuralRendering
 				succeeded = state_->ApplySequentialStereoLocked(args, outcome);
 			state_->FinishMemoryResolutionLocked(args, succeeded);
 			state_->FinishMemoryRecoveryLocked(succeeded, outcome);
+			if (succeeded)
+				Runtime::Instance().AcknowledgePresentedFeatures(outcome.evaluationSucceededFeatureSlotMask);
 			state_->FinishCapture(outcome);
 			if (a_outcome)
 				*a_outcome = outcome;
@@ -4271,7 +4313,7 @@ namespace NeuralRendering
 
 	void Renderer::ServiceBackendMaintenance(bool a_requested)
 	{
-		if (!state_->backendMaintenancePending_.load(std::memory_order_relaxed))
+		if (!state_->backendMaintenancePending_.load(std::memory_order_relaxed) && !state_->shaderInvalidation_.Pending())
 			return;
 		Util::RendererOwnership owner(Util::GetRendererContextLock(globals::game::renderer, globals::d3d::context));
 		if (!owner)
@@ -4280,6 +4322,7 @@ namespace NeuralRendering
 		if (!lock.owns_lock())
 			return;
 		try {
+			state_->ApplyShaderInvalidationLocked();
 			if (state_->snapshot_.stallRecovery.pending)
 				(void)state_->ServiceStallRecoveryLocked(a_requested);
 			else
@@ -4290,32 +4333,256 @@ namespace NeuralRendering
 		}
 	}
 
-	void Renderer::ResetShaderCache()
+	bool Renderer::HasPrewarmWork() const noexcept
 	{
-		std::scoped_lock lock(state_->mutex_);
+		return state_->prewarmPending_.load(std::memory_order_relaxed);
+	}
+
+	bool Renderer::ServicePrewarm(const PrewarmKey* request, const char* deferReason, std::uint64_t opportunity)
+	{
+		Util::RendererOwnership owner(Util::GetRendererContextLock(globals::game::renderer, globals::d3d::context));
+		if (!owner)
+			return false;
+		std::unique_lock lock(state_->mutex_, std::try_to_lock);
+		if (!lock.owns_lock())
+			return false;
 		try {
-			(void)state_->ResetLocked(true, false);
-		} catch (const std::exception& exception) {
-			state_->QuarantineAfterUnexpectedFailureLocked(
-				RendererStage::Quarantined,
-				Runtime::kFeatureSlotCount,
-				false,
-				0);
-			try {
-				logger::error("[DLSSNR] Shader-cache reset threw: {}", exception.what());
-			} catch (...) {
-			}
+			state_->ServicePrewarmLocked(request, deferReason, opportunity);
 		} catch (...) {
-			state_->QuarantineAfterUnexpectedFailureLocked(
-				RendererStage::Quarantined,
-				Runtime::kFeatureSlotCount,
-				false,
-				0);
-			try {
-				logger::error("[DLSSNR] Shader-cache reset threw an unknown exception");
-			} catch (...) {
+			state_->QuarantineAfterUnexpectedFailureLocked(RendererStage::ResourceCreation, Runtime::kFeatureSlotCount, false, 0);
+		}
+		return true;
+	}
+
+	void Renderer::State::ServicePrewarmLocked(const PrewarmKey* request, const char* deferReason, std::uint64_t opportunity)
+	{
+		auto& policy = prewarm_;
+		if (!policy.BeginOpportunity(opportunity))
+			return;
+		if (failureLatched_ || quarantined_ || snapshot_.stallRecovery.pending) {
+			policy.stage = "deferred";
+			policy.reason = "renderer_fault";
+			prewarmPending_.store(false, std::memory_order_relaxed);
+			return;
+		}
+		const auto now = GetTickCount64();
+		if (memoryRecovery_.phase == MemoryRecoveryPhase::Retiring) {
+			(void)RetireMemoryPressureLocked();
+			policy.failed = true;
+			policy.reason = "memory_policy_retirement";
+			return;
+		}
+		const auto fences = interop_.GetLifetimeSnapshot();
+		if (fences.deviceRemoved) {
+			(void)FailLocked(RendererStage::DeviceRemoved, DXGI_ERROR_DEVICE_REMOVED,
+				"device removal detected while servicing optional prewarm", Runtime::kFeatureSlotCount, true, true, false);
+			return;
+		}
+		const bool completed = !interop_.IsInitialized() ||
+		                       (fences.completedKnown && !fences.recording && !fences.deviceRemoved && fences.completed >= fences.issued);
+		const bool changed = request && policy.captured && *request != policy.key;
+		const bool disabled = !request && std::string_view(deferReason) == "disabled";
+		const bool expired = policy.Expired(now);
+		const bool cancelled = !request && std::string_view(deferReason) != "awaiting_main_or_loading_menu";
+		if (changed || cancelled)
+			policy.CancelRequest();
+		const bool retiring = policy.cancelled || expired || policy.failed;
+		if (retiring && (policy.unusedMask || policy.backendOwned)) {
+			policy.stage = "retiring";
+			policy.reason = expired ? "unused_lease_expired" : (changed ? "request_changed" : (cancelled ? deferReason : policy.reason));
+			if (!completed)
+				return;
+			for (std::uint32_t slot = 0; slot < slots_.size(); ++slot) {
+				if (!(policy.unusedMask & FeatureSlotBit(slot)))
+					continue;
+				if (!Runtime::Instance().ResetFeature(slot)) {
+					(void)FailLocked(RendererStage::ResourceRetirement, E_FAIL, "unused prewarm feature release failed", slot, true, true, false);
+					return;
+				}
+				policy.unusedMask &= ~FeatureSlotBit(slot);
+				return;
+			}
+			if (policy.backendOwned && !Runtime::Instance().GetResidentFeatureMask()) {
+				const bool stop = policy.SuppressRetryAfterRetirement(now);
+				const auto retiredPolicy = policy;
+				const auto retiredReason = policy.reason;
+				if (!TeardownBackendLocked(false, false, false))
+					return;
+				// A retired failed/expired request cannot restart optional work unchanged.
+				policy.failed = policy.captured = stop;
+				policy.key = retiredPolicy.key;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				policy.stages = retiredPolicy.stages;
+				policy.stageMicroseconds = retiredPolicy.stageMicroseconds;
+				policy.stageCpuMicroseconds = retiredPolicy.stageCpuMicroseconds;
+#endif
+				policy.stage = stop ? "deferred" : "disabled";
+				policy.reason = retiredReason;
+				return;
 			}
 		}
+		if (completed && prewarmReservation_) {
+			const auto sample = Util::GpuMemoryBudget::Get().Sample(device_.Get(), 0, true);
+			if (sample.Fresh(GetTickCount64()))
+				prewarmReservation_.Reset();
+		}
+		prewarmPending_.store(policy.unusedMask || policy.backendOwned || bool(prewarmReservation_), std::memory_order_relaxed);
+		if (!request) {
+			policy.stage = "deferred";
+			policy.reason = deferReason;
+			if (disabled && !policy.unusedMask && !policy.backendOwned)
+				policy.captured = false;
+			return;
+		}
+		if (policy.captured && *request == policy.key && (policy.failed || expired))
+			return;
+		if (!policy.captured || changed)
+			policy.Capture(*request, now);
+		if ((policy.preparedMask | policy.adoptedMask) == request->slotMask) {
+			policy.stage = completed ? "ready" : "submitted";
+			policy.reason = "native_features_only";
+			return;
+		}
+		if (now < policy.retryAtMs || !completed)
+			return;
+		policy.retryAtMs = now + PrewarmPolicy::kRetryIntervalMs;
+		if (memoryRecovery_.phase != MemoryRecoveryPhase::Ready || memoryConservation_.active || memoryRetirement_.backendRetained) {
+			policy.reason = "memory_policy";
+			return;
+		}
+		if (runtimeReady_ && !policy.backendOwned) {
+			policy.stage = "deferred";
+			policy.reason = "backend_already_in_use";
+			return;
+		}
+		if (request->slotMask != 0xcu || !GetNativeEvaluationLayoutViolation(request->layout, false).empty()) {
+			policy.reason = "unsupported_native_contract";
+			policy.failed = true;
+			return;
+		}
+		auto* device = reinterpret_cast<ID3D11Device*>(request->device);
+		auto* context = reinterpret_cast<ID3D11DeviceContext*>(request->context);
+		if (!device || !context || (device_ && (!SameIdentity(device_.Get(), device) || !SameIdentity(context_.Get(), context)))) {
+			policy.reason = "device_changed";
+			return;
+		}
+		// Reserve both opaque models and conservative first-pair transport overlap.
+		const auto& extent = request->layout.creation.output;
+		if (!extent.width || !extent.height || extent.width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || extent.height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) {
+			policy.reason = "invalid_dimensions";
+			policy.failed = true;
+			return;
+		}
+		const auto bytes = 2 * MemoryRecoveryPolicy::kNativeFeatureReserve +
+		                   std::uint64_t(extent.width) * extent.height * 128u;
+		const auto budget = SampleMemoryBudgetLocked(device, GetTickCount64(), true);
+		const auto sample = Util::GpuMemoryBudget::Get().Sample(device, MemoryRecoveryPolicy::kSampleIntervalMs);
+		auto preview = memoryRecovery_;
+		if (!budget.IsFresh(GetTickCount64()) || sample.priorityWork ||
+			!preview.Admit(budget, bytes, GetTickCount64(), sample.pendingBytes)) {
+			policy.stage = "deferred";
+			policy.reason = "memory_admission";
+			policy.failed = policy.backendOwned;
+			return;
+		}
+		prewarmReservation_ = Util::GpuMemoryBudget::Get().Reserve(Util::GpuMemoryBudget::Owner::NeuralRendering, device, bytes);
+		if (!prewarmReservation_) {
+			policy.reason = "reservation_unavailable";
+			return;
+		}
+		prewarmPending_.store(true, std::memory_order_relaxed);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		const auto stageIndex = !runtimeReady_ || !interop_.IsInitialized() ? 0u : ((policy.preparedMask & FeatureSlotBit(2)) ? 2u : 1u);
+		const auto started = std::chrono::steady_clock::now();
+		const SKSE::stl::scope_exit timing([&] {
+			++policy.stages;
+			const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count();
+			policy.stageMicroseconds += elapsed;
+			policy.stageCpuMicroseconds[stageIndex] += elapsed;
+		});
+#endif
+		if (!runtimeReady_ || !interop_.IsInitialized()) {
+			RendererApplyArgs args{};
+			args.device = device;
+			args.context = context;
+			args.featureSlot = 2;
+			policy.stage = "backend";
+			policy.backendOwned = true;
+			policy.failed = !EnsureBackendLocked(args, {});
+			return;
+		}
+		PreparePrewarmFeatureLocked();
+	}
+
+	void Renderer::State::PreparePrewarmFeatureLocked()
+	{
+		auto& policy = prewarm_;
+		for (std::uint32_t slot = 2; slot < Runtime::kFeatureSlotCount; ++slot) {
+			if (policy.preparedMask & FeatureSlotBit(slot))
+				continue;
+			if (Runtime::Instance().GetResidentFeatureMask() & FeatureSlotBit(slot)) {
+				if (!Runtime::Instance().HasCompatibleFeature(slot, policy.key.layout, false)) {
+					policy.reason = "live_incompatible_feature";
+					policy.failed = true;
+					return;
+				}
+				policy.preparedMask |= FeatureSlotBit(slot);
+				continue;
+			}
+			ID3D12GraphicsCommandList* commands = nullptr;
+			policy.stage = "creating";
+			if (!interop_.BeginD3D12(&commands)) {
+				policy.failed = true;
+				(void)FailLocked(RendererStage::CommandBegin, interop_.LastError(), "prewarm command begin failed", slot, true, true, false);
+				return;
+			}
+			if (!Runtime::Instance().PrepareFeature(commands, slot, policy.key.layout)) {
+				const bool aborted = interop_.AbortD3D12();
+				policy.failed = true;
+				policy.stage = "failed";
+				policy.reason = "native_creation_failed";
+				policy.unusedMask |= Runtime::Instance().GetResidentFeatureMask() & FeatureSlotBit(slot);
+				if (!aborted || FAILED(GetDeviceRemovalReasonLocked(S_OK)))
+					(void)FailLocked(RendererStage::ResourceCreation, E_FAIL, "unsafe native prewarm failure", slot, true, true, false);
+				else if (Runtime::Instance().CreationCapacityFailure() == CapacityFailure::Pressure)
+					memoryRecovery_.Suspend(GetTickCount64(), true);
+				logger::warn("[DLSSNR] Optional native prewarm deferred after creation failure: {}", Runtime::Instance().Detail());
+				return;
+			}
+			policy.preparedMask |= FeatureSlotBit(slot);
+			policy.unusedMask |= FeatureSlotBit(slot);
+			if (!interop_.EndD3D12()) {
+				policy.failed = true;
+				(void)FailLocked(RendererStage::CommandEnd, interop_.LastError(), "prewarm submission failed", slot, true, true, false);
+			}
+			return;
+		}
+	}
+
+	void Renderer::State::ApplyShaderInvalidationLocked()
+	{
+		const auto generation = shaderInvalidation_.Requested();
+		if (generation == shaderInvalidation_.Applied())
+			return;
+		copyDepthGuideCS_.Reset();
+		copyDepthGuideCompileFailed_ = false;
+		actorProtectionCS_.Reset();
+		actorProtectionCompileFailed_ = false;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		copyCompactDepthGuideCS_.Reset();
+#endif
+		colorPipeline_.InvalidateShaders();
+		modelResolution_.InvalidateShaders();
+		CharacterRendering::Instance().ResetShaderCache();
+		// Generic HLSL reloads can change guide interpretation without changing native capacity.
+		for (auto& slot : slots_)
+			slot.historyValid = false;
+		shaderInvalidation_.Applied(generation);
+	}
+
+	void Renderer::ResetShaderCache()
+	{
+		state_->shaderInvalidation_.Request();
 	}
 
 	RendererSnapshot Renderer::GetSnapshot() const

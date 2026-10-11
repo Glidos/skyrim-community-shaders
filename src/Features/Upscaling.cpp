@@ -371,6 +371,7 @@ namespace FSRTemporalTuningPolicy
 	OP(neuralRenderingBatchedStereo)             \
 	OP(neuralRenderingDirectCommit)              \
 	OP(neuralRenderingModelResolutionPercent)    \
+	OP(neuralRenderingPrewarmEnabled)            \
 	OP(neuralRenderingPressureResolutionEnabled) \
 	OP(neuralRenderingCentralAreaPercent)        \
 	OP(neuralRenderingCentralFeatherPixels)      \
@@ -18777,6 +18778,10 @@ namespace
 
 	void DrawNeuralModelResolutionSettings(Upscaling::Settings& settings)
 	{
+		if (globals::game::isVR) {
+			Util::Widgets::Checkbox("Prewarm NR while loading", &settings.neuralRenderingPrewarmEnabled);
+			Util::AddTooltip("Prepare NR during the main menu or loading when enough GPU memory is available. Supports Before DLSS at 100% NR resolution, full coverage and automatic masking, with actor controls and adaptive NR resolution disabled. Other settings wait for normal gameplay initialization.");
+		}
 		DrawNeuralIntegerSetting("NR Model Resolution", settings.neuralRenderingModelResolutionPercent,
 			NeuralRendering::kMinimumModelResolutionPercent, NeuralRendering::kMaximumModelResolutionPercent, "%d%%");
 		if (auto tooltip = Util::HoverTooltipWrapper())
@@ -51312,9 +51317,83 @@ void Upscaling::SetupRenderTargetResources()
 	SetupResources();
 }
 
+void Upscaling::ServiceNeuralRenderingPrewarm()
+{
+	auto& renderer = NeuralRendering::Renderer::Instance();
+	const bool enabled = settings.neuralRenderingPrewarmEnabled && settings.neuralRenderingEnabled;
+	const bool enabledChanged = enabled != neuralPrewarmWasEnabled;
+	if (!enabled && !enabledChanged && !renderer.HasPrewarmWork())
+		return;
+	const auto* state = globals::state;
+	const bool menu = state && (state->isMainMenuOpen || state->isLoadingMenuOpen);
+	if (!menu && !enabledChanged && !renderer.HasPrewarmWork()) {
+		neuralPrewarmWasMenu = false;
+		return;
+	}
+	const auto now = GetTickCount64();
+	const auto opportunity = ++neuralPrewarmOpportunity;
+	if (!enabledChanged && menu == neuralPrewarmWasMenu && now < neuralPrewarmServiceAtMs)
+		return;
+	neuralPrewarmWasMenu = menu;
+	neuralPrewarmServiceAtMs = now + NeuralRendering::PrewarmPolicy::kRetryIntervalMs;
+	const auto service = [&](const NeuralRendering::PrewarmKey* request, const char* reason) {
+		if (renderer.ServicePrewarm(request, reason, opportunity))
+			neuralPrewarmWasEnabled = enabled;
+	};
+	const auto defer = [&](const char* reason) { service(nullptr, reason); };
+	if (!enabled)
+		return defer("disabled");
+	// Cached flags make gameplay cheap; current menu state alone permits creation.
+	if (!globals::game::isVR || !(Util::IsMenuOpen<RE::MainMenu>(globals::game::ui) ||
+									Util::IsMenuOpen<RE::LoadingMenu>(globals::game::ui)))
+		return defer("awaiting_main_or_loading_menu");
+	if (!IsNeuralRenderingRequested() || !NeuralRendering::Runtime::IsInstalled())
+		return defer("nr_unavailable");
+	if (GetNeuralRenderingMode() != NeuralRendering::RenderingMode::ReducedResolution ||
+		settings.neuralRenderingModelResolutionPercent != 100 || settings.neuralRenderingPressureResolutionEnabled ||
+		settings.neuralRenderingCentralAreaPercent != 100 || settings.neuralRenderingSingleSubrectScale != 1.0f ||
+		NeuralRendering::RequiresFoveatedMask(GetNeuralRenderingMode(), settings.neuralRenderingFovOnly, true, settings.neuralRenderingRenderscaleFov))
+		return defer("exact_route_not_supported");
+	if (settings.neuralCharacterRenderingEnabled || settings.neuralCharacterSceneStrengthsEnabled ||
+		!settings.neuralRenderingAutoMask || settings.neuralRenderingUICorrection)
+		return defer("creation_mask_not_available");
+	if (IsVRRenderScaleTransitionPending(vrRenderScaleTransitionState.load(std::memory_order_acquire)) ||
+		!IsVRRenderScaleModeActive() || !runtimeResolutionPlan.foveatedRegion.IsValid())
+		return defer("geometry_not_authoritative");
+	const auto& region = runtimeResolutionPlan.foveatedRegion;
+	const UpscalingDLSS::Extent extent{ region.inputWidthPerEye, region.inputHeight };
+	if (!extent.width || !extent.height || !globals::d3d::device || !globals::d3d::context)
+		return defer("geometry_not_authoritative");
+	if (runtimeResolutionPlan.owner != ResolutionOwner::VRRenderScaleMode ||
+		runtimeResolutionPlan.outputTarget != UpscalingOutputTarget::SubmitStageIntermediate || !globals::game::renderer)
+		return defer("route_not_authoritative");
+	auto* motion = globals::game::renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR].texture;
+	D3D11_TEXTURE2D_DESC motionDescription{};
+	if (motion)
+		motion->GetDesc(&motionDescription);
+	if (motionDescription.Width != std::uint64_t(extent.width) * 2u || motionDescription.Height != extent.height || motionDescription.SampleDesc.Count != 1)
+		return defer("resource_grid_not_authoritative");
+	const UpscalingDLSS::ViewportCrop crop{
+		.fullInput = extent,
+		.input = { 0, 0, extent.width, extent.height },
+		.fullOutput = extent,
+		.output = { 0, 0, extent.width, extent.height }
+	};
+	NeuralRendering::PrewarmKey request{
+		.layout = NeuralRendering::BuildNativeEvaluationLayout(extent, extent, extent, {},
+			{ 0, 0, extent.width, extent.height }, UpscalingDLSS::BuildMotionVectorPixelScale(crop), false),
+		.device = reinterpret_cast<std::uintptr_t>(globals::d3d::device),
+		.context = reinterpret_cast<std::uintptr_t>(globals::d3d::context),
+		.generation = vrRenderScaleNextContractGeneration.load(std::memory_order_acquire),
+		.slotMask = 0xcu
+	};
+	service(&request, "none");
+}
+
 void Upscaling::Reset()
 {
 	NeuralRendering::Renderer::Instance().ServiceBackendMaintenance(settings.neuralRenderingEnabled);
+	ServiceNeuralRenderingPrewarm();
 	if (!globals::game::isVR)
 		return;
 
@@ -51358,7 +51437,6 @@ void Upscaling::ClearShaderCache()
 	rcas.ClearShaderCache();
 	lumaSharpen.ClearShaderCache();
 	NeuralRendering::Renderer::Instance().ResetShaderCache();
-	NeuralRendering::CharacterRendering::Instance().ResetShaderCache();
 }
 
 void Upscaling::PrepareFrameGenerationInputs()

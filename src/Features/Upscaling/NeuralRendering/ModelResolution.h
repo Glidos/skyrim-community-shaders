@@ -50,6 +50,8 @@ namespace NeuralRendering
 		bool Reconstruct(std::span<const RendererApplyArgs>, const Batch&, HRESULT&);
 		/** Commit only the original owned rectangles after successful reconstruction. */
 		void Commit(std::span<const RendererApplyArgs>, const Batch&) const;
+		/** Retain textures, constants and outstanding batches while rearming shader compilation. */
+		void InvalidateShaders() noexcept;
 		/** Release caches; outstanding batch ownership remains valid. */
 		void Reset() noexcept;
 		void ReleaseSlot(std::uint32_t) noexcept;
@@ -62,5 +64,6 @@ namespace NeuralRendering
 		Microsoft::WRL::ComPtr<ID3D11Device> device_;
 		Microsoft::WRL::ComPtr<ID3D11ComputeShader> prepare_, reconstruct_;
 		Microsoft::WRL::ComPtr<ID3D11Buffer> constants_;
+		bool compileFailed_ = false;
 	};
 }

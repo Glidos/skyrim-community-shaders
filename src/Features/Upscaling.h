@@ -478,6 +478,7 @@ public:
 #endif
 		bool foveatedVendorDispatch = false;
 		bool neuralRenderingEnabled = false;
+		bool neuralRenderingPrewarmEnabled = false;
 		uint neuralRenderingMode = static_cast<uint>(NeuralRendering::RenderingMode::ReducedResolution);
 		// Compatibility fields are derived from shared VR FOV coverage for both placements.
 		bool neuralRenderingFovOnly = false;
@@ -2167,6 +2168,9 @@ public:
 
 	PerfModeState perfMode;
 	RuntimeResolutionPlan runtimeResolutionPlan;
+	void ServiceNeuralRenderingPrewarm();
+	std::uint64_t neuralPrewarmOpportunity = 0, neuralPrewarmServiceAtMs = 0;
+	bool neuralPrewarmWasMenu = false, neuralPrewarmWasEnabled = false;
 	/** @brief Returns the pending request, or a non-pending snapshot of current settings. */
 	VRRenderScaleDesiredProfile GetPendingVRRenderScaleDesiredProfile() const;
 	/** @brief Resolves a queued portable DLSS preference after adapter capability is known. */

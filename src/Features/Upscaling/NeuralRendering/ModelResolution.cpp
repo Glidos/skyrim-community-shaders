@@ -350,6 +350,11 @@ namespace NeuralRendering
 			Reset();
 			device_ = device;
 		}
+		if (compileFailed_) {
+			result = E_FAIL;
+			return false;
+		}
+		compileFailed_ = true;
 		if (!prepare_) {
 			prepare_.Attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
 				L"Data/Shaders/Upscaling/NeuralRendering/ModelResolutionPrepareCS.hlsl", {}, "cs_5_0", "main")));
@@ -363,9 +368,11 @@ namespace NeuralRendering
 				Util::SetResourceName(reconstruct_.Get(), "NeuralRendering::ModelResolutionReconstruct");
 		}
 		if (!prepare_ || !reconstruct_) {
+			compileFailed_ = true;
 			result = E_FAIL;
 			return false;
 		}
+		compileFailed_ = false;
 		if (!constants_) {
 			D3D11_BUFFER_DESC desc{};
 			desc.ByteWidth = sizeof(Constants);
@@ -557,11 +564,16 @@ namespace NeuralRendering
 		}
 	}
 
+	void ModelResolution::InvalidateShaders() noexcept
+	{
+		prepare_.Reset();
+		reconstruct_.Reset();
+		compileFailed_ = false;
+	}
 	void ModelResolution::Reset() noexcept
 	{
 		slots_ = {};
-		prepare_.Reset();
-		reconstruct_.Reset();
+		InvalidateShaders();
 		constants_.Reset();
 		device_.Reset();
 	}

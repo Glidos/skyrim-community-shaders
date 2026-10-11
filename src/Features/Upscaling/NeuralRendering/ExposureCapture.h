@@ -274,6 +274,8 @@ namespace NeuralRendering::Color
 		/// Pin a source-frame key; epoch zero selects the current epoch only for this lookup.
 		ExposureEvidenceLookup GetSourceFrameEvidence(std::uint32_t frame, std::uint64_t epoch = 0) const;
 		bool Bind(ID3D11DeviceContext*, ExposureBinding&, const ExposureTransaction&);
+		/** Drop compute/producer shader references without retiring captured resources or evidence. */
+		void InvalidateShaders() noexcept;
 		void Reset() noexcept;    // Called after Renderer's existing idle/retirement boundary.
 		void Abandon() noexcept;  // Device-loss/unfenced path: do not release ownership.
 	private:

@@ -63,8 +63,14 @@ with tempfile.TemporaryDirectory(prefix="csx-nr-bridge-gate-") as temporary:
                     recovery = text[recovery_start:recovery_end]
                     assert recovery.index("recovery.ShouldPoll(now)") < recovery.index("interop_.GetLifetimeSnapshot()")
                     assert recovery.index("StallRecoveryDecision::Recover") < recovery.index("ResetLocked(false, false)")
-                    assert "GetLifetimeSnapshot" not in text[:first] + text[last:recovery_start] + text[recovery_end:], (
-                        name, "production fence observation escaped failure-only capture and recovery")
+                    prewarm_start = text.index("void Renderer::State::ServicePrewarmLocked(")
+                    prewarm_end = text.index("void Renderer::State::PreparePrewarmFeatureLocked(", prewarm_start)
+                    prewarm = text[prewarm_start:prewarm_end]
+                    assert prewarm.count("interop_.GetLifetimeSnapshot()") == 1
+                    assert prewarm.index("policy.BeginOpportunity(") < prewarm.index("interop_.GetLifetimeSnapshot()")
+                    assert "fences.completed >= fences.issued" in prewarm
+                    assert "GetLifetimeSnapshot" not in text[:first] + text[last:recovery_start] + text[recovery_end:prewarm_start] + text[prewarm_end:], (
+                        name, "production fence observation escaped failure capture, recovery and optional prewarm")
                 failure = text[last:text.index("void Renderer::State::SucceedLocked(", last)]
                 quarantine_start = text.index("void Renderer::State::QuarantineAfterUnexpectedFailureLocked(")
                 quarantine = text[quarantine_start:text.index("bool Renderer::State::EnsureBackendLocked(", quarantine_start)]

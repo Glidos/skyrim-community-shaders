@@ -457,3 +457,25 @@ add_custom_command(
 add_d3d_shader_test(deferred_mask_test DeferredMaskWARP tests/deferred_mask_test.cpp)
 target_sources(deferred_mask_test PRIVATE "${_deferred_mask_test_dir}/deferred_mask_under_test.h")
 target_include_directories(deferred_mask_test PRIVATE "${_deferred_mask_test_dir}")
+
+set(_neural_native_creation_dir "${CMAKE_CURRENT_BINARY_DIR}/generated/neural-native-creation")
+set(_neural_native_headers "${_neural_native_creation_dir}/neural_native_key_under_test.h"
+    "${_neural_native_creation_dir}/neural_native_creation_under_test.h")
+add_custom_command(OUTPUT ${_neural_native_headers}
+    COMMAND "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
+        "-DOUTPUT_DIRECTORY=${_neural_native_creation_dir}" -P
+        "${PROJECT_SOURCE_DIR}/tests/extract_neural_native_creation.cmake"
+    DEPENDS src/Features/Upscaling/NeuralRendering/Runtime.cpp
+        tests/extract_neural_native_creation.cmake tests/extract_source_region.cmake
+    VERBATIM)
+add_controller_test(neural_native_creation_test NeuralNativeCreation tests/neural_native_creation_test.cpp)
+target_sources(neural_native_creation_test PRIVATE ${_neural_native_headers})
+target_include_directories(neural_native_creation_test PRIVATE "${_neural_native_creation_dir}")
+
+add_test(NAME NeuralCachePrewarmWorkflow COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tests/neural_cache_prewarm_workflow_test.py")
+set_tests_properties(NeuralCachePrewarmWorkflow PROPERTIES LABELS "ControllerTests" TIMEOUT 30)
+
+add_test(NAME NeuralCachePrewarmContract COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/tests/neural_cache_prewarm_contract_test.py")
+set_tests_properties(NeuralCachePrewarmContract PROPERTIES LABELS "ControllerTests" TIMEOUT 30)

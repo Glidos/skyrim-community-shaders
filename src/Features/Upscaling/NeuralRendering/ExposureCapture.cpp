@@ -608,6 +608,14 @@ namespace NeuralRendering::Color
 			invalidate();
 		return true;
 	}
+	void ExposureCapture::InvalidateShaders() noexcept
+	{
+		std::scoped_lock lock(state_->mutex);
+		state_->shaderSelection = {};
+		state_->selectedPixelShader.Reset();
+		state_->shader.Reset();
+		state_->compileAttempted = false;
+	}
 	void ExposureCapture::Reset() noexcept
 	{
 		std::scoped_lock lock(state_->mutex);

@@ -97,6 +97,7 @@ namespace globals
 				unsigned neuralRenderingMode = 0;
 				unsigned neuralRenderingModelResolutionPercent = 100;
 				bool neuralRenderingPressureResolutionEnabled = false;
+				bool neuralRenderingPrewarmEnabled = false;
 				unsigned neuralRenderingCentralAreaPercent = 100, neuralRenderingCentralFeatherPixels = 64;
 				unsigned neuralRenderingPreset = 1, neuralRenderingStyle = 0;
 				float neuralRenderingIntensity = 1.0f, neuralRenderingLocalTone = 1.0f;
@@ -674,6 +675,15 @@ int main()
 			}
 		}
 	}
+	for (const bool vr : { false, true }) {
+		globals::game::isVR = vr;
+		Upscaling::Settings settings{};
+		ImGui::Clear();
+		DrawNeuralModelResolutionSettings(settings);
+		require(ImGui::Seen("Prewarm NR while loading") == vr && !settings.neuralRenderingPrewarmEnabled,
+			"Optional prewarm is default-off and only exposed for VR");
+	}
+	globals::game::isVR = true;
 	ImGui::Clear();
 	DrawNeuralRenderingActorCategories(globals::features::upscaling.settings);
 	const auto rowFor = [&](const char* label) {
@@ -681,6 +691,7 @@ int main()
 		require(item != ImGui::items.end(), "Every actor and material selection must remain available");
 		return ImGui::rows[static_cast<std::size_t>(item - ImGui::items.begin())];
 	};
+
 	for (const auto* label : { "Humans", "Other humanoids", "Beasts / creatures", "Animals", "Other / unknown" })
 		require(rowFor(label) == rowFor("Humans"), "Actor toggles must share one row");
 	for (const auto* label : { "Faces", "Skin", "Hair", "Armour / clothing", "Weapons" })

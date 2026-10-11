@@ -11,6 +11,7 @@
 #	include "LifetimeDiagnostics.h"
 #endif
 #include "PipelinePolicy.h"
+#include "PrewarmPolicy.h"
 #include "Runtime.h"
 
 #include <array>
@@ -188,6 +189,13 @@ namespace NeuralRendering
 		bool controlMaskPresent = false;
 		bool providerBlending = false;
 		bool useAutoMask = true;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		PrewarmPolicy prewarm{};
+		Runtime::LifecycleCounts nativeLifecycle{};
+		LifetimeFenceSnapshot prewarmSubmission{};
+		std::uint64_t prewarmReservedBytes = 0;
+		std::uint64_t shaderGenerationRequested = 0, shaderGenerationApplied = 0;
+#endif
 		RendererCounters counters{};
 		RendererPerformanceTelemetry performance{};
 		StallRecoveryPolicy stallRecovery{};
@@ -304,6 +312,13 @@ namespace NeuralRendering
 			BackendRetirementPolicy a_policy = BackendRetirementPolicy::ReleaseBackend);
 		/** Services retained resources or a latched transient stall; otherwise performs no sampling. */
 		void ServiceBackendMaintenance(bool a_requested);
+		/** Service one optional stage at the completed boundary; false leaves the request unconsumed. */
+		[[nodiscard]] bool ServicePrewarm(const PrewarmKey* request, const char* deferReason,
+			std::uint64_t opportunity);
+		/** Cheap disabled-path gate; pending unused ownership still needs maintenance. */
+		[[nodiscard]] bool HasPrewarmWork() const noexcept;
+
+		/** Request coalesced shader-only invalidation at the completed-frame maintenance boundary. */
 		void ResetShaderCache();
 
 		[[nodiscard]] RendererSnapshot GetSnapshot() const;

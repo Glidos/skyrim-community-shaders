@@ -485,6 +485,13 @@ namespace
 				Require(leftOutput.Read<Pixel>(device, context) == expectedLeft && rightOutput.Read<Pixel>(device, context) == clear,
 					"Direct mono output differs or publishes the unused eye");
 				context->UpdateSubresource(leftOutput.texture.Get(), 0, nullptr, clear.data(), static_cast<UINT>(source[0] * sizeof(Pixel)), 0);
+				const auto retainedBeforeReload = shared.RetainedBytes(args[0].featureSlot);
+				shared.InvalidateShaders();
+				Require(shared.RetainedBytes(args[0].featureSlot) == retainedBeforeReload,
+					"Shader invalidation retired compatible model work");
+				Require(shared.Reconstruct(args, candidate, result), "Retained batch lost shader/constants across invalidation");
+				Require(leftOutput.Read<Pixel>(device, context) == clear && rightOutput.Read<Pixel>(device, context) == clear,
+					"Shader invalidation or reconstruction committed a partial pair");
 				shared.Reset();
 				bad = {};
 				invalid = {};

@@ -138,6 +138,13 @@ namespace NeuralRendering
 			std::uint32_t a_timingRegion = 0,
 			bool a_providerBlending = false);
 
+		/** Record exact feature creation without inference; caller owns submission and retirement. */
+		bool PrepareFeature(ID3D12GraphicsCommandList*, std::uint32_t slot,
+			const NativeEvaluationLayout&, ID3D12Resource* color = nullptr,
+			ID3D12Resource* controlMask = nullptr, bool providerBlending = false,
+			RuntimeExecutionEvidence* evidence = nullptr);
+		/** Consume first-use reset only after the renderer commits the complete real transaction. */
+		void AcknowledgePresentedFeatures(std::uint32_t slotMask);
 		bool ResetFeature(std::uint32_t a_slot);
 		bool ResetFeatures();
 		/** Releases features and parameter bindings after the caller drains both APIs.
@@ -164,8 +171,19 @@ namespace NeuralRendering
 		[[nodiscard]] std::uint64_t SuccessfulFrames() const;
 		[[nodiscard]] std::uint32_t LastPathProxyHits() const;
 		[[nodiscard]] bool LastPathProxyInstalled() const;
+
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		struct LifecycleCounts
+		{
+			std::uint64_t creates = 0, releases = 0;
+		};
+		/** Monotonic native-call counts for cache/prewarm comparisons. */
+		[[nodiscard]] LifecycleCounts GetLifecycleCounts() const;
+#endif
 		/** Resident handles only; NVIDIA does not expose their allocation byte size. */
 		[[nodiscard]] std::uint32_t GetResidentFeatureMask() const;
+		/** Checks creation compatibility without changing a resident handle. */
+		[[nodiscard]] bool HasCompatibleFeature(std::uint32_t slot, const NativeEvaluationLayout&, bool providerBlending) const;
 
 	private:
 		struct FeatureConfiguration
@@ -196,6 +214,9 @@ namespace NeuralRendering
 
 		Runtime() = default;
 
+		bool PrepareFeatureLocked(ID3D12GraphicsCommandList*, std::uint32_t,
+			const NativeEvaluationLayout&, ID3D12Resource*, ID3D12Resource*, bool,
+			RuntimeExecutionEvidence*);
 		bool ProbeLocked(const std::filesystem::path& a_explicitPath);
 		bool ResetFeatureLocked(std::uint32_t a_slot);
 		bool ResetFeaturesLocked(bool a_stopOnFailure = false);
@@ -222,6 +243,10 @@ namespace NeuralRendering
 		ParameterCoreExports parameterCoreExports_{};
 		std::array<void*, kFeatureSlotCount> featureHandles_{};
 		std::array<FeatureConfiguration, kFeatureSlotCount> featureConfigurations_{};
+		std::atomic<std::uint32_t> firstEvaluationResetMask_{ 0 };
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		LifecycleCounts lifecycleCounts_{};
+#endif
 		RuntimeStatus status_ = RuntimeStatus::NotProbed;
 		RuntimeTrust trust_ = RuntimeTrust::Unknown;
 		RuntimeFailureStage failureStage_ = RuntimeFailureStage::None;
