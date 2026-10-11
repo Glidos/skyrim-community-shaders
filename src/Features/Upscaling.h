@@ -327,7 +327,7 @@ public:
 	static constexpr float kFoveatedManualOffsetMin = FoveatedMaskCalibration::kMinimumOffset;
 	static constexpr float kFoveatedManualOffsetMax = FoveatedMaskCalibration::kMaximumOffset;
 	static constexpr float kFoveatedBlendFeatherMin = 0.0f;
-	static constexpr float kFoveatedBlendFeatherMax = 0.10f;
+	static constexpr float kFoveatedBlendFeatherMax = FoveatedCommon::kMaximumFeather;
 	static constexpr float kPeripheryTAAOuterScaleMin = FoveatedCommon::kCenterScaleMin;
 	static constexpr float kPeripheryTAAOuterScaleMax = 1.0f;
 	// Explicit profile changes remain blocked while RaceSex owns presentation or its handoff tail.
@@ -561,6 +561,7 @@ public:
 			NeuralRendering::CharacterMaskTestMode::Authored);
 		float foveatedCenterArea = 0.3f;
 		float foveatedOuterBlendFeather = FoveatedCommon::kCenterFeather;
+		bool foveatedDisableOuterFeather = false;
 		float foveatedCenterHorizontalScale = 1.0f;
 		bool foveatedBlendCurveEnabled = false;
 		float foveatedBlendFalloff = 1.0f;

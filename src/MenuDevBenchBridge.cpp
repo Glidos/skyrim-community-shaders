@@ -125,7 +125,7 @@ namespace
 				.foveatedVendorDispatch = settings.foveatedVendorDispatch,
 				.fovOnlyCalibrated = FoveatedMaskCalibration::HasFovOnlySetup(settings),
 				.foveatedCenterArea = settings.foveatedCenterArea,
-				.foveatedOuterFeather = settings.foveatedOuterBlendFeather,
+				.foveatedOuterFeather = FoveatedCommon::GetOuterFeather(settings.foveatedOuterBlendFeather, settings.foveatedDisableOuterFeather),
 				.peripheryTAAEnabled = settings.periphery_taa_enable,
 				.peripheryTAACenterArea = settings.periphery_taa_center_area,
 				.peripheryTAAOuterScale = settings.periphery_taa_outer_scale,
@@ -221,9 +221,9 @@ namespace
 		}
 		if (!MenuDevBenchPreflightPolicy::NearlyEqual(
 				settings.foveatedCenterArea,
-				MenuDevBenchPreflightPolicy::FovOnlyFixtureScale(settings.foveatedOuterBlendFeather))) {
+				MenuDevBenchPreflightPolicy::FovOnlyFixtureScale(FoveatedCommon::GetOuterFeather(settings.foveatedOuterBlendFeather, settings.foveatedDisableOuterFeather)))) {
 			settings.foveatedCenterArea =
-				static_cast<float>(MenuDevBenchPreflightPolicy::FovOnlyFixtureScale(settings.foveatedOuterBlendFeather));
+				static_cast<float>(MenuDevBenchPreflightPolicy::FovOnlyFixtureScale(FoveatedCommon::GetOuterFeather(settings.foveatedOuterBlendFeather, settings.foveatedDisableOuterFeather)));
 			changes.push_back("foveated_center_area");
 		}
 		if (!settings.periphery_taa_enable) {

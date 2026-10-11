@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../Utils/Finite.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -16,6 +18,7 @@ namespace FoveatedCommon
 	constexpr float kCenterScaleMax = 1.0f;
 	constexpr float kCenterFeather = 0.05f;
 	constexpr float kMinimumFeather = 1e-4f;
+	constexpr float kMaximumFeather = 0.1f;
 	constexpr float kCenterHorizontalScaleMin = 1.0f;
 	constexpr float kCenterHorizontalScaleMax = 2.0f;
 	constexpr float kFullCoverageThreshold = 0.999f;
@@ -81,6 +84,20 @@ namespace FoveatedCommon
 	inline bool IsActiveCoverage(float a_centerScale)
 	{
 		return ClampCenterScale(a_centerScale) < kFullCoverageThreshold;
+	}
+
+	/** Validates the configured fade while retaining a saved zero-width preference. */
+	inline float ClampBlendFeather(float feather)
+	{
+		return Util::ClampFinite(feather, 0.0f, kMaximumFeather, kCenterFeather);
+	}
+
+	/** Resolves the saved outer fade independently of the menu's debug visibility. */
+	inline float GetOuterFeather(float feather, bool disabled = false)
+	{
+		if (disabled)
+			return 0.0f;
+		return std::max(ClampBlendFeather(feather), kMinimumFeather);
 	}
 
 	inline float ClampCenterHorizontalScale(float value)

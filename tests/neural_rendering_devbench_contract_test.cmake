@@ -915,8 +915,8 @@ string(JSON
     then
     anyOf
 )
-if(NOT _descriptor_configure_field_count EQUAL 17)
-    message(FATAL_ERROR "foveation_configure schema must require at least one of 17 controls")
+if(NOT _descriptor_configure_field_count EQUAL 18)
+    message(FATAL_ERROR "foveation_configure schema must require at least one of 18 controls")
 endif()
 
 string(JSON _gap_status_types LENGTH "${_descriptor_json}" outputSchema properties foveation properties binocularCoverage properties hasGap type)
@@ -944,10 +944,27 @@ string(JSON _binocular_gap_type GET "${_descriptor_json}" inputSchema properties
 if(NOT _binocular_gap_type STREQUAL "boolean")
     message(FATAL_ERROR "Binocular diagnostic overlay must accept an explicit boolean")
 endif()
+string(JSON _disable_outer_type GET "${_descriptor_json}" inputSchema properties disableOuterFeather type)
+string(JSON _disable_outer_default GET "${_descriptor_json}" inputSchema properties disableOuterFeather default)
+string(JSON _disable_outer_status GET "${_descriptor_json}" outputSchema properties foveation properties settings properties disableOuterFeather type)
+if(NOT _disable_outer_type STREQUAL "boolean" OR _disable_outer_default OR NOT _disable_outer_status STREQUAL "boolean")
+    message(FATAL_ERROR "The saved outer-fade experiment must default off and expose its active preference")
+endif()
+foreach(_saved_outer_contract IN ITEMS
+    [[OP(foveatedDisableOuterFeather)]]
+    [[o_json.erase("foveatedDisableOuterFeather");]]
+    [[if (globals::state && globals::state->IsDeveloperMode()) {]]
+    [[Util::Widgets::Checkbox("Disable Outer FOV Feather", &settings.foveatedDisableOuterFeather);]]
+)
+    string(FIND "${_upscaling}" "${_saved_outer_contract}" _outer_contract_position)
+    if(_outer_contract_position EQUAL -1)
+        message(FATAL_ERROR "Outer-fade persistence or debug visibility contract missing: ${_saved_outer_contract}")
+    endif()
+endforeach()
 string(JSON _outer_feather_min GET "${_descriptor_json}" inputSchema properties fovOnlyOuterFeather minimum)
 string(JSON _outer_feather_max GET "${_descriptor_json}" inputSchema properties fovOnlyOuterFeather maximum)
 string(JSON _scaling_conflicts LENGTH "${_descriptor_json}" inputSchema allOf 1 then allOf 0 then not anyOf)
-if(NOT _outer_feather_min EQUAL 0 OR NOT _outer_feather_max EQUAL 0.1 OR NOT _scaling_conflicts EQUAL 11)
+if(NOT _outer_feather_min EQUAL 0 OR NOT _outer_feather_max EQUAL 0.1 OR NOT _scaling_conflicts EQUAL 12)
     message(FATAL_ERROR "Outer feather bounds and automatic/manual exclusions must match the runtime contract")
 endif()
 string(JSON _calibrate_true GET "${_descriptor_json}" inputSchema properties calibrateMasks const)
@@ -3196,6 +3213,7 @@ set(_foveation_configuration_fields
     peripheryTaaEnabled
     fovOnlyCenterScale
     fovOnlyOuterFeather
+    disableOuterFeather
     peripheryTaaCenterScale
     peripheryTaaOuterScale
     centerHorizontalScale

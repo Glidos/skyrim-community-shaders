@@ -49,6 +49,7 @@ struct Upscaling
 		uint32_t neuralRenderingMode = 2;
 		float foveatedCenterArea = 0.6f, periphery_taa_center_area = 0.3f;
 		float foveatedOuterBlendFeather = FoveatedCommon::kCenterFeather;
+		bool foveatedDisableOuterFeather = false;
 		FoveatedMaskCalibration::Reference foveatedCalibrationReference;
 		float foveatedCenterHorizontalScale = 1.1f;
 		float foveatedLeftEyeMaskOffsetX = 0, foveatedLeftEyeMaskOffsetY = 0;

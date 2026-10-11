@@ -127,6 +127,13 @@ namespace globals::features
 	} upscaling;
 }
 
+template <class F>
+struct ScopeExit
+{
+	F callback;
+	~ScopeExit() { callback(); }
+};
+
 struct Upscaling
 {
 	enum class UpscaleMethod
@@ -147,6 +154,7 @@ struct Upscaling
 		uint32_t neuralRenderingInsertionPoint = 0, neuralRenderingMode = 0;
 		float foveatedCenterArea = 0.8f, periphery_taa_center_area = 0.3f;
 		float foveatedOuterBlendFeather = 0.05f, periphery_taa_outer_scale = 0.9f, periphery_taa_center_blend_feather = 0.05f;
+		bool foveatedDisableOuterFeather = false;
 		FoveatedMaskCalibration::Reference foveatedCalibrationReference;
 		float foveatedAutomaticMaskScaling = 100.0f, foveatedCenterHorizontalScale = 1.0f;
 		float foveatedLeftEyeMaskOffsetX = 0, foveatedLeftEyeMaskOffsetY = 0;
@@ -164,7 +172,13 @@ struct Upscaling
 	unsigned historyResets = 0, invalidations = 0;
 	void RequestHistoryReset() { ++historyResets; }
 	void InvalidateFrameScopedUpscalingState() { ++invalidations; }
-	static bool HasSameNeuralRenderingSettingsKey(const Settings& a, const Settings& b) { return a == b; }
+	static bool HasSameNeuralRenderingSettingsKey(const Settings& a, const Settings& b)
+	{
+		if (!a.neuralRenderingEnabled && !b.neuralRenderingEnabled)
+			return a.neuralRenderingMode == b.neuralRenderingMode && a.neuralRenderingFovOnly == b.neuralRenderingFovOnly &&
+			       a.neuralRenderingRenderscaleFov == b.neuralRenderingRenderscaleFov;
+		return a == b;
+	}
 	static bool ApplyNeuralRenderingFovConstraint(Settings&) noexcept;
 	static bool IsNeuralRenderingEnabled(const Settings&) noexcept;
 	std::optional<float> pendingFoveatedMaskScaling;
@@ -178,6 +192,7 @@ struct Upscaling
 	void DrawPeripheryTAAControl();
 	std::string foveatedCalibrationMessage;
 	void DrawFoveatedCalibration();
+	void EditOuterFeatherFromMenu(bool disabled, bool fullEye = false);
 	bool PrepareFoveatedMaskCalibration(Settings& candidate, bool, float percent, std::string&) const
 	{
 		candidate.foveatedCenterArea = 0.6f;
@@ -189,7 +204,7 @@ struct Upscaling
 
 float GetNormalFoveatedBlendFeather(const Upscaling::Settings& settings, bool)
 {
-	return std::max(settings.foveatedOuterBlendFeather, FoveatedCommon::kMinimumFeather);
+	return FoveatedCommon::GetOuterFeather(settings.foveatedOuterBlendFeather, settings.foveatedDisableOuterFeather);
 }
 json NeuralRenderingStatusJson(const Upscaling& upscaling)
 {
@@ -213,6 +228,46 @@ void SetFovOnlySetup(Upscaling& upscaling)
 	reference.version = 1;
 	reference.leftToRight = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
 	reference.feather = 0.05f;
+}
+
+void CheckOuterFeatherMenuTransactions()
+{
+	auto& renderer = NeuralRendering::Renderer::Instance();
+	for (bool taa : { false, true }) {
+		for (float feather : { 0.0f, 0.0001f, 0.05f }) {
+			renderer = {};
+			Upscaling upscaling;
+			SetFovOnlySetup(upscaling);
+			upscaling.settings.foveatedOuterBlendFeather = feather;
+			upscaling.settings.foveatedCalibrationReference.feather = FoveatedCommon::GetOuterFeather(feather);
+			upscaling.settings.periphery_taa_enable = taa;
+			NeuralRendering::NormalizeRenderingCoverage(upscaling.settings, true);
+			const auto reference = upscaling.settings.foveatedCalibrationReference;
+			for (bool disabled : { true, false }) {
+				const auto resets = upscaling.historyResets;
+				upscaling.EditOuterFeatherFromMenu(disabled);
+				Require(upscaling.historyResets == resets + 1,
+					"Menu outer-edge changes must explicitly reset history even at the minimum width with NR off");
+				Require(upscaling.settings.foveatedDisableOuterFeather == disabled && upscaling.settings.periphery_taa_enable == taa &&
+							upscaling.settings.foveatedCalibrationReference == reference,
+					"Menu toggle must preserve calibration and the selected TAA mode");
+				upscaling.EditOuterFeatherFromMenu(disabled);
+				Require(upscaling.historyResets == resets + 1, "Unchanged menu controls must not reset history every frame");
+			}
+		}
+	}
+	Upscaling rejected;
+	SetFovOnlySetup(rejected);
+	rejected.settings.neuralRenderingEnabled = true;
+	NeuralRendering::NormalizeRenderingCoverage(rejected.settings, true);
+	const auto saved = rejected.settings;
+	renderer = {};
+	renderer.quarantined = true;
+	renderer.resetSucceeds = false;
+	rejected.EditOuterFeatherFromMenu(true, true);
+	Require(rejected.settings == saved && !Util::Text::warning.empty(),
+		"Unsafe menu transitions must retain the toggle and the entire saved fit");
+	renderer = {};
 }
 
 void CheckFoveationTransactions()
@@ -286,6 +341,20 @@ void CheckFoveationTransactions()
 			"An unchanged preview request must retain the normal no-op contract");
 	}
 	renderer = {};
+	Upscaling hardBoundary;
+	SetFovOnlySetup(hardBoundary);
+	hardBoundary.settings.periphery_taa_enable = true;
+	for (bool disabled : { true, false }) {
+		FoveationConfigurationRequest toggle;
+		toggle.disableOuterFeather = disabled;
+		const auto savedReference = hardBoundary.settings.foveatedCalibrationReference;
+		const auto response = ApplyFoveationConfiguration(hardBoundary, toggle, "foveation_configure", true);
+		Require(response.at("ok") == true && response.at("settingsChanged") == true &&
+					hardBoundary.settings.foveatedDisableOuterFeather == disabled &&
+					hardBoundary.settings.periphery_taa_enable && hardBoundary.settings.foveatedCalibrationReference == savedReference,
+			"The saved outer-fade toggle must retain TAA and calibration in both directions");
+	}
+	renderer = {};
 	Upscaling uncalibrated;
 	FoveationConfigurationRequest request;
 	request.peripheryTaaEnabled = true;
@@ -297,6 +366,7 @@ void CheckFoveationTransactions()
 
 int main()
 {
+	CheckOuterFeatherMenuTransactions();
 	CheckFoveationTransactions();
 	auto& renderer = NeuralRendering::Renderer::Instance();
 	for (const bool isVR : { false, true }) {

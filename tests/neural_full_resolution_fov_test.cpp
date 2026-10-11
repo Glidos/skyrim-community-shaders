@@ -4,6 +4,7 @@ struct float2
 };
 using uint = unsigned;
 
+#include "Features/Upscaling/FoveatedMaskCalibration.h"
 #include "Features/Upscaling/FoveatedRegionPlan.h"
 #include "Features/Upscaling/NeuralRendering/PipelinePolicy.h"
 #include "Features/Upscaling/NeuralRendering/Runtime.h"
@@ -43,6 +44,7 @@ struct Upscaling
 		float foveatedCenterArea = 0.50f, periphery_taa_center_area = 0.35f, periphery_taa_outer_scale = 0.8f;
 		float foveatedCenterHorizontalScale = 1.1f;
 		float foveatedOuterBlendFeather = FoveatedCommon::kCenterFeather;
+		bool foveatedDisableOuterFeather = false;
 		float foveatedLeftEyeMaskOffsetX = 0.0f, foveatedLeftEyeMaskOffsetY = 0.0f;
 		float foveatedRightEyeMaskOffsetX = 0.0f, foveatedRightEyeMaskOffsetY = 0.0f;
 		float periphery_taa_center_blend_feather = 0.03f;
@@ -124,6 +126,34 @@ int main()
 				"Final-LDR NR must retain its wider independent support when needed");
 			CheckSharedPlan(upscaling);
 		}
+		upscaling.settings.foveatedOuterBlendFeather = 0.05f;
+		upscaling.settings.foveatedDisableOuterFeather = true;
+		Require(GetNormalFoveatedBlendFeather(upscaling.settings, false) == 0.0f &&
+					GetNormalFoveatedBlendFeather(upscaling.settings, true) == 0.03f,
+			"Disabling the outer fade must preserve an inner FOV-to-TAA transition");
+		Require(GetFoveatedReconstructionSupportFeather(upscaling.settings, 0.0f, true) == 0.0f,
+			"Shared FOV NR cannot restore an outer fade during the hard-boundary experiment");
+		for (bool taa : { false, true }) {
+			upscaling.settings.periphery_taa_enable = taa;
+			CheckSharedPlan(upscaling);
+			Require(upscaling.foveatedRectCache.centerFeather == 0.0f,
+				"Both shared profiles must plan an exact hard outer boundary");
+		}
+		const FoveatedMaskCalibration::Projection identity{ 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+		const auto reference = CaptureFoveatedMaskReference(upscaling.settings, identity);
+		Require(reference.outer.scale == upscaling.settings.foveatedCenterArea && reference.feather == 0.05f,
+			"Hard-edge capture must use the actual outer support while preserving configured-fade compatibility");
+		auto fittingReference = reference;
+		fittingReference.feather = GetNormalFoveatedBlendFeather(upscaling.settings, false);
+		for (float percent : { 70.0f, 100.0f, 130.0f }) {
+			const auto fit = FoveatedMaskCalibration::Solve(fittingReference, percent);
+			Require(fit.has_value(), "Saved hard-edge references must support automatic scaling");
+			const auto coverage = FoveatedMaskCalibration::CheckCoverage(reference, percent, fit->geometry,
+				fit->geometry.scale, fit->fullImage, false);
+			Require(coverage.available && !coverage.hasGap, "A scaled hard-edge fit must retain complete full-strength coverage");
+		}
+		upscaling.settings.periphery_taa_enable = false;
+		upscaling.settings.foveatedDisableOuterFeather = false;
 		upscaling.settings.foveatedOuterBlendFeather = 0.01f;
 		const auto narrow = upscaling.GetActiveUpscalingFoveatedProfile();
 		Require(narrow.sharedVisibleFeather < baseline.sharedVisibleFeather,

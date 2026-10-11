@@ -64,8 +64,19 @@ namespace
 			float foveatedCenterArea = 0.6f, foveatedOuterBlendFeather = 0.05f;
 			float periphery_taa_center_area = 0.3f, periphery_taa_outer_scale = 0.8f, periphery_taa_center_blend_feather = 0.02f;
 			bool periphery_taa_enable = true;
+			bool foveatedDisableOuterFeather = false;
 			Reference foveatedCalibrationReference;
 		} settings;
+		for (float invalid : { -1.0f, 1.0f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN() }) {
+			const auto configured = FoveatedCommon::ClampBlendFeather(invalid);
+			Require(std::isfinite(configured) && configured >= 0 && configured <= FoveatedCommon::kMaximumFeather,
+				"Configured feather sanitization must keep all consumers within their shared bounds");
+			Require(FoveatedCommon::GetOuterFeather(invalid, true) == 0,
+				"The hard boundary must remain exact even for invalid saved feather values");
+		}
+		Require(FoveatedCommon::ClampBlendFeather(0) == 0 &&
+					FoveatedCommon::GetOuterFeather(0) == FoveatedCommon::kMinimumFeather,
+			"Configured zero and the enabled outer fade minimum have distinct ownership");
 		InheritFovOnlyBoundary(settings);
 		Require(!settings.periphery_taa_enable, "Uncalibrated saved TAA must fall back to FOV only");
 		for (const float outer : { 0.25f, 0.6f, 0.85f, 0.95f }) {
@@ -90,9 +101,9 @@ namespace
 					Require(settings.periphery_taa_center_blend_feather == feather, "TAA must inherit FOV-only feathering");
 					for (const float horizontal : { 1.0f, 1.8f }) {
 						for (const float offset : { -0.3f, 0.0f, 0.3f }) {
-							const auto original = FoveatedMaskVisualization::MeasureCoverage(outer, feather, horizontal, offset, 0.04f, false, 1.0f);
+							const auto original = FoveatedMaskVisualization::MeasureCoverage(outer, FoveatedCommon::GetOuterFeather(feather), horizontal, offset, 0.04f, false, 1.0f);
 							const auto inherited = FoveatedMaskVisualization::MeasureCoverage(settings.periphery_taa_center_area,
-								settings.periphery_taa_center_blend_feather, horizontal, offset, 0.04f, true, settings.periphery_taa_outer_scale);
+								GetInnerFeather(settings), horizontal, offset, 0.04f, true, settings.periphery_taa_outer_scale);
 							Require(std::abs(original.totalPercent - inherited.totalPercent) < 0.0001f,
 								"Inherited outer coverage must remain equal across centre sizes, clipping and wide feather support");
 						}
@@ -100,6 +111,33 @@ namespace
 				}
 			}
 		}
+		settings.foveatedCenterArea = 0.6f;
+		settings.foveatedOuterBlendFeather = 0.05f;
+		settings.foveatedCalibrationReference.feather = 0.05f;
+		const auto savedReference = settings.foveatedCalibrationReference;
+		for (bool disabled : { true, false, true }) {
+			settings.foveatedDisableOuterFeather = disabled;
+			settings.periphery_taa_enable = true;
+			settings.periphery_taa_center_area = 0.3f;
+			InheritFovOnlyBoundary(settings);
+			Require(settings.periphery_taa_enable && settings.foveatedCalibrationReference == savedReference,
+				"Outer fade experiments must preserve calibrated TAA availability and saved scaling references");
+			Require(std::abs(settings.periphery_taa_outer_scale - (disabled ? 0.6f : 0.7f)) < 1e-6f &&
+						GetInnerFeather(settings) == 0.05f && settings.periphery_taa_center_blend_feather == 0.05f,
+				"Only outer support changes; the inner transition and configured width stay intact");
+			settings.periphery_taa_center_area = 0.58f;
+			InheritFovOnlyBoundary(settings);
+			Require(!disabled || settings.periphery_taa_center_area + 2 * GetInnerFeather(settings) <= settings.periphery_taa_outer_scale,
+				"A narrow inner transition must remain within the hard outer boundary");
+			settings.periphery_taa_center_area = 0.5999f;
+			InheritFovOnlyBoundary(settings);
+			Require(!disabled || GetInnerFeather(settings) == 0,
+				"A sub-minimum transition must not acquire the shader's minimum outside the hard boundary");
+			settings.periphery_taa_center_area = settings.foveatedCenterArea;
+			InheritFovOnlyBoundary(settings);
+			Require(!disabled || GetInnerFeather(settings) == 0, "No TAA ring must not reintroduce outer feathering");
+		}
+		settings.foveatedDisableOuterFeather = false;
 		settings.foveatedCalibrationReference.peripheryTaa = true;
 		Require(!HasFovOnlySetup(settings), "A legacy TAA reference does not prove FOV-only setup");
 		settings.foveatedCalibrationReference.peripheryTaa = false;

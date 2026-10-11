@@ -379,7 +379,7 @@ void TestSharedFeather()
 	gi.settings.EnableFoveated = true;
 	gi.settings.ExperimentalOCUEffectFoveation = false;
 	shadows.bendSettings.EnableFoveated = 1;
-	for (float feather : { .05f, .0001f, .1f, .01f, .0100005f, .05f }) {
+	for (float feather : { .05f, .0001f, .1f, .01f, .0100005f, .05f, .0f }) {
 		up.testProfile.sharedVisibleFeather = feather;
 		Require(ShaderDetailFeather(up.testProfile) == feather && SsgiBufferFeather() == feather,
 			"Lighting and SSGI shader constants must follow the active shared outer feather");

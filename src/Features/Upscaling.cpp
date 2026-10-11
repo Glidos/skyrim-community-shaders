@@ -384,6 +384,7 @@ namespace FSRTemporalTuningPolicy
 	OP(neuralRenderingSingleSubrectScale)        \
 	OP(neuralRenderingBlendFeather)              \
 	OP(foveatedOuterBlendFeather)                \
+	OP(foveatedDisableOuterFeather)              \
 	OP(foveatedCenterArea)                       \
 	OP(foveatedCenterHorizontalScale)            \
 	OP(foveatedBlendCurveEnabled)                \
@@ -695,10 +696,6 @@ namespace
 
 	constexpr float kPeripheryTAAOuterScaleMin = Upscaling::kPeripheryTAAOuterScaleMin;
 	constexpr float kPeripheryTAAOuterScaleMax = Upscaling::kPeripheryTAAOuterScaleMax;
-	constexpr float kPeripheryTAACenterBlendFeatherMin =
-		Upscaling::kFoveatedBlendFeatherMin;
-	constexpr float kPeripheryTAACenterBlendFeatherMax =
-		Upscaling::kFoveatedBlendFeatherMax;
 	constexpr float kDynamicResolutionUpscalingScaleThreshold = 0.99f;
 	// An active-to-native relatch keeps the last known-good presentation latch
 	// until physical native targets converge. Only the synchronous engine-create
@@ -4883,9 +4880,7 @@ Outer boundary, shape, eye positions and feathering are inherited from FOV only.
 
 	float ClampPeripheryTAACenterBlendFeather(float value)
 	{
-		if (!std::isfinite(value))
-			return FoveatedCommon::kCenterFeather;
-		return std::clamp(value, kPeripheryTAACenterBlendFeatherMin, kPeripheryTAACenterBlendFeatherMax);
+		return FoveatedCommon::ClampBlendFeather(value);
 	}
 
 	float ClampFoveatedBlendFeather(float value)
@@ -4897,10 +4892,9 @@ Outer boundary, shape, eye positions and feathering are inherited from FOV only.
 		const Upscaling::Settings& settings,
 		bool usePeripheryTAAPath)
 	{
-		return usePeripheryTAAPath ?
-		           ClampPeripheryTAACenterBlendFeather(
-					   settings.periphery_taa_center_blend_feather) :
-		           std::max(FoveatedCommon::kMinimumFeather, ClampFoveatedBlendFeather(settings.foveatedOuterBlendFeather));
+		if (!usePeripheryTAAPath)
+			return FoveatedCommon::GetOuterFeather(settings.foveatedOuterBlendFeather, settings.foveatedDisableOuterFeather);
+		return FoveatedMaskCalibration::GetInnerFeather(settings);
 	}
 
 	bool UsesFinalLdrNeuralBlend(const Upscaling::Settings& settings)
@@ -4918,7 +4912,7 @@ Outer boundary, shape, eye positions and feathering are inherited from FOV only.
 		bool allowFinalLdrNeural)
 	{
 		const bool finalLdrNeuralRequested =
-			allowFinalLdrNeural && UsesFinalLdrNeuralBlend(settings);
+			allowFinalLdrNeural && !settings.foveatedDisableOuterFeather && UsesFinalLdrNeuralBlend(settings);
 		return finalLdrNeuralRequested ?
 		           std::max(
 					   ClampFoveatedBlendFeather(normalBlendFeather),
@@ -5475,6 +5469,7 @@ Outer boundary, shape, eye positions and feathering are inherited from FOV only.
 			NeuralRendering::CharacterMaskTestMode::Authored);
 		settings.foveatedCenterArea = 0.3f;
 		settings.foveatedOuterBlendFeather = FoveatedCommon::kCenterFeather;
+		settings.foveatedDisableOuterFeather = false;
 		settings.foveatedCenterHorizontalScale = 1.0f;
 		settings.foveatedBlendCurveEnabled = false;
 		settings.foveatedBlendFalloff = FoveatedBlendPolicy::NeutralFalloff;
@@ -5550,6 +5545,7 @@ Outer boundary, shape, eye positions and feathering are inherited from FOV only.
 		o_json.erase("neuralCharacterMaskTestMode");
 		o_json.erase("foveatedCenterArea");
 		o_json.erase("foveatedOuterBlendFeather");
+		o_json.erase("foveatedDisableOuterFeather");
 		o_json.erase("foveatedCenterHorizontalScale");
 		o_json.erase("foveatedBlendCurveEnabled");
 		o_json.erase("foveatedBlendFalloff");
@@ -6630,6 +6626,7 @@ Outer boundary, shape, eye positions and feathering are inherited from FOV only.
 			return hash;
 
 		add(a_settings.foveatedPeripheryMaskVisualization);
+		add(a_settings.foveatedDisableOuterFeather);
 		const bool peripheryTAARequested = a_settings.periphery_taa_enable;
 		add(peripheryTAARequested);
 		add(a_settings.neuralRenderingEnabled);
@@ -6779,6 +6776,7 @@ Outer boundary, shape, eye positions and feathering are inherited from FOV only.
 		const bool visualizeMask =
 			a_settings.foveatedPeripheryMaskVisualization;
 		add(visualizeMask);
+		add(a_settings.foveatedDisableOuterFeather);
 
 		if (!centralUsesMaskGeometry)
 			addMaskGeometry();
@@ -6845,6 +6843,7 @@ Outer boundary, shape, eye positions and feathering are inherited from FOV only.
 				a_upscaling.IsPeripheryTAAPathActive(a_upscaleMethod);
 			add(peripheryTAAEnabled);
 			add(peripheryTAAPathActive);
+			add(settings.foveatedDisableOuterFeather);
 			addFloat(GetNormalFoveatedBlendFeather(
 				settings,
 				peripheryTAAPathActive));
@@ -19450,9 +19449,9 @@ namespace
 		reference.version = 1;
 		reference.peripheryTaa = false;
 		reference.centerScale = profile.centerScale;
-		reference.feather = feather;
+		reference.feather = FoveatedCommon::GetOuterFeather(candidate.foveatedOuterBlendFeather);
 		reference.fullImage = !FoveatedCommon::IsActiveCoverage(profile.centerScale);
-		const float supportScale = profile.centerScale + 2.0f * std::max(feather, FoveatedCommon::kMinimumFeather);
+		const float supportScale = profile.centerScale + 2.0f * feather;
 		reference.outer.scale = supportScale;
 		reference.outer.horizontalScale = profile.centerHorizontalScale;
 		reference.outer.centers = {
@@ -19523,7 +19522,7 @@ bool Upscaling::PrepareFoveatedMaskCalibration(Settings& a_candidate, bool a_cap
 	if (a_captureReference) {
 		reference = CaptureFoveatedMaskReference(a_candidate, projection);
 	} else {
-		if (!MatchesProfile(reference, false, a_candidate.foveatedCenterArea, GetNormalFoveatedBlendFeather(a_candidate, false))) {
+		if (!MatchesProfile(reference, false, a_candidate.foveatedCenterArea, FoveatedCommon::GetOuterFeather(a_candidate.foveatedOuterBlendFeather))) {
 			a_error = "Fit and calibrate FOV only first.";
 			return false;
 		}
@@ -19532,7 +19531,9 @@ bool Upscaling::PrepareFoveatedMaskCalibration(Settings& a_candidate, bool a_cap
 			return false;
 		}
 	}
-	const auto solution = Solve(reference, a_percent);
+	auto fittingReference = reference;
+	fittingReference.feather = GetNormalFoveatedBlendFeather(a_candidate, false);
+	const auto solution = Solve(fittingReference, a_percent);
 	if (!solution) {
 		a_error = "No safe fit within the current controls. Check the FOV-only outer edges.";
 		return false;
@@ -19566,7 +19567,7 @@ void Upscaling::DrawFoveatedCalibration()
 	bool scaleChanged = false;
 	{
 		const bool compatible = FoveatedMaskCalibration::MatchesProfile(settings.foveatedCalibrationReference,
-			false, settings.foveatedCenterArea, GetNormalFoveatedBlendFeather(settings, false));
+			false, settings.foveatedCenterArea, FoveatedCommon::GetOuterFeather(settings.foveatedOuterBlendFeather));
 		if (!compatible)
 			pendingFoveatedMaskScaling.reset();
 		auto guard = Util::DisableGuard(!compatible);
@@ -19740,8 +19741,18 @@ void Upscaling::DrawFoveatedSettings()
 		if (!HandleNeuralRenderingSettingsTransition(previousSettings, "VR FOV mask geometry")) {
 			settings = previousSettings;
 			Util::Text::WrappedError("NR could not switch FOV coverage; previous settings retained.");
+		} else if (settings.foveatedDisableOuterFeather != previousSettings.foveatedDisableOuterFeather) {
+			RequestHistoryReset();
 		}
 	});
+	if (globals::state && globals::state->IsDeveloperMode()) {
+		Util::Widgets::Checkbox("Disable Outer FOV Feather", &settings.foveatedDisableOuterFeather);
+		if (auto _tt = Util::HoverTooltipWrapper()) {
+			ImGui::TextUnformatted("Uses a hard outer mask boundary. Keeps the blend between the FOV centre and TAA inside that boundary.");
+			ImGui::TextUnformatted("Saved with your settings and remains active in Info mode. The configured feather width is remembered.");
+		}
+		FoveatedMaskCalibration::InheritFovOnlyBoundary(settings);
+	}
 	if (settings.periphery_taa_enable) {
 		const float minimum = FoveatedMaskCalibration::MinimumInnerScale(settings);
 		{
@@ -44031,7 +44042,7 @@ bool Upscaling::DispatchPeripheryTAAPass(ID3D11ShaderResourceView* currentColorS
 	cbData.centerOffset = { centerOffsetX, centerOffsetY };
 	centerScale = ClampFoveatedCenterScale(centerScale);
 	centerHorizontalScale = ClampFoveatedCenterHorizontalScale(centerHorizontalScale);
-	const float centerFeather = ClampPeripheryTAACenterBlendFeather(settings.periphery_taa_center_blend_feather);
+	const float centerFeather = GetNormalFoveatedBlendFeather(settings, true);
 	const float taaOuterScale = ClampPeripheryTAAOuterScaleForCenter(
 		settings.periphery_taa_outer_scale,
 		centerScale);
@@ -66126,7 +66137,7 @@ void Upscaling::UpdateHistoryResetState(UpscaleMethod a_upscaleMethod)
 		foveatedDispatchEnabled && a_upscaleMethod == UpscaleMethod::kDLSS &&
 		UsesFinalLdrNeuralBlend(settings);
 	const float foveatedBlendFalloff = GetFoveatedBlendFalloff();
-	const float peripheryTAACenterBlendFeather = ClampPeripheryTAACenterBlendFeather(settings.periphery_taa_center_blend_feather);
+	const float peripheryTAACenterBlendFeather = GetNormalFoveatedBlendFeather(settings, true);
 	const float peripheryTAAOuterScale = ClampPeripheryTAAOuterScaleForCenter(
 		settings.periphery_taa_outer_scale,
 		foveatedCenterScale);

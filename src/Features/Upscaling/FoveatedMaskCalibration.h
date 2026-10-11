@@ -42,6 +42,7 @@ namespace FoveatedMaskCalibration
 		bool peripheryTaa = false;
 		bool fullImage = false;
 		float centerScale = 0.3f;
+		// Compatibility tracks the configured fade; outer geometry stores the captured support.
 		float feather = FoveatedCommon::kCenterFeather;
 		bool operator==(const Reference&) const = default;
 	};
@@ -119,7 +120,7 @@ namespace FoveatedMaskCalibration
 	[[nodiscard]] inline bool HasFovOnlySetup(const Settings& settings)
 	{
 		return MatchesProfile(settings.foveatedCalibrationReference, false, settings.foveatedCenterArea,
-				   std::max(settings.foveatedOuterBlendFeather, FoveatedCommon::kMinimumFeather)) &&
+				   FoveatedCommon::GetOuterFeather(settings.foveatedOuterBlendFeather)) &&
 		       !settings.foveatedCalibrationReference.fullImage && FoveatedCommon::IsActiveCoverage(settings.foveatedCenterArea);
 	}
 
@@ -128,10 +129,22 @@ namespace FoveatedMaskCalibration
 	[[nodiscard]] inline float MinimumInnerScale(const Settings& settings)
 	{
 		const float visibleScale = FoveatedCommon::ClampCenterScale(settings.foveatedCenterArea);
-		const float feather = std::isfinite(settings.foveatedOuterBlendFeather) ?
-		                          std::clamp(settings.foveatedOuterBlendFeather, FoveatedCommon::kMinimumFeather, 0.1f) :
-		                          FoveatedCommon::kCenterFeather;
+		const float feather = FoveatedCommon::GetOuterFeather(settings.foveatedOuterBlendFeather, settings.foveatedDisableOuterFeather);
 		return visibleScale + 2.0f * feather > 1.0f ? visibleScale : FoveatedCommon::kCenterScaleMin;
+	}
+
+	/** Keeps the centre-to-TAA fade inside the inherited hard outer boundary. */
+	template <class Settings>
+	[[nodiscard]] inline float GetInnerFeather(const Settings& settings)
+	{
+		const float feather = FoveatedCommon::GetOuterFeather(settings.periphery_taa_center_blend_feather);
+		if (!settings.foveatedDisableOuterFeather)
+			return feather;
+		const float available = std::max(0.0f, (FoveatedCommon::ClampCenterScale(settings.periphery_taa_outer_scale) -
+												   FoveatedCommon::ClampCenterScale(settings.periphery_taa_center_area)) *
+												   0.5f);
+		// Sub-minimum fades would be enlarged by the shader and cross the hard boundary.
+		return available < FoveatedCommon::kMinimumFeather ? 0.0f : std::min(feather, available);
 	}
 
 	/** Derive TAA coverage without modifying the FOV-only fit or its reference. */
@@ -139,10 +152,8 @@ namespace FoveatedMaskCalibration
 	inline void InheritFovOnlyBoundary(Settings& settings)
 	{
 		const float visibleScale = FoveatedCommon::ClampCenterScale(settings.foveatedCenterArea);
-		const float feather = std::isfinite(settings.foveatedOuterBlendFeather) ?
-		                          std::clamp(settings.foveatedOuterBlendFeather, 0.0f, 0.1f) :
-		                          FoveatedCommon::kCenterFeather;
-		settings.periphery_taa_outer_scale = std::min(visibleScale + 2.0f * std::max(feather, FoveatedCommon::kMinimumFeather), 1.0f);
+		const float feather = FoveatedCommon::ClampBlendFeather(settings.foveatedOuterBlendFeather);
+		settings.periphery_taa_outer_scale = std::min(visibleScale + 2.0f * FoveatedCommon::GetOuterFeather(feather, settings.foveatedDisableOuterFeather), 1.0f);
 		settings.periphery_taa_center_blend_feather = feather;
 		settings.periphery_taa_center_area = std::clamp(FoveatedCommon::ClampCenterScale(settings.periphery_taa_center_area),
 			MinimumInnerScale(settings), visibleScale);

@@ -47,6 +47,8 @@ float FoveatedComputeNormalizedFeather(float centerScale, float centerFeather, f
 {
 	float2 radii = FoveatedComputeMaskRadii(centerScale, centerHorizontalScale);
 	float baseRadius = max(min(radii.x, radii.y), FOVEATED_CENTER_FEATHER_MIN);
+	if (centerFeather <= 0.0)
+		return 0.0;
 	return max(centerFeather, FOVEATED_CENTER_FEATHER_MIN) / baseRadius;
 }
 
@@ -72,6 +74,8 @@ float FoveatedComputeCenterBlendWeight(float2 eyeUv, float centerScale, float ce
 {
 	float normalizedFeather = FoveatedComputeNormalizedFeather(centerScale, centerFeather, centerHorizontalScale);
 	float maskDistance = FoveatedComputeMaskDistance(eyeUv, centerScale, centerHorizontalScale, centerOffset);
+	if (normalizedFeather <= 0.0)
+		return maskDistance <= 1.0 ? 1.0 : 0.0;
 	return 1.0 - smoothstep(1.0, 1.0 + normalizedFeather, maskDistance);
 }
 

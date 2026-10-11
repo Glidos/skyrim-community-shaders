@@ -96,10 +96,16 @@ int main()
 		auto outer = foveated;
 		outer.foveatedOuterBlendFeather = 0.05f;
 		const auto original = BuildNeuralRenderingSettingsKey(outer);
+		auto hard = outer;
+		hard.foveatedDisableOuterFeather = true;
+		require(BuildNeuralRenderingSettingsKey(hard) != original);
 		outer.foveatedOuterBlendFeather = 0.01f;
 		require(BuildNeuralRenderingSettingsKey(outer) != original);
 		outer.periphery_taa_enable = true;
 		const auto taaKey = BuildNeuralRenderingSettingsKey(outer);
+		hard = outer;
+		hard.foveatedDisableOuterFeather = true;
+		require(BuildNeuralRenderingSettingsKey(hard) != taaKey);
 		outer.foveatedOuterBlendFeather = 0.08f;
 		require(BuildNeuralRenderingSettingsKey(outer) == taaKey);
 	}

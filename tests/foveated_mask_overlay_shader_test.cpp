@@ -157,7 +157,7 @@ namespace
 		for (const Projection projection : { Projection{ 1, 0, 0, 0, 1, 0, 0, 0, 1 },
 				 Projection{ .93, .04, .12, -.02, 1.03, .015, .08, .01, 1 } }) {
 			for (const float percent : { 70.0f, 100.0f, 130.0f }) {
-				for (const float feather : { 0.0001f, 0.05f, 0.1f }) {
+				for (const float feather : { 0.0f, 0.0001f, 0.05f, 0.1f }) {
 					const Reference reference{ .version = 1,
 						.outer = { .scale = 0.6f, .horizontalScale = 1.2f, .centers = { .4f, .48f, .6f, .52f } },
 						.leftToRight = projection,
@@ -252,9 +252,9 @@ namespace
 						for (UINT x = 0; x < kWidth; ++x) {
 							const auto& p = pixels[y * kWidth + x];
 							const float u = (x + 0.5f) / kWidth, v = (y + 0.5f) / kHeight;
-							const float support = 1 + 2 * std::max(geometry[1], 1e-4f) / geometry[0];
+							const float support = 1 + 2 * (geometry[1] <= 0 ? 0.0f : std::max(geometry[1], 1e-4f)) / geometry[0];
 							const bool center = full || FoveatedCommon::MaskDistanceUV(u, v, geometry[0], geometry[2], ox, oy) <= support;
-							const float outer = std::min(1.0f, std::max(geometry[3], geometry[0] + 2 * std::max(geometry[1], 1e-4f)));
+							const float outer = std::min(1.0f, std::max(geometry[3], geometry[0] + 2 * (geometry[1] <= 0 ? 0.0f : std::max(geometry[1], 1e-4f))));
 							const bool inTaa = taa && FoveatedCommon::MaskDistanceUV(u, v, outer, geometry[2], ox, oy) <= 1;
 							if (!center && !inTaa) {
 								Require(IsHatch(p, x, y), "Every gap must retain static 80-percent hatching and scene context, without readout occlusion");

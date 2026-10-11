@@ -24,6 +24,7 @@ extract("${header}" "\tenum class FoveatedUpscalingMode" "\tstatic const char* G
 extract("${source}" "\tconstexpr float kPeripheryTAAOuterScaleMin" "\tconstexpr float kDynamicResolutionUpscalingScaleThreshold" helper_constants)
 extract("${source}" "\tfloat ClampPeripheryTAACenterBlendFeather(" "\tfloat ClampFiniteUnitRange(" helpers)
 extract("${source}" "\tstruct FoveatedMaskProfileParams" "\tfloat FoveatedMaskDistanceUV(" profile_parameters)
+extract("${source}" "\tFoveatedMaskCalibration::Reference CaptureFoveatedMaskReference(" "\n}\n\nFoveatedMaskCalibration::CoverageCheck Upscaling::GetFoveatedBinocularCoverage()" reference_capture)
 extract("${source}" "Upscaling::ActiveUpscalingFoveatedProfile Upscaling::GetActiveUpscalingFoveatedProfile()" "float Upscaling::GetActiveFoveatedSharedVisibleScale()" profile)
 extract("${source}" "bool Upscaling::BuildFoveatedDispatchRects(" "bool Upscaling::GetFoveatedEncodeRegions(" build)
 extract("${source}" "bool Upscaling::PrepareFullResolutionNeuralInputs(" "void Upscaling::PrepareMainFullResolutionNeuralFrame()" prepare)
@@ -54,4 +55,4 @@ endif()
 file(MAKE_DIRECTORY "${OUTPUT_DIRECTORY}")
 file(WRITE "${OUTPUT_DIRECTORY}/neural_full_resolution_fov_types.h" "${constants}\n${rect}\n${cache}\n${profile_type}")
 file(WRITE "${OUTPUT_DIRECTORY}/neural_full_resolution_fov_under_test.h"
-    "${availability_policy}\n${helper_constants}\n${helpers}\n${profile_parameters}\n${profile}\n${build}")
+    "${availability_policy}\n${helper_constants}\n${helpers}\n${profile_parameters}\n${reference_capture}\n${profile}\n${build}")

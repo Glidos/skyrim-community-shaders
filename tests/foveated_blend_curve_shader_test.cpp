@@ -136,6 +136,8 @@ namespace
 					Require(p[0] == p[1], "Neutral curve must equal legacy arithmetic exactly");
 					for (float weight : p)
 						Require(std::isfinite(weight) && weight >= 0 && weight <= 1, "Blend weight out of bounds");
+					if (geometry[1] == 0)
+						Require(p[0] == 0 || p[0] == 1, "A hard boundary must have no fading samples");
 					if (p[0] == 0 || p[0] == 1) {
 						Require(p[2] == p[0] && p[3] == p[0], "Curve must preserve zero/full-weight ownership");
 						inside += p[0] == 1;

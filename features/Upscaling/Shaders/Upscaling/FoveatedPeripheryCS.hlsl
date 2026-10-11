@@ -91,7 +91,7 @@ float2 ClampToSourceRegion(float2 uv, float2 regionMin, float2 regionMax)
 			color.rgb = lerp(color.rgb, tint, kTintAlpha);
 		}
 		if ((!showBinocularGaps || projectionKnown) && !fullCoverage && (inCenter || inTaa)) {
-			const float supportScale = max(centerScale + 2.0 * max(centerFeather, 1e-4), showThreeZoneMask > 0.5 ? taaOuterScale : 0.0);
+			const float supportScale = max(centerScale + 2.0 * max(centerFeather, 0.0), showThreeZoneMask > 0.5 ? taaOuterScale : 0.0);
 			const float distance = FoveatedComputeMaskDistance(uv, centerScale, centerHorizontalScale, centerOffset) * centerScale / supportScale;
 			const float edgePixels = (1.0 - distance) * supportScale * 0.5 * min(OutputDim.y, OutputDim.x * centerHorizontalScale);
 			const float lineWidth = max(2.0, min(OutputDim.x, OutputDim.y) / 700.0);

@@ -139,7 +139,7 @@ foreach(_required_behavior IN ITEMS
     "SetLogLevel(spdlog::level::debug)"
     "settings.foveatedVendorDispatch = true"
     "settings.periphery_taa_enable = true"
-    "FovOnlyFixtureScale(settings.foveatedOuterBlendFeather)"
+    "FovOnlyFixtureScale(FoveatedCommon::GetOuterFeather(settings.foveatedOuterBlendFeather, settings.foveatedDisableOuterFeather))"
     "kPeripheryTAACenterArea"
     "kPeripheryTAAOuterScale"
     "{ \"foliageLightingEnabled\", globals::features::foliageLighting.IsEnabled() }"
@@ -401,6 +401,21 @@ foreach(_index RANGE 0 ${_action_last})
         enum
         ${_index}
     )
+    list(APPEND _schema_actions "${_action}")
+endforeach()
+string(REGEX MATCHALL
+    "\\[\"action\"\\]\\[\"enum\"\\]\\.push_back\\(\"[a-z_]+\"\\)"
+    _appended_actions
+    "${_bridge}"
+)
+foreach(_append IN LISTS _appended_actions)
+    string(REGEX MATCH "\"([a-z_]+)\"\\)" _action_match "${_append}")
+    set(_action "${CMAKE_MATCH_1}")
+    string(FIND "${_bridge}" "if (action == \"${_action}\")" _handler_position)
+    if(_handler_position EQUAL -1)
+        message(FATAL_ERROR "Appended menu action has no direct handler: ${_action}")
+    endif()
+    list(APPEND _accepted_actions "${_action}")
     list(APPEND _schema_actions "${_action}")
 endforeach()
 list(REMOVE_DUPLICATES _accepted_actions)

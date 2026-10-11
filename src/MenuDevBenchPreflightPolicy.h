@@ -37,7 +37,7 @@ namespace MenuDevBenchPreflightPolicy
 	/** Preserve the fixed TAA fixture outline through FOV-only feather ownership. */
 	[[nodiscard]] constexpr double FovOnlyFixtureScale(double feather) noexcept
 	{
-		return kPeripheryTAAOuterScale - 2.0 * (feather < 0.0001 ? 0.0001 : feather);
+		return kPeripheryTAAOuterScale - 2.0 * (feather < 0.0 ? 0.0 : feather);
 	}
 
 	[[nodiscard]] constexpr bool HasRequiredFoveation(const State& a_state) noexcept
