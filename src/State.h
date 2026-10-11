@@ -95,6 +95,8 @@ public:
 
 	bool updateShader = true;
 	bool settingCustomShader = false;
+	// A deferred draw must be withheld if neither compatible pixel variant is ready.
+	bool deferredPixelShaderMissing = false;
 	RE::BSShader* currentShader = nullptr;
 	std::string adapterDescription = "";
 

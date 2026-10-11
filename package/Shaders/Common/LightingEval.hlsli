@@ -172,6 +172,8 @@ void GetIndirectLobeWeights(out IndirectLobeWeights lobeWeights, IndirectContext
 }
 
 #if defined(WETTERNESS)
+#	include "Wetterness/WetternessHighlights.hlsli"
+
 struct WetReflectionParams
 {
 	float modernWeight;
@@ -188,6 +190,7 @@ struct WetnessDirectLightingParams
 	float wetnessFScale;
 	float lightColorScale;
 	float NdotV;
+	float pointLightHighlightReduction;
 };
 
 float GetSkinWetnessOverdriveScale()
@@ -285,14 +288,25 @@ void EvaluateWetnessLighting(float3 wetnessNormal, DirectContext context, float 
 	float NdotH = saturate(dot(N, H));
 	float VdotH = saturate(dot(context.viewDir, H));
 
-	float D = BRDF::D_GGX(roughness, NdotH);
 	float G = BRDF::Vis_SmithJointApprox(roughness, params.NdotV, NdotL);
 	float3 F = BRDF::F_Schlick(params.wetnessF0, VdotH);
 
 	F *= params.wetnessFScale;
 	F = saturate(F);
 
-	float3 wetnessSpecular = D * G * F * NdotL * lightColor;
+	float3 wetnessSpecular;
+	// Keep nighttime distribution and peak compression out of daytime local-light work.
+	[branch] if (params.pointLightHighlightReduction > 0.0)
+	{
+		const float D = Wetterness::GetPointLightDistribution(roughness, NdotH);
+		const float response = D * G * F.x * NdotL;
+		wetnessSpecular = response * Wetterness::GetPointLightHighlightScale(response, params.pointLightHighlightReduction) * lightColor;
+	}
+	else
+	{
+		const float D = BRDF::D_GGX(roughness, NdotH);
+		wetnessSpecular = D * G * F * NdotL * lightColor;
+	}
 
 	lightingOutput.diffuse *= 1 - F;
 	lightingOutput.specular *= 1 - F;

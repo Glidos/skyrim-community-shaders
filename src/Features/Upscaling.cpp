@@ -1979,7 +1979,7 @@ namespace
 	constexpr const char* kFoveatedUpscalingSetupInstructions = R"(1) Select FOV only, then press Automatic Headset Setup.
 2) Turn FOV Mask Visualization on.
 3) Lower Outer Coverage until the yellow-and-black stripes just enter your view. Then increase it slightly until the stripes are no longer visible.
-4) Check with both eyes open. Unequal eye views may need manual fine-tuning using each eye's X/Y sliders. After manual changes, press Calibrate Masks and check again.
+4) Check each eye separately, then with both eyes open. Unequal eye views may need manual fine-tuning using each eye's X/Y sliders. After manual changes, press Calibrate Masks and check again.
 5) When both eyes look clear, click Mask setup finished.
 6) Turn FOV Mask Visualization off and Save settings.
 

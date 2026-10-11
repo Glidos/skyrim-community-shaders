@@ -1795,6 +1795,7 @@ struct WetnessDirectLightState
 	float3 normal;
 	float roughness;
 	float pointLightRoughness;
+	float pointLightHighlightReduction;
 	float detailWeight;
 	WetnessDirectLightingParams params;
 };
@@ -1832,15 +1833,12 @@ WetnessDirectLightState CreateWetnessDirectLightState(
 		return state;
 	}
 
-	// Animated ripple normals can drive a near-mirror GGX lobe across a small HMD
-	// footprint under local lights. Broaden only that point-light lobe in dark scenes;
-	// sunlight, indirect reflections, and non-ripple wet surfaces keep their response.
+	// The climate night weight preserves daytime shading even under dark weather.
+	// At night, protection must persist as animated ripple slopes cross zero.
 	const float darkRippleMask = saturate(raindropRippleMask * pointLightDarkness);
-	const float minDarkRipplePointLightRoughness = 0.18;
-	state.pointLightRoughness = lerp(
-		state.roughness,
-		max(state.roughness, minDarkRipplePointLightRoughness),
-		darkRippleMask);
+	state.pointLightHighlightReduction = saturate(CS_WETNESS_SETTINGS.NightFactor * pointLightDarkness);
+	state.pointLightRoughness = Wetterness::GetPointLightRoughness(
+		state.roughness, darkRippleMask, state.pointLightHighlightReduction);
 
 	// Match the direct-lighting context normalization so the prepared wet params remain
 	// identical when shared across the directional light and both point-light loops.
@@ -2070,7 +2068,9 @@ void ApplyWetnessDirectLightingOutput(
 
 	DirectLightingOutput baseLightingOutput = lightingOutput;
 	float roughness = isPointLight ? wetDirectLightState.pointLightRoughness : wetDirectLightState.roughness;
-	EvaluateWetnessLighting(wetDirectLightState.normal, lightContext, roughness, wetDirectLightState.params, lightingOutput);
+	WetnessDirectLightingParams params = wetDirectLightState.params;
+	params.pointLightHighlightReduction = isPointLight ? wetDirectLightState.pointLightHighlightReduction : 0.0;
+	EvaluateWetnessLighting(wetDirectLightState.normal, lightContext, roughness, params, lightingOutput);
 	ApplyVRLightingAuxiliaryOutputWeight(lightingOutput, baseLightingOutput, wetDirectLightState.detailWeight);
 }
 #	elif defined(WETNESS_EFFECTS)

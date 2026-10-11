@@ -6,6 +6,7 @@
 #include "State.h"
 #include "Utils/UI.h"
 #include "WeatherPicker.h"
+#include "WetternessLightingPolicy.h"
 
 #include <algorithm>
 #include <array>
@@ -2208,6 +2209,12 @@ Wetterness::PerFrame Wetterness::GetCommonBufferData() const
 		lastWeight = 1.0f - currentWeight;
 		fullSkyMode = sky->mode.get() == RE::Sky::Mode::kFull;
 		engineRaining = fullSkyMode && sky->IsRaining();
+		if (fullSkyMode && sky->currentClimate) {
+			const auto& timing = sky->currentClimate->timing;
+			data.NightFactor = WetternessLightingPolicy::NightFactor(sky->currentGameHour,
+				timing.sunrise.begin / 6.0f, timing.sunrise.end / 6.0f,
+				timing.sunset.begin / 6.0f, timing.sunset.end / 6.0f);
+		}
 
 		// Wetness accumulation uses weather-level precipitation data, independent of active precipitation geometry.
 		currentRainingAccum = GetWeatherRainIntensity(currentWeather);

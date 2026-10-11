@@ -145,16 +145,22 @@ struct PixelShader { ID3D11PixelShader* shader; };
 }
 struct State {
     uint32_t modifiedVertexDescriptor = 1, modifiedPixelDescriptor = 2;
-    bool enabled = true;
+    bool enabled = true, deferredPixelShaderMissing = false;
     bool ShaderEnabled(RE::BSShader::Type) const { return enabled; }
 };
 struct Cache {
+    enum class PixelShaderLookup { Draw };
     bool enabled = true;
     RE::BSGraphics::VertexShader* vertex = nullptr;
     RE::BSGraphics::PixelShader* pixel = nullptr;
     bool IsEnabled() const { return enabled; }
     auto GetVertexShader(RE::BSShader&, uint32_t) { return vertex; }
-    auto GetPixelShader(RE::BSShader&, uint32_t) { return pixel; }
+    auto GetPixelShader(RE::BSShader&, uint32_t, PixelShaderLookup) { return pixel; }
+};
+namespace SIE { using ShaderCache = Cache; }
+struct Deferred {
+    bool deferredPass = false, captureReady = true;
+    void InvalidateCharacterCategoryCapture() { captureReady = false; }
 };
 struct Context {
     ID3D11VertexShader* vertex = nullptr;
@@ -166,6 +172,7 @@ struct Flags { bool dirty = false; void set(int) { dirty = true; } };
 namespace globals {
 State stateValue; State* state = &stateValue;
 Cache cacheValue; Cache* shaderCache = &cacheValue;
+Deferred deferredValue; Deferred* deferred = &deferredValue;
 namespace features {
 struct Feature { bool loaded = true; } truePBR, grassLighting;
 }
@@ -204,8 +211,23 @@ int main() {
     assert(globals::d3d::contextValue.vertex == &nativeVS);
     assert(globals::d3d::contextValue.pixel == &nativePS);
     assert(globals::game::vertex == &fixtureNativeVertex);
-    // Compilation can finish after the original stage-binding hooks run.
+    // A ready pixel stage cannot restore native outputs into deferred targets.
     globals::cacheValue.vertex = nullptr;
+    globals::cacheValue.pixel = &customPixel;
+    globals::deferred->deferredPass = true;
+    assert(!BSGrassShader_SetupTechnique::thunk(&shader, 0));
+    assert(!globals::deferred->captureReady);
+    assert(globals::d3d::contextValue.pixel == &customPS);
+    // The next draw succeeds as soon as the matching vertex stage arrives.
+    globals::cacheValue.vertex = &customVertex;
+    assert(BSGrassShader_SetupTechnique::thunk(&shader, 0));
+    assert(globals::game::vertex == &customVertex && globals::game::pixel == &customPixel);
+    globals::deferred->deferredPass = false;
+    globals::cacheValue.vertex = nullptr;
+    assert(BSGrassShader_SetupTechnique::thunk(&shader, 0));
+    assert(globals::d3d::contextValue.pixel == &nativePS);
+    // Compilation can finish after the original stage-binding hooks run.
+    globals::cacheValue.pixel = nullptr;
     publishDuringSetup = true;
     assert(BSGrassShader_SetupTechnique::thunk(&shader, 0));
     assert(globals::d3d::contextValue.vertex == &customVS);
@@ -217,6 +239,9 @@ int main() {
     assert(!BSGrassShader_SetupTechnique::thunk(&shader, 0));
     assert(globals::game::vertex == &fixtureNativeVertex && globals::game::pixel == &fixtureNativePixel);
     nativeReady = true;
+    globals::state->deferredPixelShaderMissing = true;
+    assert(!BSGrassShader_SetupTechnique::thunk(&shader, 0));
+    globals::state->deferredPixelShaderMissing = false;
     globals::features::truePBR.loaded = false;
     assert(BSGrassShader_SetupTechnique::thunk(&shader, 0));
     assert(globals::game::vertex == &fixtureNativeVertex && globals::game::pixel == &fixtureNativePixel);

@@ -2354,7 +2354,7 @@ namespace NeuralRendering
 		{
 			Increment(snapshot_.preparationFailures);
 			auto& failure = snapshot_.lastPreparationFailure;
-			const bool changed = failure.sequence == 0 || failure.detail != detail;
+			const bool changed = failure.detail != detail;
 			failure = { std::move(detail), snapshot_.preparationFailures, args.generation,
 				args.frameId, args.sourceWorldFrame, capturedFrame_, args.featureSlot, args.eyeIndex,
 				GetEnabledCharacterCategoryMask(args.settings), capturedEnabledCategoryMask_ };

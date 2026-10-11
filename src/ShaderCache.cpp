@@ -3422,9 +3422,11 @@ namespace SIE
 	}
 
 	RE::BSGraphics::PixelShader* ShaderCache::GetPixelShader(const RE::BSShader& shader,
-		uint32_t descriptor)
+		uint32_t descriptor, PixelShaderLookup a_lookup)
 	{
 		auto state = globals::state;
+		if (a_lookup == PixelShaderLookup::Draw)
+			state->deferredPixelShaderMissing = false;
 		const bool developerMode = state->IsDeveloperMode();
 		if (globals::game::isVR && strcmp(shader.fxpFilename, "OBBOcclusionTesting") == 0)
 			// use vanilla shader
@@ -3460,14 +3462,24 @@ namespace SIE
 				return it->second.get();
 			}
 		}
-		if (IsSaveLoadSafeModeActive()) {
+		if (a_lookup == PixelShaderLookup::Cached)
 			return nullptr;
+		if (!IsSaveLoadSafeModeActive()) {
+			if (ShouldUseAsyncCompilation()) {
+				compilationSet.Add({ ShaderClass::Pixel, shader, descriptor });
+			} else if (auto* compiled = MakeAndAddPixelShader(shader, descriptor)) {
+				return compiled;
+			}
 		}
 
-		if (ShouldUseAsyncCompilation()) {
-			compilationSet.Add({ ShaderClass::Pixel, shader, descriptor });
-		} else {
-			return MakeAndAddPixelShader(shader, descriptor);
+		auto* deferred = globals::deferred;
+		const auto categoryFlag = GetCharacterCategoryFlag(shader.shaderType.get());
+		if (a_lookup == PixelShaderLookup::Draw && deferred && deferred->deferredPass && categoryFlag) {
+			// Both variants preserve the G-buffer; an AO-only draw cannot author a complete actor mask.
+			deferred->InvalidateCharacterCategoryCapture();
+			auto* fallback = GetPixelShader(shader, descriptor ^ categoryFlag, PixelShaderLookup::Cached);
+			state->deferredPixelShaderMissing = fallback == nullptr;
+			return fallback;
 		}
 
 		return nullptr;

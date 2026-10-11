@@ -211,7 +211,7 @@ namespace SharedData
 		float RainContactWetnessScale;
 
 		float GrassWetnessPhase;
-		float GrassControlPadding;
+		float NightFactor;
 		float GrassWetDarkeningStrength;
 		uint PuddleMaskMode;
 	};
