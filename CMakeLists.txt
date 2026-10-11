@@ -2476,6 +2476,7 @@ if(BUILD_CONTROLLER_TESTS)
         PROPERTIES TIMEOUT 30
     )
 
+    add_controller_test(foveated_headset_calibration_test FoveatedHeadsetCalibration tests/foveated_headset_calibration_test.cpp)
     add_controller_test(foveated_mask_calibration_test FoveatedMaskCalibration tests/foveated_mask_calibration_test.cpp)
     target_link_libraries(
         foveated_mask_calibration_test

@@ -21,7 +21,7 @@ namespace
 	void CheckAutomaticWarnings()
 	{
 		const Projection identity{ 1, 0, 0, 0, 1, 0, 0, 0, 1 };
-		Reference reference{ .version = 1, .outer = { .scale = .4f, .centers = { .25f, .5f, .75f, .5f } }, .leftToRight = identity };
+		Reference reference{ .version = FoveatedMaskCalibration::kReferenceVersion, .outer = { .scale = .4f, .centers = { .25f, .5f, .75f, .5f } }, .leftToRight = identity };
 		const auto manual = CheckCoverage(reference, 100, reference.outer, .4f, false, true, kManualContourTolerance);
 		Require(manual.available && manual.hasGap && manual.uncoveredVertices[0] && manual.uncoveredVertices[1],
 			"Separated manual masks must warn about the shared centre gap");
@@ -36,6 +36,7 @@ namespace
 					!CheckCoverage(reference, 100, featherOnly, fitted->geometry.scale, false, true).hasGap,
 			"Feather-only overlap must not count as full-strength shared coverage");
 		reference.outer.centers = { .5f, .5f, .5f, .5f };
+		reference.innerLimits = { .7f, .3f };
 		const auto aligned = CheckCoverage(reference, 100, reference.outer, .4f, false, true, kManualContourTolerance);
 		Require(aligned.available && !aligned.hasGap, "Aligned manual masks must not warn about contour approximation");
 		// A horizontal view shift gives each eye a different monocular outer strip.
@@ -83,7 +84,7 @@ namespace
 			for (const float feather : { 0.0f, 0.05f, 0.1f }) {
 				settings.foveatedCenterArea = outer;
 				settings.foveatedOuterBlendFeather = feather;
-				settings.foveatedCalibrationReference = { .version = 1,
+				settings.foveatedCalibrationReference = { .version = FoveatedMaskCalibration::kReferenceVersion,
 					.outer = { .scale = outer + 2.0f * std::max(feather, FoveatedCommon::kMinimumFeather) },
 					.leftToRight = { 1, 0, 0, 0, 1, 0, 0, 0, 1 },
 					.feather = std::max(feather, FoveatedCommon::kMinimumFeather) };
@@ -156,13 +157,17 @@ namespace
 		const nlohmann::json saved = reference;
 		Require(nlohmann::json::parse(saved.dump()).get<Reference>() == reference, "Saved outer reference must round-trip exactly");
 		Require(nlohmann::json(Reference{}).get<Reference>() == Reference{}, "Uncalibrated defaults must round-trip");
+		auto legacy = saved;
+		legacy["version"] = 1;
+		legacy.erase("innerLimits");
+		Require(legacy.get<Reference>() == Reference{}, "Legacy calibration must expire without changing manual settings");
 		std::vector<nlohmann::json> corrupt;
-		for (auto version : { nlohmann::json(-1), nlohmann::json(2), nlohmann::json(1.5), nlohmann::json(4294967297ULL) }) {
+		for (auto version : { nlohmann::json(-1), nlohmann::json(3), nlohmann::json(1.5), nlohmann::json(4294967297ULL) }) {
 			auto changed = saved;
 			changed["version"] = version;
 			corrupt.push_back(changed);
 		}
-		for (const char* key : { "outer", "leftToRight", "feather", "peripheryTaa" }) {
+		for (const char* key : { "outer", "leftToRight", "innerLimits", "feather", "peripheryTaa" }) {
 			auto changed = saved;
 			changed.erase(key);
 			corrupt.push_back(changed);
@@ -189,6 +194,11 @@ namespace
 		changed = saved;
 		changed["leftToRight"][0] = true;
 		corrupt.push_back(changed);
+		for (const auto limits : { nlohmann::json{ 1, 0, 0 }, nlohmann::json{ 2, 0 }, nlohmann::json{ true, 0 } }) {
+			changed = saved;
+			changed["innerLimits"] = limits;
+			corrupt.push_back(changed);
+		}
 		for (const auto& json : corrupt) {
 			auto retained = reference;
 			bool rejected = false;
@@ -245,7 +255,7 @@ namespace
 		compressedMoved[2] += 1e-7;
 		Require(!MatchesProjection(compressed, compressedMoved),
 			"Projection drift must stay within the fit margin in both eye mappings");
-		const Reference reference{ .version = 1, .outer = { .scale = .6f }, .leftToRight = saved, .peripheryTaa = true };
+		const Reference reference{ .version = FoveatedMaskCalibration::kReferenceVersion, .outer = { .scale = .6f }, .leftToRight = saved, .peripheryTaa = true };
 		Require(MatchesProfile(reference, true, .3f, .05f), "Unchanged TAA controls must retain calibration");
 		Require(!MatchesProfile(reference, false, .3f, .05f) && !MatchesProfile(reference, true, .4f, .05f) &&
 					!MatchesProfile(reference, true, .3f, .06f),
@@ -299,19 +309,18 @@ namespace
 				"Fit must round-trip through existing manual offset limits");
 		}
 		if (percent == 100.0f && !reference.fullImage) {
-			const auto inverse = *Inverse(reference.leftToRight);
 			for (unsigned eye = 0; eye < 2; ++eye) {
 				for (unsigned i = 0; i <= 512; ++i) {
 					const double angle = -1.5707963267948966 + i * 3.141592653589793 / 512.0;
 					const double cx = reference.outer.centers[eye * 2], cy = reference.outer.centers[eye * 2 + 1];
 					const Point point{ cx + (eye == 0 ? -1 : 1) * reference.outer.scale * reference.outer.horizontalScale * 0.5 * std::sqrt(std::abs(std::cos(angle))),
 						cy + std::copysign(reference.outer.scale * 0.5 * std::sqrt(std::abs(std::sin(angle))), std::sin(angle)) };
-					if (point.x < 0 || point.x > 1 || point.y < 0 || point.y > 1)
-						continue;
-					Require(Covered(reference, *solution, eye, point), "The analytic outward curve must remain covered in its own eye");
-					const auto peer = Project(eye == 0 ? reference.leftToRight : inverse, point);
-					if (peer && peer->x >= 0 && peer->x <= 1 && peer->y >= 0 && peer->y <= 1)
-						Require(Covered(reference, *solution, 1 - eye, *peer), "Every shared outward direction must also be covered in the other eye");
+					if (point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1)
+						Require(Covered(reference, *solution, eye, point), "The analytic outward curve must remain covered in its own eye");
+					const double innerRadius = std::max(0.0, (reference.innerLimits[eye] - cx) * (eye == 0 ? 1.0 : -1.0));
+					const Point inner{ cx + (eye == 0 ? 1 : -1) * innerRadius * std::sqrt(std::abs(std::cos(angle))), point.y };
+					if (inner.x >= 0 && inner.x <= 1 && inner.y >= 0 && inner.y <= 1)
+						Require(Covered(reference, *solution, eye, inner), "The complete nasal curve must have full strength in its own eye");
 				}
 			}
 		}
@@ -324,7 +333,7 @@ int main()
 	CheckAutomaticWarnings();
 	CheckInheritedBoundary();
 	const auto started = std::chrono::steady_clock::now();
-	Reference reference{ .version = 1, .outer = { .scale = 0.6f, .horizontalScale = 1.0f }, .leftToRight = { 1, 0, 0, 0, 1, 0, 0, 0, 1 } };
+	Reference reference{ .version = FoveatedMaskCalibration::kReferenceVersion, .outer = { .scale = 0.6f, .horizontalScale = 1.0f }, .leftToRight = { 1, 0, 0, 0, 1, 0, 0, 0, 1 } };
 	CheckPersistence(reference);
 	CheckClipProjection();
 	CheckReferenceCompatibility();
@@ -397,7 +406,7 @@ int main()
 	const Projection canted{ c + t, 0, -t, t, 1, (c - t - 1) * 0.5, 2 * t, 0, c - t };
 	Require(!Project(canted, { 0, 0 }), "Canted fixture must include a monocular corner behind the peer view");
 	Require(MatchesProjection(canted, canted), "Unchanged canted projections must remain usable");
-	reference = { .version = 1, .outer = { .scale = .6f }, .leftToRight = canted };
+	reference = { .version = FoveatedMaskCalibration::kReferenceVersion, .outer = { .scale = .6f }, .leftToRight = canted };
 	for (float percent : { 70.0f, 100.0f, 130.0f })
 		CheckFit(reference, percent);
 	reference.fullImage = true;
@@ -406,15 +415,16 @@ int main()
 	std::mt19937 random(20261009);
 	const auto range = [&](float low, float high) { return std::uniform_real_distribution<float>(low, high)(random); };
 	for (unsigned sample = 0; sample < 24; ++sample) {
-		reference = { .version = 1, .outer = { .scale = range(.35f, 1.1f), .horizontalScale = range(1, 2), .centers = { range(.2f, .8f), range(.2f, .8f), range(.2f, .8f), range(.2f, .8f) } }, .leftToRight = { 1, range(-.04f, .04f), range(-.2f, .2f), range(-.04f, .04f), 1, range(-.05f, .05f), 0, 0, 1 }, .feather = range(0, .1f) };
+		reference = { .version = FoveatedMaskCalibration::kReferenceVersion, .outer = { .scale = range(.35f, 1.1f), .horizontalScale = range(1, 2), .centers = { range(.2f, .8f), range(.2f, .8f), range(.2f, .8f), range(.2f, .8f) } }, .leftToRight = { 1, range(-.04f, .04f), range(-.2f, .2f), range(-.04f, .04f), 1, range(-.05f, .05f), 0, 0, 1 }, .feather = range(0, .1f) };
 		const auto retained = reference;
 		CheckFit(reference, 100);
 		Require(reference == retained, "Optimization must leave the outer reference immutable");
 	}
 
-	reference = { .version = 1, .outer = { .scale = .4002f, .horizontalScale = 1.0f }, .leftToRight = { 1, 0, 0, 0, 1, 0, 0, 0, 1 }, .peripheryTaa = true, .centerScale = .4f, .feather = 0 };
+	reference = { .version = FoveatedMaskCalibration::kReferenceVersion, .outer = { .scale = .4002f, .horizontalScale = 1.0f }, .leftToRight = { 1, 0, 0, 0, 1, 0, 0, 0, 1 }, .peripheryTaa = true, .centerScale = .4f, .feather = 0 };
 	CheckFit(reference, 100);
-	reference = { .version = 1, .outer = { .scale = 1.1f, .horizontalScale = 2.0f, .centers = { .35f, .5f, .65f, .5f } }, .leftToRight = { 1, 0, 0, 0, 1, 0, 0, 0, 1 }, .peripheryTaa = true, .centerScale = .9f, .feather = .1f };
+	reference = { .version = FoveatedMaskCalibration::kReferenceVersion, .outer = { .scale = 1.1f, .horizontalScale = 2.0f, .centers = { .35f, .5f, .65f, .5f } }, .leftToRight = { 1, 0, 0, 0, 1, 0, 0, 0, 1 }, .peripheryTaa = true, .centerScale = .9f, .feather = .1f };
+	reference.fullImage = true;
 	const auto fullTaa = CheckFit(reference, 100);
 	Require(!fullTaa.fullImage && fullTaa.areaPercent > 99.99f,
 		"A feasible TAA fit covering the entire image must be accepted without changing its centre scale");

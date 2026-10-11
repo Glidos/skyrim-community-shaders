@@ -12,6 +12,7 @@
 
 namespace FoveatedMaskCalibration
 {
+	constexpr uint32_t kReferenceVersion = 2;
 	constexpr float kMinimumOffset = FoveatedCommon::kMaskOffsetMin;
 	constexpr float kMaximumOffset = FoveatedCommon::kMaskOffsetMax;
 	constexpr double kCoverageMargin = 1e-5;
@@ -33,16 +34,17 @@ namespace FoveatedMaskCalibration
 		bool operator==(const Geometry&) const = default;
 	};
 
-	/** Immutable outer-edge reference; inward mask edges are intentionally not constraints. */
+	/** Full-strength outer fit and headset nasal limits; manual inward overlap is not a constraint. */
 	struct Reference
 	{
 		uint32_t version = 0;
 		Geometry outer;
 		Projection leftToRight{};
+		std::array<float, 2> innerLimits{ 1.0f, 0.0f };
 		bool peripheryTaa = false;
 		bool fullImage = false;
 		float centerScale = 0.3f;
-		// Compatibility tracks the configured fade; outer geometry stores the captured support.
+		// Compatibility tracks the configured fade independently of the full-strength outer fit.
 		float feather = FoveatedCommon::kCenterFeather;
 		bool operator==(const Reference&) const = default;
 	};
@@ -96,11 +98,14 @@ namespace FoveatedMaskCalibration
 		const auto finiteRange = [](float value, float minimum, float maximum) {
 			return std::isfinite(value) && value >= minimum && value <= maximum;
 		};
-		if (reference.version != 1 || !Inverse(reference.leftToRight) ||
+		if (reference.version != kReferenceVersion || !Inverse(reference.leftToRight) ||
 			!finiteRange(reference.outer.scale, 0.25f, 1.2f) ||
 			!finiteRange(reference.outer.horizontalScale, 1.0f, 2.0f) ||
 			!finiteRange(reference.centerScale, 0.25f, 1.0f) || !finiteRange(reference.feather, 0.0f, 0.1f))
 			return false;
+		for (float limit : reference.innerLimits)
+			if (!finiteRange(limit, 0.0f, 1.0f))
+				return false;
 		for (float value : reference.outer.centers)
 			if (!finiteRange(value, 0.5f + kMinimumOffset, 0.5f + kMaximumOffset))
 				return false;
@@ -287,13 +292,12 @@ namespace FoveatedMaskCalibration
 	}
 
 	/** Circumscribed support lines preserve the curved outer contour between samples. */
-	inline Polygon OuterHalf(const Reference& reference, unsigned eye)
+	inline Polygon OuterHalf(const Reference& reference, unsigned eye, bool clipToEye = true)
 	{
 		const double cx = reference.outer.centers[eye * 2], cy = reference.outer.centers[eye * 2 + 1];
 		const double rx = reference.outer.scale * reference.outer.horizontalScale * 0.5;
 		const double ry = reference.outer.scale * 0.5;
-		Polygon polygon = reference.fullImage ? Polygon{ { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } } :
-		                                        Polygon{ { cx - rx, cy - ry }, { cx + rx, cy - ry }, { cx + rx, cy + ry }, { cx - rx, cy + ry } };
+		Polygon polygon{ { cx - rx, cy - ry }, { cx + rx, cy - ry }, { cx + rx, cy + ry }, { cx - rx, cy + ry } };
 		if (!reference.fullImage) {
 			constexpr unsigned kSupportLines = 64;
 			for (unsigned i = 0; i < kSupportLines; ++i) {
@@ -303,60 +307,52 @@ namespace FoveatedMaskCalibration
 				polygon = ClipHalfPlane(std::move(polygon), -nx, -ny, support + nx * cx + ny * cy);
 			}
 		}
-		return ClipEye(Clip(std::move(polygon), 0, cx, eye != 0));
+		polygon = Clip(std::move(polygon), 0, cx, eye != 0);
+		return clipToEye ? ClipEye(std::move(polygon)) : polygon;
 	}
 
-	/** Joins outward contours in a common view, filling inward gaps without retaining old overlap. */
+	/** Scale only the captured outer fit; the headset's nose-side bounds stay fixed. */
+	[[nodiscard]] inline Reference ScaleOuterReference(const Reference& reference, float percent)
+	{
+		auto scaled = reference;
+		if (reference.fullImage)
+			scaled.outer = {};
+		scaled.outer.scale *= percent / 100.0f;
+		for (auto& center : scaled.outer.centers)
+			center = 0.5f + (center - 0.5f) * percent / 100.0f;
+		return scaled;
+	}
+
+	/** Complete each eye's curved outer fit to its own headset nasal bound at full strength. */
 	[[nodiscard]] inline std::optional<std::array<Polygon, 2>> BuildTargets(const Reference& reference, float percent)
 	{
 		if (!IsValid(reference) || !std::isfinite(percent) || percent < kMinimumPercent || percent > kMaximumPercent)
 			return std::nullopt;
 		if (reference.fullImage && percent >= 100.0f)
 			return std::array<Polygon, 2>{ Polygon{ { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } }, Polygon{ { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } } };
-		const auto inverse = *Inverse(reference.leftToRight);
-		const double centerW = reference.leftToRight[6] * 0.5 + reference.leftToRight[7] * 0.5 + reference.leftToRight[8];
-		if (!std::isfinite(centerW) || centerW <= 1e-6)
-			return std::nullopt;
-		Projection leftToCommon = reference.leftToRight;
-		for (unsigned i = 0; i < leftToCommon.size(); ++i)
-			leftToCommon[i] = (leftToCommon[i] / centerW + (i % 4 == 0 ? 1.0 : 0.0)) * 0.5;
-		const auto commonToLeft = Inverse(leftToCommon);
-		if (!commonToLeft)
-			return std::nullopt;
-		const auto rightToCommon = Multiply(leftToCommon, inverse);
-		Polygon common;
-		for (unsigned eye = 0; eye < 2; ++eye) {
-			for (Point point : OuterHalf(reference, eye)) {
-				const auto mapped = Project(eye == 0 ? leftToCommon : rightToCommon, point);
-				if (!mapped)
-					return std::nullopt;
-				common.push_back(*mapped);
-			}
-		}
-		if (common.size() < 3)
-			return std::nullopt;
-		common = ConvexHull(std::move(common));
-		const auto leftCenter = Project(leftToCommon, { 0.5, 0.5 }), rightCenter = Project(rightToCommon, { 0.5, 0.5 });
-		if (!leftCenter || !rightCenter)
-			return std::nullopt;
-		const Point anchor{ (leftCenter->x + rightCenter->x) * 0.5, (leftCenter->y + rightCenter->y) * 0.5 };
-		for (Point& point : common) {
-			point.x = anchor.x + (point.x - anchor.x) * percent / 100.0;
-			point.y = anchor.y + (point.y - anchor.y) * percent / 100.0;
-		}
+		const auto scaled = ScaleOuterReference(reference, percent);
+		const double outerRadius = scaled.outer.scale * scaled.outer.horizontalScale * 0.5;
 		std::array<Polygon, 2> targets;
 		for (unsigned eye = 0; eye < 2; ++eye) {
-			const auto matrix = eye == 0 ? *commonToLeft : Multiply(reference.leftToRight, *commonToLeft);
-			for (Point point : ClipProjectedEye(common, matrix)) {
-				const auto mapped = Project(matrix, point);
-				if (!mapped)
-					return std::nullopt;
-				targets[eye].push_back(*mapped);
-			}
+			const double cx = scaled.outer.centers[eye * 2];
+			const double innerRadius = std::max(0.0, (reference.innerLimits[eye] - cx) * (eye == 0 ? 1.0 : -1.0));
+			auto points = OuterHalf(scaled, eye, false);
+			const auto outer = points;
+			for (const auto point : outer)
+				points.push_back({ cx - (point.x - cx) * innerRadius / outerRadius, point.y });
+			targets[eye] = ClipEye(ConvexHull(std::move(points)));
+			if (targets[eye].size() < 3)
+				return std::nullopt;
 		}
-		if (targets[0].size() < 3 || targets[1].size() < 3)
-			return std::nullopt;
 		return targets;
+	}
+
+	/** Preserve the fitted outer fade without treating that fade as full-strength centre coverage. */
+	[[nodiscard]] inline std::array<Polygon, 2> BuildOuterSupport(const Reference& reference, float percent)
+	{
+		auto support = ScaleOuterReference(reference, percent);
+		support.outer.scale += 2.0f * reference.feather;
+		return { OuterHalf(support, 0), OuterHalf(support, 1) };
 	}
 
 	struct CoverageCheck
@@ -384,42 +380,53 @@ namespace FoveatedMaskCalibration
 			return {};
 		const auto inverse = *Inverse(reference.leftToRight);
 		CoverageCheck result{ .available = true };
-		for (unsigned eye = 0; eye < 2; ++eye) {
-			const auto required = sharedOnly ? ClipProjectedEye((*targets)[eye], eye == 0 ? reference.leftToRight : inverse) : (*targets)[eye];
+		const auto checkPolygon = [&](const Polygon& required, unsigned eye, float coverageScale) {
 			for (Point point : required) {
 				++result.checkedVertices[eye];
 				const float distance = FoveatedCommon::MaskDistanceUV(static_cast<float>(point.x), static_cast<float>(point.y),
 										   geometry.scale, geometry.horizontalScale, geometry.centers[eye * 2] - 0.5f, geometry.centers[eye * 2 + 1] - 0.5f) *
-				                       geometry.scale / visibleScale;
+				                       geometry.scale / coverageScale;
 				// A convex superellipse containing every vertex also contains the polygon interior.
 				if (!fullImage && distance > 1.0f + tolerance) {
 					++result.uncoveredVertices[eye];
 					result.hasGap = true;
 				}
 			}
+		};
+		for (unsigned eye = 0; eye < 2; ++eye)
+			checkPolygon(sharedOnly ? ClipProjectedEye((*targets)[eye], eye == 0 ? reference.leftToRight : inverse) : (*targets)[eye], eye, visibleScale);
+		if (!sharedOnly && !reference.peripheryTaa && !fullImage) {
+			const auto support = BuildOuterSupport(reference, percent);
+			for (unsigned eye = 0; eye < 2; ++eye)
+				checkPolygon(support[eye], eye, visibleScale + 2.0f * reference.feather);
 		}
 		return result;
 	}
 
 	/** Fits a convex target inside a fixed superellipse within both offset limits. */
-	inline std::optional<Point> FitEye(const Polygon& points, double radiusY, double horizontalScale, double centerScale, unsigned eye)
+	inline std::optional<Point> FitEye(const Polygon& points, double radiusY, double horizontalScale, double centerScale, unsigned eye, const Polygon& support = {}, double supportPadding = 0.0)
 	{
 		const double outward = centerScale * 0.5 * (horizontalScale - 1.0) * (eye == 0 ? -1.0 : 1.0);
 		const double minX = std::max(0.5 + kMinimumOffset, 0.5 + kMinimumOffset + outward), maxX = std::min(0.5 + kMaximumOffset, 0.5 + kMaximumOffset + outward);
 		double minY = 0.5 + kMinimumOffset, maxY = 0.5 + kMaximumOffset;
-		for (Point point : points) {
-			minY = std::max(minY, point.y - radiusY);
-			maxY = std::min(maxY, point.y + radiusY);
+		const std::array groups{ std::pair{ &points, radiusY }, std::pair{ &support, radiusY + supportPadding } };
+		for (const auto& [polygon, radius] : groups) {
+			for (Point point : *polygon) {
+				minY = std::max(minY, point.y - radius);
+				maxY = std::min(maxY, point.y + radius);
+			}
 		}
 		if (minX > maxX || minY > maxY)
 			return std::nullopt;
 		const auto interval = [&](double cy) {
 			double left = minX, right = maxX;
-			for (Point point : points) {
-				const double y = (point.y - cy) / radiusY;
-				const double halfWidth = radiusY * horizontalScale * std::sqrt(std::sqrt(std::max(0.0, 1.0 - y * y * y * y)));
-				left = std::max(left, point.x - halfWidth);
-				right = std::min(right, point.x + halfWidth);
+			for (const auto& [polygon, radius] : groups) {
+				for (Point point : *polygon) {
+					const double y = (point.y - cy) / radius;
+					const double halfWidth = radius * horizontalScale * std::sqrt(std::sqrt(std::max(0.0, 1.0 - y * y * y * y)));
+					left = std::max(left, point.x - halfWidth);
+					right = std::min(right, point.x + halfWidth);
+				}
 			}
 			return std::array{ left, right };
 		};
@@ -445,6 +452,7 @@ namespace FoveatedMaskCalibration
 		const auto targets = BuildTargets(reference, percent);
 		if (!targets)
 			return std::nullopt;
+		const auto support = reference.peripheryTaa ? std::array<Polygon, 2>{} : BuildOuterSupport(reference, percent);
 		Solution best{ .geometry = {}, .areaPercent = 100.0f, .fullImage = true };
 		const float minimumScale = reference.peripheryTaa ? std::min(1.0f, std::max(0.3f, reference.centerScale)) : 0.25f;
 		const auto fit = [&](float scale, float horizontal) -> std::optional<Solution> {
@@ -453,7 +461,7 @@ namespace FoveatedMaskCalibration
 			const float visible = reference.peripheryTaa ? std::max(scale, center + 2.0f * std::max(reference.feather, FoveatedCommon::kMinimumFeather)) : scale;
 			Solution result{ .geometry = { scale, horizontal, {} }, .areaPercent = 0.0f };
 			for (unsigned eye = 0; eye < 2; ++eye) {
-				const auto position = FitEye((*targets)[eye], visible * 0.5 - kCoverageMargin, horizontal, center, eye);
+				const auto position = FitEye((*targets)[eye], visible * 0.5 - kCoverageMargin, horizontal, center, eye, support[eye], reference.feather);
 				if (!position)
 					return std::nullopt;
 				result.geometry.centers[eye * 2] = static_cast<float>(position->x);

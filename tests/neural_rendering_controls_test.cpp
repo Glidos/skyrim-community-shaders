@@ -225,7 +225,7 @@ void Require(bool value, const char* reason)
 void SetFovOnlySetup(Upscaling& upscaling)
 {
 	auto& reference = upscaling.settings.foveatedCalibrationReference;
-	reference.version = 1;
+	reference.version = FoveatedMaskCalibration::kReferenceVersion;
 	reference.leftToRight = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
 	reference.feather = 0.05f;
 }

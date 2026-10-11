@@ -129,7 +129,7 @@ int main()
 		using Mode = NeuralRendering::RenderingMode;
 		using Backend = Upscaling::VRRenderScaleBackendKind;
 		Upscaling upscaling;
-		upscaling.settings.foveatedCalibrationReference.version = 1;
+		upscaling.settings.foveatedCalibrationReference.version = FoveatedMaskCalibration::kReferenceVersion;
 		upscaling.settings.foveatedCalibrationReference.leftToRight = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
 		Upscaling::VRRenderScaleProfileSnapshot profile{};
 		profile.valid = profile.active = true;

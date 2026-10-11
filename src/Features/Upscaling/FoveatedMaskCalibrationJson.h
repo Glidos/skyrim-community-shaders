@@ -12,7 +12,7 @@ namespace FoveatedMaskCalibration
 	inline void to_json(nlohmann::json& json, const Reference& value)
 	{
 		json = { { "version", value.version }, { "outer", value.outer }, { "leftToRight", value.leftToRight },
-			{ "peripheryTaa", value.peripheryTaa }, { "fullImage", value.fullImage },
+			{ "innerLimits", value.innerLimits }, { "peripheryTaa", value.peripheryTaa }, { "fullImage", value.fullImage },
 			{ "centerScale", value.centerScale }, { "feather", value.feather } };
 	}
 
@@ -21,13 +21,15 @@ namespace FoveatedMaskCalibration
 	{
 		Reference parsed;
 		const auto& version = json.at("version");
-		if (!version.is_number_integer() || (version != 0 && version != 1))
+		if (!version.is_number_integer() || (version != 0 && version != 1 && version != kReferenceVersion))
 			throw std::invalid_argument("Unsupported FOV calibration version");
-		parsed.version = version.get<uint32_t>();
+		// Legacy references use scene-camera projection and do not prove nasal coverage.
+		parsed.version = version == kReferenceVersion ? kReferenceVersion : 0;
 		if (parsed.version != 0) {
 			const auto& centers = json.at("outer").at("centers");
 			const auto& projection = json.at("leftToRight");
-			if (!centers.is_array() || centers.size() != 4 || !projection.is_array() || projection.size() != 9)
+			const auto& innerLimits = json.at("innerLimits");
+			if (!centers.is_array() || centers.size() != 4 || !projection.is_array() || projection.size() != 9 || !innerLimits.is_array() || innerLimits.size() != 2)
 				throw std::invalid_argument("Invalid FOV calibration dimensions");
 			const auto requireNumber = [](const nlohmann::json& number) {
 				if (!number.is_number())
@@ -40,8 +42,11 @@ namespace FoveatedMaskCalibration
 				requireNumber(number);
 			for (const auto& number : projection)
 				requireNumber(number);
+			for (const auto& number : innerLimits)
+				requireNumber(number);
 			json.at("outer").get_to(parsed.outer);
 			json.at("leftToRight").get_to(parsed.leftToRight);
+			innerLimits.get_to(parsed.innerLimits);
 			json.at("peripheryTaa").get_to(parsed.peripheryTaa);
 			json.at("fullImage").get_to(parsed.fullImage);
 			json.at("centerScale").get_to(parsed.centerScale);

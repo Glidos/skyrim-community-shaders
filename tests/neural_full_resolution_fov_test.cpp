@@ -142,7 +142,7 @@ int main()
 		const FoveatedMaskCalibration::Projection identity{ 1, 0, 0, 0, 1, 0, 0, 0, 1 };
 		const auto reference = CaptureFoveatedMaskReference(upscaling.settings, identity);
 		Require(reference.outer.scale == upscaling.settings.foveatedCenterArea && reference.feather == 0.05f,
-			"Hard-edge capture must use the actual outer support while preserving configured-fade compatibility");
+			"Hard-edge capture must use the full-strength core while preserving configured-fade compatibility");
 		auto fittingReference = reference;
 		fittingReference.feather = GetNormalFoveatedBlendFeather(upscaling.settings, false);
 		for (float percent : { 70.0f, 100.0f, 130.0f }) {
@@ -155,6 +155,10 @@ int main()
 		upscaling.settings.periphery_taa_enable = false;
 		upscaling.settings.foveatedDisableOuterFeather = false;
 		upscaling.settings.foveatedOuterBlendFeather = 0.01f;
+		const auto featheredReference = CaptureFoveatedMaskReference(upscaling.settings, identity, { .953f, .047f });
+		Require(featheredReference.outer.scale == upscaling.settings.foveatedCenterArea &&
+					featheredReference.innerLimits == std::array<float, 2>{ .953f, .047f },
+			"Feathered capture must retain the full-strength core separately from outer fade and headset nasal limits");
 		const auto narrow = upscaling.GetActiveUpscalingFoveatedProfile();
 		Require(narrow.sharedVisibleFeather < baseline.sharedVisibleFeather,
 			"Shared FOV geometry must expose narrower feather support");

@@ -34,6 +34,7 @@
 #include "Upscaling/FSRTemporalTuningSerialization.h"
 #include "Upscaling/FidelityFX.h"
 #include "Upscaling/FoveatedBlendPolicy.h"
+#include "Upscaling/FoveatedHeadsetGeometry.h"
 #include "Upscaling/MotionSharpeningSettings.h"
 #include "Upscaling/NeuralRendering/CharacterRendering.h"
 #include "Upscaling/NeuralRendering/CharacterSettingsJson.h"
@@ -1980,7 +1981,7 @@ Amber stripes begin outside that eye's outline and show all its missing coverage
 
 Check one eye at a time. Fit the top, bottom, outer side and corners with a small margin. Ignore nose-side overlap.)";
 	constexpr const char* kFoveatedUpscalingSetupInstructions = R"(1) Select FOV only. Fit each eye's outer edges using FOV Only Visible Scale, Expand FOV Scale R/L and per-eye offsets.
-2) Press Calibrate Masks to save the outer fit and cover the centre automatically. The sliders show the result.
+2) Press Calibrate Masks. Each eye keeps its outer fit; the headset supplies the inner limit. Size, R/L expansion and offsets are fitted together, and the sliders show the result.
 3) Shared-view gaps are checked automatically. Calibration fills the required centre at full strength; feathering stays outside that coverage. The two eyes do not need identical outer regions.
 4) Automatic Mask Scaling: 100% restores calibration; lower shrinks coverage, higher expands it. The centre refits automatically. Recalibrate to capture manual edits.
 5) Turn visualization off and look around. Expand coverage if the edges flicker. Recalibrate if headset fit or eye projection changes.)";
@@ -1989,16 +1990,57 @@ Check one eye at a time. Fit the top, bottom, outer side and corners with a smal
 3) Set Inner area size: smaller uses more TAA around the upscaled centre.
 Outer boundary, shape, eye positions and feathering are inherited from FOV only. Switching modes or changing inner size needs no recalibration.)";
 
+	struct FoveatedHeadsetSnapshot
+	{
+		FoveatedMaskCalibration::Projection leftToRight;
+		std::array<float, 2> innerLimits;
+	};
+
+	std::optional<FoveatedHeadsetSnapshot> GetFoveatedHeadsetGeometry()
+	{
+		if (!globals::game::isVR)
+			return std::nullopt;
+		auto* openvr = RE::BSOpenVR::GetSingleton();
+		if (!openvr || !openvr->vrSystem)
+			return std::nullopt;
+		std::array<std::array<float, 4>, 2> tangents;
+		std::array<FoveatedMaskCalibration::Projection, 2> rotations;
+		FoveatedHeadsetSnapshot geometry;
+		for (unsigned eye = 0; eye < 2; ++eye) {
+			const auto vrEye = eye == 0 ? vr::Eye_Left : vr::Eye_Right;
+			auto& t = tangents[eye];
+			openvr->vrSystem->GetProjectionRaw(vrEye, &t[0], &t[1], &t[2], &t[3]);
+			const auto eyeToHead = openvr->vrSystem->GetEyeToHeadTransform(vrEye);
+			for (unsigned row = 0; row < 3; ++row)
+				for (unsigned column = 0; column < 3; ++column)
+					rotations[eye][row * 3 + column] = eyeToHead.m[row][column];
+			auto mesh = openvr->vrSystem->GetHiddenAreaMesh(vrEye, vr::k_eHiddenAreaMesh_LineLoop);
+			uint32_t vertices = mesh.unTriangleCount;
+			if (!vertices) {
+				mesh = openvr->vrSystem->GetHiddenAreaMesh(vrEye, vr::k_eHiddenAreaMesh_Inverse);
+				if (mesh.unTriangleCount > 4096)
+					return std::nullopt;
+				vertices = mesh.unTriangleCount * 3;
+			}
+			const auto limit = ::FoveatedHeadsetGeometry::InnerLimit(mesh.pVertexData, vertices, eye);
+			if (!limit)
+				return std::nullopt;
+			geometry.innerLimits[eye] = *limit;
+		}
+		const auto projection = ::FoveatedHeadsetGeometry::BuildProjection(tangents, rotations);
+		if (!projection)
+			return std::nullopt;
+		geometry.leftToRight = *projection;
+		return geometry;
+	}
+
 	Matrix GetFoveatedEyeClipProjection(uint32_t eyeIndex)
 	{
-		const auto& camera = globals::game::frameBufferCached;
-		const uint32_t otherEye = 1u - eyeIndex;
-		auto eyeToWorld = camera.GetCameraViewInverse(eyeIndex);
-		auto worldToOtherEye = camera.GetCameraView(otherEye);
-		// Compare viewing directions without adding scene-depth parallax from eye separation.
-		eyeToWorld._14 = eyeToWorld._24 = eyeToWorld._34 = 0.0f;
-		worldToOtherEye._14 = worldToOtherEye._24 = worldToOtherEye._34 = 0.0f;
-		return camera.GetCameraProjUnjittered(otherEye) * worldToOtherEye * eyeToWorld * camera.GetCameraProjUnjitteredInverse(eyeIndex);
+		const auto geometry = GetFoveatedHeadsetGeometry();
+		const auto projection = geometry && eyeIndex < 2 ?
+		                            (eyeIndex == 0 ? std::optional{ geometry->leftToRight } : FoveatedMaskCalibration::Inverse(geometry->leftToRight)) :
+		                            std::nullopt;
+		return ::FoveatedHeadsetGeometry::ToClipProjection<Matrix>(projection.value_or(FoveatedMaskCalibration::Projection{}));
 	}
 
 	uint ClampToggleUInt(uint value);
@@ -19440,19 +19482,18 @@ std::array<FoveatedMaskVisualization::Coverage, 2> Upscaling::GetFoveatedMaskCov
 namespace
 {
 	FoveatedMaskCalibration::Reference CaptureFoveatedMaskReference(const Upscaling::Settings& candidate,
-		const FoveatedMaskCalibration::Projection& projection)
+		const FoveatedMaskCalibration::Projection& projection, std::array<float, 2> innerLimits = { 1.0f, 0.0f })
 	{
 		using namespace FoveatedMaskCalibration;
 		const auto profile = GetFoveatedMaskProfileParams(candidate, false);
-		const float feather = GetNormalFoveatedBlendFeather(candidate, false);
 		Reference reference;
-		reference.version = 1;
+		reference.version = kReferenceVersion;
 		reference.peripheryTaa = false;
 		reference.centerScale = profile.centerScale;
 		reference.feather = FoveatedCommon::GetOuterFeather(candidate.foveatedOuterBlendFeather);
 		reference.fullImage = !FoveatedCommon::IsActiveCoverage(profile.centerScale);
-		const float supportScale = profile.centerScale + 2.0f * feather;
-		reference.outer.scale = supportScale;
+		reference.outer.scale = profile.centerScale;
+		reference.innerLimits = innerLimits;
 		reference.outer.horizontalScale = profile.centerHorizontalScale;
 		reference.outer.centers = {
 			0.5f + FoveatedCommon::ResolveMaskOffsetX(profile.leftOffsetX, profile.centerScale, profile.centerHorizontalScale, false, true),
@@ -19472,12 +19513,14 @@ FoveatedMaskCalibration::CoverageCheck Upscaling::GetFoveatedBinocularCoverage()
 		!SupportsFoveatedVendorDispatch(GetUpscaleMethod()) || globals::state->pendingPostLoadRuntimeReset ||
 		IsLoadingMenuContextActive() || IsMainMenuContextActive())
 		return {};
-	const auto projection = FromClipProjection(GetFoveatedEyeClipProjection(0));
-	if (!Inverse(projection))
+	const auto headset = GetFoveatedHeadsetGeometry();
+	if (!headset)
 		return {};
-	const auto current = CaptureFoveatedMaskReference(settings, projection);
+	const auto& projection = headset->leftToRight;
+	const auto current = CaptureFoveatedMaskReference(settings, projection, headset->innerLimits);
 	const bool saved = MatchesProfile(settings.foveatedCalibrationReference, false, settings.foveatedCenterArea, current.feather);
-	if (saved && !MatchesProjection(settings.foveatedCalibrationReference.leftToRight, projection))
+	if (saved && (!MatchesProjection(settings.foveatedCalibrationReference.leftToRight, projection) ||
+					 settings.foveatedCalibrationReference.innerLimits != headset->innerLimits))
 		return {};
 	auto reference = saved ? settings.foveatedCalibrationReference : current;
 	const float percent = saved ? settings.foveatedAutomaticMaskScaling : 100.0f;
@@ -19487,9 +19530,6 @@ FoveatedMaskCalibration::CoverageCheck Upscaling::GetFoveatedBinocularCoverage()
 	const float visibleScale = peripheryTaa ?
 	                               std::max(centerScale + 2.0f * GetNormalFoveatedBlendFeather(settings, true), settings.periphery_taa_outer_scale) :
 	                               centerScale;
-	// Before calibration, infer the intended centre from the live full-strength outer halves.
-	if (!saved)
-		reference.outer.scale = current.centerScale;
 	// Manual diagnostics tolerate circumscribed contour approximation; calibrated fits remain strict.
 	return CheckCoverage(reference, percent, geometry, visibleScale, !FoveatedCommon::IsActiveCoverage(centerScale), true, saved ? 0.0f : kManualContourTolerance);
 }
@@ -19509,24 +19549,25 @@ bool Upscaling::PrepareFoveatedMaskCalibration(Settings& a_candidate, bool a_cap
 		a_error = "Calibration requires a loaded scene. Close game menus and try again.";
 		return false;
 	}
-	const auto projection = FromClipProjection(GetFoveatedEyeClipProjection(0));
-	if (!Inverse(projection)) {
+	const auto headset = GetFoveatedHeadsetGeometry();
+	if (!headset) {
 		a_error = "Stereo projection is unavailable. Enter a loaded scene and try again.";
 		return false;
 	}
+	const auto& projection = headset->leftToRight;
 	auto reference = a_candidate.foveatedCalibrationReference;
 	if (a_captureReference && a_candidate.periphery_taa_enable) {
 		a_error = "Select FOV only before calibrating the visible boundary.";
 		return false;
 	}
 	if (a_captureReference) {
-		reference = CaptureFoveatedMaskReference(a_candidate, projection);
+		reference = CaptureFoveatedMaskReference(a_candidate, projection, headset->innerLimits);
 	} else {
 		if (!MatchesProfile(reference, false, a_candidate.foveatedCenterArea, FoveatedCommon::GetOuterFeather(a_candidate.foveatedOuterBlendFeather))) {
 			a_error = "Fit and calibrate FOV only first.";
 			return false;
 		}
-		if (!MatchesProjection(reference.leftToRight, projection)) {
+		if (!MatchesProjection(reference.leftToRight, projection) || reference.innerLimits != headset->innerLimits) {
 			a_error = "Headset projection changed. Calibrate the outer edges again.";
 			return false;
 		}
@@ -19539,22 +19580,24 @@ bool Upscaling::PrepareFoveatedMaskCalibration(Settings& a_candidate, bool a_cap
 		return false;
 	}
 	const auto& geometry = solution->geometry;
-	const auto coverage = CheckCoverage(reference, a_percent, geometry, geometry.scale, solution->fullImage, false);
+	auto fitted = a_candidate;
+	fitted.foveatedCenterArea = geometry.scale;
+	fitted.foveatedCenterHorizontalScale = geometry.horizontalScale;
+	const float expansion = geometry.scale * 0.5f * (geometry.horizontalScale - 1.0f);
+	fitted.foveatedLeftEyeMaskOffsetX = ClampFoveatedMaskOffsetAdjustment(geometry.centers[0] - 0.5f + expansion);
+	fitted.foveatedLeftEyeMaskOffsetY = ClampFoveatedMaskOffsetAdjustment(geometry.centers[1] - 0.5f);
+	fitted.foveatedRightEyeMaskOffsetX = ClampFoveatedMaskOffsetAdjustment(geometry.centers[2] - 0.5f - expansion);
+	fitted.foveatedRightEyeMaskOffsetY = ClampFoveatedMaskOffsetAdjustment(geometry.centers[3] - 0.5f);
+	const auto applied = CaptureFoveatedMaskReference(fitted, projection, headset->innerLimits);
+	const auto coverage = CheckCoverage(fittingReference, a_percent, applied.outer, applied.centerScale, applied.fullImage, false);
 	if (!coverage.available || coverage.hasGap) {
 		a_error = "FOV coverage could not be verified; previous calibration retained.";
 		return false;
 	}
-	a_candidate.foveatedCenterArea = geometry.scale;
-	a_candidate.foveatedCenterHorizontalScale = geometry.horizontalScale;
-	const float centerScale = geometry.scale;
-	const float expansion = centerScale * 0.5f * (geometry.horizontalScale - 1.0f);
-	a_candidate.foveatedLeftEyeMaskOffsetX = ClampFoveatedMaskOffsetAdjustment(geometry.centers[0] - 0.5f + expansion);
-	a_candidate.foveatedLeftEyeMaskOffsetY = ClampFoveatedMaskOffsetAdjustment(geometry.centers[1] - 0.5f);
-	a_candidate.foveatedRightEyeMaskOffsetX = ClampFoveatedMaskOffsetAdjustment(geometry.centers[2] - 0.5f - expansion);
-	a_candidate.foveatedRightEyeMaskOffsetY = ClampFoveatedMaskOffsetAdjustment(geometry.centers[3] - 0.5f);
-	a_candidate.foveatedCalibrationReference = reference;
-	a_candidate.foveatedAutomaticMaskScaling = a_percent;
-	InheritFovOnlyBoundary(a_candidate);
+	fitted.foveatedCalibrationReference = reference;
+	fitted.foveatedAutomaticMaskScaling = a_percent;
+	InheritFovOnlyBoundary(fitted);
+	a_candidate = std::move(fitted);
 	return true;
 }
 
@@ -19562,7 +19605,7 @@ void Upscaling::DrawFoveatedCalibration()
 {
 	bool capture = ImGui::Button("Calibrate Masks");
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::TextWrapped("Fit each eye's top, bottom, outer side and corners first. Calibration saves that outline and fits the centre automatically, replacing the previous inward overlap.");
+		ImGui::TextWrapped("Fit each eye's top, bottom, outer side and corners first. Calibration completes each eye to its headset inner limit and minimizes the shared size and R/L expansion. Manual inward overlap is ignored.");
 	float percent = capture ? 100.0f : pendingFoveatedMaskScaling.value_or(settings.foveatedAutomaticMaskScaling);
 	bool scaleChanged = false;
 	{

@@ -158,7 +158,7 @@ namespace
 				 Projection{ .93, .04, .12, -.02, 1.03, .015, .08, .01, 1 } }) {
 			for (const float percent : { 70.0f, 100.0f, 130.0f }) {
 				for (const float feather : { 0.0f, 0.0001f, 0.05f, 0.1f }) {
-					const Reference reference{ .version = 1,
+					const Reference reference{ .version = FoveatedMaskCalibration::kReferenceVersion,
 						.outer = { .scale = 0.6f, .horizontalScale = 1.2f, .centers = { .4f, .48f, .6f, .52f } },
 						.leftToRight = projection,
 						.feather = feather };
@@ -321,7 +321,7 @@ namespace
 
 		// A centre hole must remain visible in each own-eye view until calibration fills it.
 		const FoveatedMaskCalibration::Reference separated{
-			.version = 1,
+			.version = FoveatedMaskCalibration::kReferenceVersion,
 			.outer = { .scale = .27f, .centers = { .23f, .5f, .77f, .5f } },
 			.leftToRight = { 1, 0, 0, 0, 1, 0, 0, 0, 1 },
 			.centerScale = .25f,
