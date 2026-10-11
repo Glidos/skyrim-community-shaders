@@ -1,3 +1,7 @@
+#ifndef BASE_REDUCTION
+#	define BASE_REDUCTION 2
+#endif
+
 cbuffer Parameters : register(b0)
 {
 	uint Width, Height, SourceWidth, SourceHeight;
@@ -16,10 +20,12 @@ float SafeDepth(uint2 pixel)
 	float maximum = 0;
 	uint eyeWidth = Width / Eyes;
 	uint eye = id.x / eyeWidth;
-	uint2 base = uint2(id.x % eyeWidth, id.y) * 2;
-	[unroll] for (uint y = 0; y < 2; ++y)
-		[unroll] for (uint x = 0; x < 2; ++x)
+	uint2 base = uint2(id.x % eyeWidth, id.y) * (FirstLevel ? BASE_REDUCTION : 2);
+	[unroll] for (uint y = 0; y < BASE_REDUCTION; ++y)
+		[unroll] for (uint x = 0; x < BASE_REDUCTION; ++x)
 	{
+		if (!FirstLevel && (x >= 2 || y >= 2))
+			continue;
 		uint2 pixel = base + uint2(x, y);
 		if (FirstLevel) {
 			if (pixel.x >= ActiveWidth / Eyes || pixel.y >= ActiveHeight)

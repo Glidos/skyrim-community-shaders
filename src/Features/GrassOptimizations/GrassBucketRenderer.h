@@ -1,5 +1,6 @@
 #pragma once
 
+#include "GrassRuntime.h"
 #include <memory>
 
 /** @brief Batches visible grass and retains unchanged GPU instance records across frames. */
@@ -11,7 +12,8 @@ public:
 	void InstallHooks();
 	void SetupResources();
 	void ClearShaderCache();
-	void PrepareGeometry(RE::BSRenderPass* pass);
+	/** @brief Prepare and reuse frame culling, restoring native geometry constants before drawing. */
+	void PrepareGeometry(RE::BSRenderPass*, RE::BSShader*, uint32_t, GrassRuntime::SetupGeometry);
 	bool IsHookInstalled() const;
 	/** @brief Whether native integration is installed without a latched rendering failure. */
 	bool IsRenderingAvailable() const;
@@ -19,8 +21,13 @@ public:
 	void MarkGroupsChanged(RE::BSMultiStreamInstanceTriShape* shape);
 	void MarkGenerated(RE::BSMultiStreamInstanceTriShape* shape);
 	void RemoveShape(RE::BSMultiStreamInstanceTriShape* shape);
-	/** @brief Snapshot generated or culled grass without altering native visibility; only accepted groups renew residency. */
+	/** @brief Snapshot generated grass without changing visibility; generation hooks invalidate retained records. */
 	bool CaptureVisible(RE::BSMultiStreamInstanceTriShape* shape, bool nativeVisible);
+	/** @brief Queue one compatible representative, retaining native fallback for every member. */
+	bool QueueVisible(RE::BSMultiStreamInstanceTriShape*, RE::NiCullingProcess*, int32_t);
+	using RenderPass = void (*)(RE::BSRenderPass*, uint32_t, bool, uint32_t);
+	/** @brief Expand a failed representative draw through the original native pass route. */
+	void DrawRenderPass(RE::BSRenderPass*, uint32_t, bool, uint32_t, RenderPass);
 #ifdef DEVBENCH_BRIDGE_ENABLED
 	void SetDiagnosticsEnabled(bool enabled);
 	json GetDiagnostics() const;

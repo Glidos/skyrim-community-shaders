@@ -11,16 +11,16 @@ public:
 	void SetupResources();
 	void Reset();
 	/** @brief Allocate a power-of-two chain stopping before stereo eyes would mix. */
-	void Allocate(uint32_t width, uint32_t height, uint32_t eyes);
+	void Allocate(uint32_t width, uint32_t height, uint32_t eyes, uint32_t maximumMips = 0);
 	/** @brief Build from live depth; unsupported SPD devices retain per-mip reduction. */
 	bool Build(ID3D11DeviceContext1* context, ID3D11ShaderResourceView* source,
-		uint32_t sourceWidth, uint32_t sourceHeight, uint32_t activeWidth, uint32_t activeHeight, uint32_t eyes);
+		uint32_t sourceWidth, uint32_t sourceHeight, uint32_t activeWidth, uint32_t activeHeight, uint32_t eyes, uint32_t baseReduction = 2);
 	ID3D11ShaderResourceView* SRV() const { return valid ? srv.get() : nullptr; }
 	bool Allocated() const { return texture != nullptr; }
 	uint32_t Mips() const { return mipCount; }
 
 private:
-	Util::LazyShader<ID3D11ComputeShader> baseShader, spdShader;
+	Util::LazyShader<ID3D11ComputeShader> baseShader, firstShader, spdShader;
 	std::unique_ptr<Buffer> constants, spdConstants, counter;
 	winrt::com_ptr<ID3D11Texture2D> texture;
 	winrt::com_ptr<ID3D11ShaderResourceView> srv;

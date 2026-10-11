@@ -1,4 +1,5 @@
 #include "Common/Math.hlsli"
+#include "GrassOptimizations/GrassCullingBounds.hlsli"
 #include "GrassOptimizations/GrassInstance.hlsli"
 
 #ifdef VR
@@ -20,7 +21,7 @@ cbuffer Parameters : register(b0)
 	float EdgeFadeStart, SimpleShadingPixelSize, QualityRadius, MeshWeight;
 	uint OverrideDistance;
 	float CollisionDistance;
-	uint Padding1, Padding2;
+	uint SliceOffset, Padding2;
 	uint4 IndexCounts;
 };
 
@@ -123,25 +124,11 @@ bool OutsideCullingPlanes(float3 center, float radius, uint eye)
 		outside = Outside(mul(WorldViewProj[Eye(eye)], float4(center, 1)), radius, eye);
 	return outside;
 }
-// A cube enclosing the displaced sphere bounds every perspective extremum.
 bool ProjectBounds(float3 center, float radius, uint eye, out float2 lo, out float2 hi, out float nearDepth)
 {
-	lo = 1e20;
-	hi = -1e20;
-	nearDepth = 1;
-	[unroll] for (uint i = 0; i < 8; ++i)
-	{
-		float3 sign = float3((i & 1) ? 1 : -1, (i & 2) ? 1 : -1, (i & 4) ? 1 : -1);
-		float4 clip = mul(WorldViewProj[Eye(eye)], float4(center + sign * radius, 1));
-		if (!all(isfinite(clip)) || clip.w <= 1e-5 || clip.z <= 0)
-			return false;
-		float3 ndc = clip.xyz / clip.w;
-		lo = min(lo, ndc.xy);
-		hi = max(hi, ndc.xy);
-		nearDepth = min(nearDepth, ndc.z);
-	}
-	return true;
+	return GrassProjectSphere(WorldViewProj[Eye(eye)], center, radius, lo, hi, nearDepth);
 }
+
 bool Hidden(float2 lo, float2 hi, float nearest, uint eye, out uint reason, out uint cells)
 {
 	reason = 0;
@@ -169,6 +156,10 @@ bool Hidden(float2 lo, float2 hi, float nearest, uint eye, out uint reason, out 
 	int2 first = clamp(int2(floor(uvLo * float2(width, height))), 0, int2(width, height) - 1);
 	int2 last = clamp(int2(floor(uvHi * float2(width, height))), 0, int2(width, height) - 1);
 	cells = uint(last.x - first.x + 1) * uint(last.y - first.y + 1);
+	if (cells > 9) {
+		reason = 14;
+		return false;
+	}
 	float farthest = 0;
 	[loop] for (int y = first.y; y <= last.y; ++y)
 		[loop] for (int x = first.x; x <= last.x; ++x)
@@ -193,14 +184,14 @@ bool Hidden(float2 lo, float2 hi, float nearest, uint eye, out uint reason, out 
 	[loop] while (left < right)
 	{
 		uint middle = (left + right) / 2;
-		if (id.x < Slices[middle].end)
+		if (id.x < Slices[SliceOffset + middle].end)
 			right = middle;
 		else
 			left = middle + 1;
 	}
 	if (left >= SliceCount)
 		return;
-	Slice slice = Slices[left];
+	Slice slice = Slices[SliceOffset + left];
 	uint record = slice.first + id.x - (slice.end - slice.count);
 	uint4 a = Records.Load4(record * 32), b = Records.Load4(record * 32 + 16);
 	float4 instance1 = float4(Unpack(a.x), Unpack(a.y));
@@ -210,7 +201,7 @@ bool Hidden(float2 lo, float2 hi, float nearest, uint eye, out uint reason, out 
 	float3 scale = instance4.y * ScaleMask + 1;
 	float3x3 rotation = float3x3(instance2.xyz, instance3.xyz, float3(instance4.x, instance2.w, instance3.w));
 	float3 center = instance1.xyz + mul(rotation, ModelBound.xyz * scale) + slice.originFade.xyz - RepresentativeOrigin.xyz;
-	float norm = sqrt(dot(rotation[0], rotation[0]) + dot(rotation[1], rotation[1]) + dot(rotation[2], rotation[2]));
+	float norm = GrassBasisNorm(rotation);
 	float radius = ModelBound.w * max(abs(scale.x), max(abs(scale.y), abs(scale.z))) * norm;
 	bool valid = all(isfinite(center)) && isfinite(radius) && radius > 0;
 	float3 root = instance1.xyz + slice.originFade.xyz - RepresentativeOrigin.xyz;
@@ -294,8 +285,6 @@ bool Hidden(float2 lo, float2 hi, float nearest, uint eye, out uint reason, out 
 					uint reason, cells;
 					bool hidden = Hidden(lo, hi, nearest, eye, reason, cells);
 					CountN(18, cells);
-					if (cells > 9)
-						Count(14);
 					if (reason)
 						Count(reason);
 					if (hidden) {

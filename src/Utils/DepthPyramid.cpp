@@ -30,17 +30,19 @@ void DepthPyramid::Reset()
 {
 	valid = false;
 	baseShader.Reset();
+	firstShader.Reset();
 	spdShader.Reset();
 }
 
-void DepthPyramid::Allocate(uint32_t nextWidth, uint32_t nextHeight, uint32_t eyes)
+void DepthPyramid::Allocate(uint32_t nextWidth, uint32_t nextHeight, uint32_t eyes, uint32_t maximumMips)
 {
 	valid = false;
 	if ((eyes != 1 && eyes != 2) || !nextWidth || !nextHeight || nextWidth % eyes ||
 		!std::has_single_bit(nextWidth / eyes) || !std::has_single_bit(nextHeight) ||
 		nextWidth > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || nextHeight > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION)
 		throw std::invalid_argument("Invalid depth pyramid dimensions");
-	const UINT levels = UINT(std::min(std::bit_width(nextWidth / eyes), std::bit_width(nextHeight)));
+	const UINT complete = UINT(std::min(std::bit_width(nextWidth / eyes), std::bit_width(nextHeight)));
+	const UINT levels = maximumMips ? std::min(complete, maximumMips) : complete;
 	D3D11_TEXTURE2D_DESC desc{};
 	desc.Width = nextWidth;
 	desc.Height = nextHeight;
@@ -85,16 +87,21 @@ void DepthPyramid::Allocate(uint32_t nextWidth, uint32_t nextHeight, uint32_t ey
 }
 
 bool DepthPyramid::Build(ID3D11DeviceContext1* context, ID3D11ShaderResourceView* source,
-	uint32_t sourceWidth, uint32_t sourceHeight, uint32_t activeWidth, uint32_t activeHeight, uint32_t eyes)
+	uint32_t sourceWidth, uint32_t sourceHeight, uint32_t activeWidth, uint32_t activeHeight, uint32_t eyes, uint32_t baseReduction)
 {
 	valid = false;
 	if (!context || !source || !texture || !constants || !spdConstants || !counter ||
-		eyes != eyeCount || !sourceWidth || !sourceHeight || !activeWidth || !activeHeight || activeWidth % eyes || sourceWidth % eyes ||
+		(baseReduction != 2 && baseReduction != 4) || eyes != eyeCount || !sourceWidth || !sourceHeight || !activeWidth || !activeHeight || activeWidth % eyes || sourceWidth % eyes ||
 		sourceWidth > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || sourceHeight > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION ||
-		activeWidth > sourceWidth || activeHeight > sourceHeight || ((activeWidth / eyes + 1) / 2) > width / eyes || (activeHeight + 1) / 2 > height)
+		activeWidth > sourceWidth || activeHeight > sourceHeight || ((activeWidth / eyes + baseReduction - 1) / baseReduction) > width / eyes || (activeHeight + baseReduction - 1) / baseReduction > height)
 		return false;
 	auto base = baseShader.Get(L"Data\\Shaders\\Common\\DepthPyramidBaseCS.hlsl", {}, "cs_5_0", "main", "DepthPyramid::BaseCS");
 	if (!base)
+		return false;
+	auto first = base;
+	if (baseReduction == 4)
+		first = firstShader.Get(L"Data\\Shaders\\Common\\DepthPyramidBaseCS.hlsl", { { "BASE_REDUCTION", "4" } }, "cs_5_0", "main", "DepthPyramid::QuarterBaseCS");
+	if (!first)
 		return false;
 	ID3D11ComputeShader* spd = nullptr;
 	if (globals::d3d::device->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_1 && mipCount > 1)
@@ -114,7 +121,7 @@ bool DepthPyramid::Build(ID3D11DeviceContext1* context, ID3D11ShaderResourceView
 		context->CSSetConstantBuffers(0, 1, &cb);
 		context->CSSetShaderResources(0, 1, &input);
 		context->CSSetUnorderedAccessViews(0, 1, &output, nullptr);
-		context->CSSetShader(base, nullptr, 0);
+		context->CSSetShader(mip ? base : first, nullptr, 0);
 		context->Dispatch((values[0] + 7) / 8, (values[1] + 7) / 8, 1);
 		input = nullptr;
 		output = nullptr;

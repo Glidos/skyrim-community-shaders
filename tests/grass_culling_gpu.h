@@ -30,7 +30,7 @@ void RunCullingShader(bool vr)
 		UINT first, count, end, padding;
 		std::array<float, 4> origin;
 	};
-	const std::array<Slice, 2> slices{ Slice{ 0, 1, 1, 0, { 0, 0, 0, .125f } }, Slice{ 1, 2, 3, 0, { 0, 0, 0, .875f } } };
+	const std::array<Slice, 3> slices{ Slice{}, Slice{ 0, 1, 1, 0, { 0, 0, 0, .125f } }, Slice{ 1, 2, 3, 0, { 0, 0, 0, .875f } } };
 	const auto makeBuffer = [&](UINT bytes, UINT bind, UINT stride, UINT misc, const void* initial, const char* name) {
 		D3D11_BUFFER_DESC desc{};
 		desc.ByteWidth = bytes;
@@ -118,6 +118,7 @@ void RunCullingShader(bool vr)
 	}
 	params.SetVariable("InstanceCount", 3u);
 	params.SetVariable("SliceCount", 2u);
+	params.SetVariable("SliceOffset", 1u);
 	params.SetVariable("Capacity", capacity);
 	params.SetVariable("EyeCount", eyes);
 	std::array<UINT, 4> indexCounts{ 9, 6, 3, 0 };
@@ -225,7 +226,7 @@ void RunCullingShader(bool vr)
 		Require(counts[16] == 2, "Uncovered VR eye depth was not classified");
 	values = dispatch(true, false, false, true);
 	for (UINT eye = 0; eye < eyes; ++eye) Require(values[(2 * eyes + eye) * 8 + 4] == 2 && values[eye * 8 + 4] == 0, "Far LOD selection lost or duplicated instances");
-	params.SetVariable("ModelBound", std::array<float, 4>{ 0, 0, 0, .7f });
+	params.SetVariable("ModelBound", std::array<float, 4>{ 0, 0, 0, 1.1f });
 	params.SetVariable("CollisionEnabled", 1u);
 	for (float distance : { 0.0f, 1.0f, 2048.0f }) {
 		params.SetVariable("CollisionDistance", distance);
@@ -267,6 +268,11 @@ void RunCullingShader(bool vr)
 	for (UINT eye = 0; eye < eyes; ++eye) Require(values[eye * 8 + 4] == 3, "Near-plane-intersecting bounds were falsely occluded");
 	counts = read(counters.Get());
 	Require(counts[12] == 3 * eyes, "Near-plane projection failures were not classified");
+	params.SetVariable("ModelBound", std::array<float, 4>{ 0, 0, .5f, .8f });
+	values = dispatch(false, false, true, false);
+	for (UINT eye = 0; eye < eyes; ++eye) Require(values[eye * 8 + 4] == 3, "Oversized depth footprints did not fail open");
+	counts = read(counters.Get());
+	Require(counts[14] == eyes, "Oversized depth footprints were counted more than once");
 	params.SetVariable("ModelBound", std::array<float, 4>{ 0, 0, 0, std::numeric_limits<float>::quiet_NaN() });
 	values = dispatch(true, false, true, false);
 	for (UINT eye = 0; eye < eyes; ++eye) Require(values[eye * 8 + 4] == 3, "Invalid bounds failed to retain grass");
@@ -295,7 +301,7 @@ void RunCullingShader(bool vr)
 		Require(!contains(1, records[1]) && contains(1, records[2]), "Right eye used the left frustum");
 	frustum.SetVariable("CullingPlanesValid", 0u);
 	frustum.Bind(context.Get());
-	std::array<Slice, 2> sparse{ Slice{ 2, 1, 1, 0, { 0, 0, 0, .625f } }, Slice{} };
+	std::array<Slice, 3> sparse{ Slice{}, Slice{ 2, 1, 1, 0, { 0, 0, 0, .625f } }, Slice{} };
 	context->UpdateSubresource(table.Get(), 0, nullptr, sparse.data(), 0, 0);
 	params.SetVariable("SliceCount", 1u);
 	params.SetVariable("InstanceCount", 1u);
@@ -327,7 +333,7 @@ void RunCullingShader(bool vr)
 	inputView.BufferEx.NumElements = manyInstances * 8;
 	Check(device->CreateShaderResourceView(manyInput.Get(), &inputView, inputSRV.ReleaseAndGetAddressOf()));
 	Util::SetResourceName(inputSRV.Get(), "GrassTest::ManyInstances SRV");
-	const std::array<Slice, 2> manySlices{ Slice{ 0, manyInstances, manyInstances, 0, { 0, 0, 0, 1 } }, Slice{} };
+	const std::array<Slice, 3> manySlices{ Slice{}, Slice{ 0, manyInstances, manyInstances, 0, { 0, 0, 0, 1 } }, Slice{} };
 	context->UpdateSubresource(table.Get(), 0, nullptr, manySlices.data(), 0, 0);
 	params.SetVariable("SliceCount", 1u);
 	params.SetVariable("BandPixels", 0.0f);
@@ -343,7 +349,7 @@ void RunCullingShader(bool vr)
 		}
 		for (UINT instances : { 0u, 1u, manyInstances }) {
 			params.SetVariable("InstanceCount", instances);
-			const UINT groups = std::max(1u, (instances + 63) / 64);
+			const UINT groups = (std::max)(1u, (instances + 63) / 64);
 			for (UINT tier = 0; tier < 3; ++tier) {
 				indexCounts = tier == 0 ? std::array<UINT, 4>{ 18, 0, 0, 0 } : std::array<UINT, 4>{ 18, 12, 6, 0 };
 				params.SetVariable("FarPixels", tier == 2 ? 1e9f : 0.0f);
@@ -362,22 +368,22 @@ void RunCullingShader(bool vr)
 	}
 }
 
-void RunDepthReduction(bool vr)
+void RunDepthReduction(bool vr, UINT reduction = 2)
 {
 	ComPtr<ID3D11Device> device;
 	ComPtr<ID3D11DeviceContext> context;
 	Check(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, device.GetAddressOf(), nullptr, context.GetAddressOf()));
-	auto code = Compile(L"features/Grass Optimizations/Shaders/GrassOptimizations/GrassDepthCS.hlsl", "cs_5_0");
+	auto code = Compile(L"features/Grass Optimizations/Shaders/GrassOptimizations/GrassDepthCS.hlsl", "cs_5_0", { { "BASE_REDUCTION", reduction == 4 ? "4" : "2" } });
 	ComPtr<ID3D11ShaderReflection> reflection;
 	Check(D3DReflect(code->GetBufferPointer(), code->GetBufferSize(), IID_PPV_ARGS(reflection.GetAddressOf())));
 	ComPtr<ID3D11ComputeShader> shader;
 	Check(device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, shader.GetAddressOf()));
 	Util::SetResourceName(shader.Get(), "GrassTest::DepthCS");
-	const UINT eyes = vr ? 2 : 1;
-	std::vector<float> pixels(3 * eyes * 3, .2f);
+	const UINT eyes = vr ? 2 : 1, extent = reduction + 1;
+	std::vector<float> pixels(extent * eyes * extent, .2f);
 	if (vr)
-		for (UINT y = 0; y < 3; ++y)
-			for (UINT x = 3; x < 6; ++x) pixels[y * 6 + x] = .7f;
+		for (UINT y = 0; y < extent; ++y)
+			for (UINT x = extent; x < 2 * extent; ++x) pixels[y * 2 * extent + x] = .7f;
 	const auto texture = [&](UINT width, UINT height, UINT bind, const void* data, UINT pitch, const char* name) {
 		D3D11_TEXTURE2D_DESC desc{};
 		desc.Width = width;
@@ -393,7 +399,7 @@ void RunDepthReduction(bool vr)
 		Util::SetResourceName(result.Get(), "%s", name);
 		return result;
 	};
-	auto input = texture(3 * eyes, 3, D3D11_BIND_SHADER_RESOURCE, pixels.data(), 3 * eyes * 4, "GrassTest::DepthSource");
+	auto input = texture(extent * eyes, extent, D3D11_BIND_SHADER_RESOURCE, pixels.data(), extent * eyes * 4, "GrassTest::DepthSource");
 	auto output = texture(2 * eyes, 2, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE, nullptr, 0, "GrassTest::DepthReduced");
 	ComPtr<ID3D11ShaderResourceView> srv;
 	ComPtr<ID3D11UnorderedAccessView> uav;
@@ -404,12 +410,12 @@ void RunDepthReduction(bool vr)
 	D3D11ShaderTest::ConstantBuffer params(device.Get(), reflection.Get(), "Parameters");
 	params.SetVariable("Width", 2 * eyes);
 	params.SetVariable("Height", 2u);
-	params.SetVariable("SourceWidth", 3 * eyes);
-	params.SetVariable("SourceHeight", 3u);
+	params.SetVariable("SourceWidth", extent * eyes);
+	params.SetVariable("SourceHeight", extent);
 	params.SetVariable("Eyes", eyes);
 	params.SetVariable("FirstLevel", 1u);
-	params.SetVariable("ActiveWidth", 3 * eyes);
-	params.SetVariable("ActiveHeight", 3u);
+	params.SetVariable("ActiveWidth", extent * eyes);
+	params.SetVariable("ActiveHeight", extent);
 	params.Bind(context.Get());
 	auto source = srv.Get();
 	auto target = uav.Get();

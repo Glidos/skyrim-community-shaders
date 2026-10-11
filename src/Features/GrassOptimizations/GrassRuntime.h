@@ -9,6 +9,7 @@
 
 namespace GrassRuntime
 {
+	using SetupGeometry = void (*)(RE::BSShader*, RE::BSRenderPass*, uint32_t);
 	/** @brief Native grass fields follow the runtime-sized lighting property. */
 	struct PropertyData
 	{

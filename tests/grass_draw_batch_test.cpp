@@ -3,6 +3,8 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <thread>
+#include <vector>
 int main()
 {
 	try {
@@ -22,25 +24,63 @@ int main()
 		auto jittered = identity;
 		jittered[3] = .001f;
 		require(GrassFrustum::SelectProjection(jittered, identity, jittered, identity) == identity);
-		const auto dense = GrassPolicy::PlanScratchCapacity({}, 32769, 1);
-		require(dense && *dense == GrassPolicy::ScratchCapacity{ 65536, 1 });
-		const auto manySlices = GrassPolicy::PlanScratchCapacity(*dense, 64, 257);
-		require(manySlices && *manySlices == GrassPolicy::ScratchCapacity{ 65536, 512 });
-		for (unsigned frame = 0; frame < 1000; ++frame) {
-			require(GrassPolicy::PlanScratchCapacity(*manySlices, 32769, 1) == manySlices);
-			require(GrassPolicy::PlanScratchCapacity(*manySlices, 64, 257) == manySlices);
+		const auto dense = GrassPolicy::PlanCullCapacity({}, 32769, 1);
+		require(dense && *dense == GrassPolicy::CullCapacity{ 65536, 1 });
+		const auto stereoLOD = GrassPolicy::PlanCullCapacity(*dense, 64, 6);
+		require(stereoLOD && *stereoLOD == GrassPolicy::CullCapacity{ 65536, 6 });
+		require(GrassPolicy::PlanCullCapacity(*stereoLOD, 32769, 1) == stereoLOD);
+		require(!GrassPolicy::PlanCullCapacity({}, 0, 1));
+		require(!GrassPolicy::PlanCullCapacity({}, 1, 0));
+		require(!GrassPolicy::PlanCullCapacity({}, UINT64_MAX, 1));
+		require(!GrassPolicy::PlanCullCapacity({}, 1, 7));
+		require(!GrassPolicy::PlanCullCapacity({ UINT32_MAX, 1 }, 1, 1));
+		GrassPolicy::FrameQueue<int> queue;
+		std::array<int, 16> shapes{};
+		for (uint32_t frame : { UINT32_MAX - 1, UINT32_MAX, 0u, 1u }) {
+			std::atomic_uint winners{ 0 };
+			std::vector<std::thread> workers;
+			for (auto& shape : shapes)
+				workers.emplace_back([&queue, &winners, frame, identity = &shape]() {
+					if (queue.Claim(frame, identity))
+						++winners;
+				});
+			for (auto& worker : workers) worker.join();
+			require(winners == 1 && queue.queuedFrame == frame);
+			require(queue.representative >= shapes.data() && queue.representative < shapes.data() + shapes.size());
+			require(!queue.Claim(frame, &shapes.front()));
 		}
-		const auto reverse = GrassPolicy::PlanScratchCapacity({}, 64, 257);
-		require(reverse && GrassPolicy::PlanScratchCapacity(*reverse, 32769, 1) == manySlices);
-		const auto maximum = GrassPolicy::PlanScratchCapacity(*manySlices, GrassPolicy::kMaxBatchInstances, GrassPolicy::kMaxBatchSlices);
-		require(maximum && *maximum == GrassPolicy::ScratchCapacity{ GrassPolicy::kMaxBatchInstances, GrassPolicy::kMaxBatchSlices });
-		require(GrassPolicy::PlanScratchCapacity(*maximum, 1, 1) == maximum);
-		require(!GrassPolicy::PlanScratchCapacity({}, 0, 1));
-		require(!GrassPolicy::PlanScratchCapacity({}, 1, 0));
-		require(!GrassPolicy::PlanScratchCapacity({}, UINT64_MAX, 1));
-		require(!GrassPolicy::PlanScratchCapacity({}, 1, UINT64_MAX));
-		require(!GrassPolicy::PlanScratchCapacity({ UINT32_MAX, 1 }, 1, 1));
-		require(!GrassPolicy::PlanScratchCapacity({ 1, UINT32_MAX }, 1, 1));
+		require(GrassFrustum::WithinDistance(identity, { 0, 0, 0 }, { 10, 10, 10 }, 100));
+		require(GrassFrustum::WithinDistance(identity, { 227, 0, 0 }, { 229, 1, 1 }, 100));
+		require(!GrassFrustum::WithinDistance(identity, { 230, 0, 0 }, { 240, 1, 1 }, 100));
+		auto rotated = identity;
+		rotated[0] = rotated[5] = 0;
+		rotated[1] = -1;
+		rotated[4] = 1;
+		rotated[3] = -200;
+		require(GrassFrustum::WithinDistance(rotated, { 0, -210, 0 }, { 10, -190, 10 }, 100));
+		require(!GrassFrustum::WithinDistance(rotated, { 1000, 0, 0 }, { 1010, 10, 10 }, 100));
+		require(GrassFrustum::WithinDistance(rotated, { NAN, 0, 0 }, { 1, 1, 1 }, 100));
+		rotated[15] = 0;
+		require(GrassFrustum::WithinDistance(rotated, { 1000, 0, 0 }, { 1010, 10, 10 }, 100));
+		using Basis = std::array<std::array<float, 3>, 3>;
+		const Basis unit{ std::array{ 1.f, 0.f, 0.f }, std::array{ 0.f, 1.f, 0.f }, std::array{ 0.f, 0.f, 1.f } };
+		require(GrassPolicy::BasisNorm(unit) >= 1 && GrassPolicy::BasisNorm(unit) < 1.0001f);
+		for (const auto& basis : { unit, Basis{ std::array{ 1.f, 2.f, -.5f }, std::array{ 0.f, .1f, 1.f }, std::array{ 3.f, 0.f, .1f } } }) {
+			const float bound = GrassPolicy::BasisNorm(basis);
+			for (int x = -4; x <= 4; ++x)
+				for (int y = -4; y <= 4; ++y)
+					for (int z = -4; z <= 4; ++z) {
+						if (!x && !y && !z)
+							continue;
+						const float length = std::sqrt(float(x * x + y * y + z * z));
+						float squared = 0;
+						for (const auto& row : basis) {
+							const float transformed = (row[0] * x + row[1] * y + row[2] * z) / length;
+							squared += transformed * transformed;
+						}
+						require(std::sqrt(squared) <= bound);
+					}
+		}
 		GrassPolicy::Settings settings;
 		require(settings.Valid());
 		require(settings.Enabled && settings.CrossCellBatching && settings.FrustumCulling &&
@@ -64,21 +104,14 @@ int main()
 		require(!GrassPolicy::SnapshotBudgetValid(0, 32, 0));
 		require(!GrassPolicy::SnapshotBudgetValid(UINT64_MAX, 0, 0));
 		GrassPolicy::Residency generated{ 10, {} };
-		for (uint32_t frame = 10; frame <= 10 + GrassPolicy::kResidentIdleFrames; ++frame) {
-			generated.Observe(frame, false);
-			require(!generated.Expired(frame));
-			require(!generated.VisibleInFrame(frame));
-		}
-		require(generated.Expired(11 + GrassPolicy::kResidentIdleFrames));
 		generated.Observe(200, true);
-		require(generated.VisibleInFrame(200) && !generated.Expired(200));
+		require(generated.VisibleInFrame(200));
 		generated.Observe(250, false);
 		require(generated.IdleFrames(250) == 50 && !generated.VisibleInFrame(250));
-		require(generated.Expired(201 + GrassPolicy::kResidentIdleFrames));
 		GrassPolicy::Residency wrapped{ UINT32_MAX - 60, {} };
-		require(!wrapped.Expired(59) && wrapped.Expired(60));
+		require(wrapped.IdleFrames(59) == 120);
 		wrapped.Observe(0, true);
-		require(wrapped.VisibleInFrame(0) && !wrapped.Expired(0));
+		require(wrapped.VisibleInFrame(0) && wrapped.IdleFrames(0) == 0);
 		require(GrassPolicy::MeshStride(0x8000000000000087ull) == 28);
 		require(GrassPolicy::MeshStride(0x8000000000000080ull) == 0);
 		require(GrassPolicy::NativeCountMatches(10, 10));

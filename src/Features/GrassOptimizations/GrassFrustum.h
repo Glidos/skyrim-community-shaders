@@ -75,4 +75,26 @@ namespace GrassFrustum
 		}
 		return true;
 	}
+	/** @brief Retain invalid transforms and boxes reaching the camera's distance sphere. */
+	inline bool WithinDistance(const Matrix& matrix, const std::array<float, 3>& lo, const std::array<float, 3>& hi, float distance)
+	{
+		if (!std::isfinite(distance) || distance <= 0 || matrix[12] != 0 || matrix[13] != 0 || matrix[14] != 0 || matrix[15] != 1)
+			return true;
+		double squared = 0;
+		for (size_t row = 0; row < 3; ++row) {
+			double center = matrix[row * 4 + 3], extent = 0;
+			for (size_t axis = 0; axis < 3; ++axis) {
+				if (!std::isfinite(lo[axis]) || !std::isfinite(hi[axis]) || lo[axis] > hi[axis] || !std::isfinite(matrix[row * 4 + axis]))
+					return true;
+				center += double(matrix[row * 4 + axis]) * (double(lo[axis]) + hi[axis]) * .5;
+				extent += std::abs(double(matrix[row * 4 + axis])) * (double(hi[axis]) - lo[axis]) * .5;
+			}
+			if (!std::isfinite(center) || !std::isfinite(extent))
+				return true;
+			const auto nearest = std::max(0.0, std::abs(center) - extent);
+			squared += nearest * nearest;
+		}
+		return squared <= double(distance + kEdgePadding) * (distance + kEdgePadding);
+	}
+
 }

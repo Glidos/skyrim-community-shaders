@@ -22,7 +22,8 @@ GrassPolicy::Settings GrassOptimizations::GetSettings() const
 	return settings;
 }
 
-bool GrassOptimizations::IsEnabled() const { return GetSettings().Enabled; }
+bool GrassOptimizations::IsEnabled() const { return queueSettings.load(std::memory_order_acquire) & 1u; }
+bool GrassOptimizations::IsCrossCellBatchingEnabled() const { return queueSettings.load(std::memory_order_acquire) & 2u; }
 bool GrassOptimizations::IsHookInstalled() const { return renderer->IsHookInstalled(); }
 bool GrassOptimizations::SetSettings(const GrassPolicy::Settings& requested, std::string& error)
 {
@@ -33,6 +34,7 @@ bool GrassOptimizations::SetSettings(const GrassPolicy::Settings& requested, std
 	{
 		std::scoped_lock lock(settingsMutex);
 		settings = requested;
+		queueSettings.store((requested.Enabled ? 1u : 0u) | (requested.CrossCellBatching ? 2u : 0u), std::memory_order_release);
 	}
 	return true;
 }
@@ -95,7 +97,7 @@ void GrassOptimizations::RestoreDefaultSettings()
 void GrassOptimizations::SetupResources() { renderer->SetupResources(); }
 void GrassOptimizations::ClearShaderCache() { renderer->ClearShaderCache(); }
 void GrassOptimizations::PostPostLoad() { renderer->InstallHooks(); }
-void GrassOptimizations::PrepareGeometry(RE::BSRenderPass* pass) { renderer->PrepareGeometry(pass); }
+void GrassOptimizations::PrepareGeometry(RE::BSRenderPass* pass, RE::BSShader* shader, uint32_t flags, GrassRuntime::SetupGeometry setup) { renderer->PrepareGeometry(pass, shader, flags, setup); }
 
 std::pair<std::string, std::vector<std::string>> GrassOptimizations::GetFeatureSummary()
 {

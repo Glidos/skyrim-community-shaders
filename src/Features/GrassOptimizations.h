@@ -1,6 +1,8 @@
 #pragma once
 
 #include "GrassOptimizations/GrassPolicy.h"
+#include "GrassOptimizations/GrassRuntime.h"
+#include <atomic>
 
 #include <memory>
 #include <mutex>
@@ -43,13 +45,14 @@ struct GrassOptimizations : Feature
 	/** @brief Stage a toggle; changes take effect at the next grass pass without recompilation. */
 	void SetEnabled(bool enabled);
 	bool IsEnabled() const;
+	bool IsCrossCellBatchingEnabled() const;
 	bool IsHookInstalled() const;
 	GrassPolicy::Settings GetSettings() const;
 	/** @brief Validate a complete settings transaction before publishing it. */
 	bool SetSettings(const GrassPolicy::Settings& settings, std::string& error);
 	/** @brief Apply a validated partial settings transaction; unknown fields reject the whole update. */
 	bool UpdateSettings(const json& update, std::string& error);
-	void PrepareGeometry(RE::BSRenderPass* pass);
+	void PrepareGeometry(RE::BSRenderPass*, RE::BSShader*, uint32_t, GrassRuntime::SetupGeometry);
 	GrassBucketRenderer& GetRenderer() { return *renderer; }
 #ifdef DEVBENCH_BRIDGE_ENABLED
 	void SetDiagnosticsEnabled(bool enabled);
@@ -59,5 +62,6 @@ private:
 	void DrawControls(bool advanced, std::string_view section = {});
 	mutable std::mutex settingsMutex;
 	GrassPolicy::Settings settings;
+	std::atomic_uint32_t queueSettings{ 3 };
 	std::unique_ptr<GrassBucketRenderer> renderer;
 };

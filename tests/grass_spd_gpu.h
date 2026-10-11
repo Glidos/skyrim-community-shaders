@@ -1,4 +1,4 @@
-void RunSPDReduction(UINT eyeWidth, UINT height, UINT eyes)
+void RunSPDReduction(UINT eyeWidth, UINT height, UINT eyes, UINT maximumMips = 0)
 {
 	ComPtr<ID3D11Device> device;
 	ComPtr<ID3D11DeviceContext> context;
@@ -14,7 +14,8 @@ void RunSPDReduction(UINT eyeWidth, UINT height, UINT eyes)
 	Check(device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, shader.GetAddressOf()));
 	Util::SetResourceName(shader.Get(), "GrassTest::SPDCS");
 	const UINT width = eyeWidth * eyes;
-	const UINT mips = UINT((std::min)(std::bit_width(eyeWidth), std::bit_width(height)));
+	const UINT completeMips = UINT((std::min)(std::bit_width(eyeWidth), std::bit_width(height)));
+	const UINT mips = maximumMips ? (std::min)(completeMips, maximumMips) : completeMips;
 	const UINT spdMips = DepthPyramidPolicy::SinglePassMipCount(width, height, mips);
 	D3D11_TEXTURE2D_DESC desc{};
 	desc.Width = width;

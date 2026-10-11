@@ -91,6 +91,7 @@ namespace
 					}
 	}
 
+#include "grass_bounds_gpu.h"
 #include "grass_culling_gpu.h"
 #include "grass_spd_gpu.h"
 
@@ -116,8 +117,12 @@ int main()
 		RunCullingShader(true);
 		RunDepthReduction(false);
 		RunDepthReduction(true);
+		RunDepthReduction(false, 4);
+		RunDepthReduction(true, 4);
+		RunGrassBounds();
 		RunSPDReduction(64, 64, 1);
 		RunSPDReduction(128, 128, 2);
+		RunSPDReduction(512, 512, 2, 7);
 		RunSPDReduction(1024, 128, 2);
 		RunSPDReduction(2048, 512, 1);
 		RunSPDReduction(4096, 128, 2);

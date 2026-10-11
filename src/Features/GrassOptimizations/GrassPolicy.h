@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -12,11 +14,29 @@ namespace GrassPolicy
 	inline constexpr uint32_t kMaxBatchInstances = 262144;
 	inline constexpr uint32_t kMaxBatchSlices = 8192;
 	inline constexpr uint32_t kMaxFrameSources = 4096;
-	inline constexpr uint32_t kResidentIdleFrames = 120;
 	inline constexpr uint64_t kMaxResidentRecordBytes = 128ull * 1024 * 1024;
 	inline constexpr uint64_t kMaxCpuRecordBytes = 128ull * 1024 * 1024;
+	inline constexpr uint64_t kMaxCullResultBytes = 256ull * 1024 * 1024;
+	inline constexpr uint32_t kMaxFrameSlices = 131072;
 	inline constexpr uint64_t kMaxDormantRecordBytes = 16ull * 1024 * 1024;
 	inline constexpr float kMaxCollisionDistance = 20480.0f;
+	/** @brief Bound arbitrary packed bases tightly without assuming an orthogonal rotation. */
+	inline float BasisNorm(const std::array<std::array<float, 3>, 3>& rows)
+	{
+		float trace = 0, maximum = 0;
+		for (size_t row = 0; row < 3; ++row) {
+			float sum = 0;
+			for (size_t column = 0; column < 3; ++column) {
+				float product = 0;
+				for (size_t axis = 0; axis < 3; ++axis) product += rows[row][axis] * rows[column][axis];
+				if (row == column)
+					trace += product;
+				sum += std::abs(product);
+			}
+			maximum = std::max(maximum, sum);
+		}
+		return std::sqrt(std::min(trace, maximum) * 1.00001f);
+	}
 	/** @brief The native descriptor stores mesh stride in four-byte units in its low nibble. */
 	constexpr uint32_t MeshStride(uint64_t descriptor) { return uint32_t(descriptor & 0xF) * 4; }
 	/** @brief Unsupported batch sizes retain native rendering before scratch allocation. */
@@ -24,25 +44,44 @@ namespace GrassPolicy
 	{
 		return instances > 0 && instances <= kMaxBatchInstances && slices > 0 && slices <= kMaxBatchSlices;
 	}
-	struct ScratchCapacity
+	struct CullCapacity
 	{
-		uint32_t instances = 0, slices = 0;
-		bool operator==(const ScratchCapacity&) const = default;
+		uint32_t instances = 0, slots = 0;
+		bool operator==(const CullCapacity&) const = default;
 	};
-	/** @brief Grow independent scratch dimensions without shrinking storage needed by other buckets. */
-	constexpr std::optional<ScratchCapacity> PlanScratchCapacity(ScratchCapacity current, uint64_t instances, uint64_t slices)
+	/** @brief Retained culling storage grows independently for instances and eye/LOD slots. */
+	constexpr std::optional<CullCapacity> PlanCullCapacity(CullCapacity current, uint64_t instances, uint64_t slots)
 	{
-		if (!BatchCapacityValid(instances, slices) || current.instances > kMaxBatchInstances || current.slices > kMaxBatchSlices)
+		if (!instances || instances > kMaxBatchInstances || !slots || slots > 6 ||
+			current.instances > kMaxBatchInstances || current.slots > 6)
 			return std::nullopt;
-		return ScratchCapacity{ std::max(current.instances, std::bit_ceil(static_cast<uint32_t>(instances))),
-			std::max(current.slices, std::bit_ceil(static_cast<uint32_t>(slices))) };
+		return CullCapacity{ std::max(current.instances, std::bit_ceil(static_cast<uint32_t>(instances))),
+			std::max(current.slots, static_cast<uint32_t>(slots)) };
 	}
+	/** @brief Native visibility workers queue one representative before rendering starts. */
+	template <class Shape>
+	struct FrameQueue
+	{
+		std::atomic_uint64_t queuedFrame{ UINT64_MAX };
+		std::atomic<Shape*> representative{ nullptr };
+		bool Claim(uint32_t frame, Shape* shape)
+		{
+			auto previous = queuedFrame.load(std::memory_order_acquire);
+			while (previous != frame) {
+				if (!queuedFrame.compare_exchange_weak(previous, frame, std::memory_order_acq_rel))
+					continue;
+				representative.store(shape, std::memory_order_release);
+				return true;
+			}
+			return false;
+		}
+	};
 	/** @brief Replacing a resident snapshot must retain the bounded CPU record budget. */
 	constexpr bool SnapshotBudgetValid(uint64_t resident, uint64_t previous, uint64_t incoming)
 	{
 		return previous <= resident && resident <= kMaxCpuRecordBytes && incoming <= kMaxCpuRecordBytes - (resident - previous);
 	}
-	/** @brief Only confirmed native visibility renews residency; generated sources receive an initial grace period. */
+	/** @brief Native observations guide pressure eviction; generation hooks own snapshot lifetime. */
 	struct Residency
 	{
 		uint32_t createdFrame = 0;
@@ -54,7 +93,6 @@ namespace GrassPolicy
 				lastVisibleFrame = frame;
 		}
 		uint32_t IdleFrames(uint32_t frame) const { return frame - lastVisibleFrame.value_or(createdFrame); }
-		bool Expired(uint32_t frame) const { return IdleFrames(frame) > kResidentIdleFrames; }
 		bool VisibleInFrame(uint32_t frame) const { return lastVisibleFrame && *lastVisibleFrame == frame; }
 	};
 

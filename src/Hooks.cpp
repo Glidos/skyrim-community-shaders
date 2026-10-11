@@ -30,6 +30,7 @@
 #include "Features/AdaptiveBrightness.h"
 #include "Features/DynamicCubemaps.h"
 #include "Features/GrassOptimizations.h"
+#include "Features/GrassOptimizations/GrassBucketRenderer.h"
 #include "Features/InteriorSun.h"
 #include "Features/LightLimitFix.h"
 #include "Features/ScreenshotFeature.h"
@@ -948,7 +949,7 @@ namespace GrassExtensions
 					state->permutationData.ExtraShaderDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::GrassSphereNormal);
 				}
 			}
-			globals::features::grassOptimizations.PrepareGeometry(pass);
+			globals::features::grassOptimizations.PrepareGeometry(pass, shader, renderFlags, func.get());
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -1959,9 +1960,9 @@ namespace Hooks
 
 		// Original call from 1.4.0
 #ifdef DEVBENCH_BRIDGE_ENABLED
-		ProfileGrassRenderPass(a_pass, [&] { func(a_pass, a_technique, a_alphaTest, a_renderFlags); });
+		ProfileGrassRenderPass(a_pass, [&] { globals::features::grassOptimizations.GetRenderer().DrawRenderPass(a_pass, a_technique, a_alphaTest, a_renderFlags, func.get()); });
 #else
-		func(a_pass, a_technique, a_alphaTest, a_renderFlags);
+		globals::features::grassOptimizations.GetRenderer().DrawRenderPass(a_pass, a_technique, a_alphaTest, a_renderFlags, func.get());
 #endif
 	}
 
@@ -2021,9 +2022,9 @@ namespace Hooks
 
 			// Original call
 #ifdef DEVBENCH_BRIDGE_ENABLED
-			ProfileGrassRenderPass(a_pass, [&] { func(a_pass, a_technique, a_alphaTest, a_renderFlags); });
+			ProfileGrassRenderPass(a_pass, [&] { globals::features::grassOptimizations.GetRenderer().DrawRenderPass(a_pass, a_technique, a_alphaTest, a_renderFlags, func.get()); });
 #else
-			func(a_pass, a_technique, a_alphaTest, a_renderFlags);
+			globals::features::grassOptimizations.GetRenderer().DrawRenderPass(a_pass, a_technique, a_alphaTest, a_renderFlags, func.get());
 #endif
 		}
 
@@ -2037,9 +2038,9 @@ namespace Hooks
 		}
 
 #ifdef DEVBENCH_BRIDGE_ENABLED
-		ProfileGrassRenderPass(a_pass, [&] { BSBatchRenderer_RenderPassImmediately2::func(a_pass, a_technique, a_alphaTest, a_renderFlags); });
+		ProfileGrassRenderPass(a_pass, [&] { globals::features::grassOptimizations.GetRenderer().DrawRenderPass(a_pass, a_technique, a_alphaTest, a_renderFlags, BSBatchRenderer_RenderPassImmediately2::func.get()); });
 #else
-		BSBatchRenderer_RenderPassImmediately2::func(a_pass, a_technique, a_alphaTest, a_renderFlags);
+		globals::features::grassOptimizations.GetRenderer().DrawRenderPass(a_pass, a_technique, a_alphaTest, a_renderFlags, BSBatchRenderer_RenderPassImmediately2::func.get());
 #endif
 	}
 

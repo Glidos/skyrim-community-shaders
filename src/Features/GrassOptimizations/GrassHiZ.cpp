@@ -113,7 +113,7 @@ GrassHiZ::FailureObservation GrassHiZ::ObservedFailures() const
 #endif
 void GrassHiZ::Allocate(uint32_t nextWidth, uint32_t nextHeight, uint32_t eyes)
 {
-	pyramid.Allocate(nextWidth, nextHeight, eyes);
+	pyramid.Allocate(nextWidth, nextHeight, eyes, 7);
 	width = nextWidth;
 	height = nextHeight;
 	mipCount = pyramid.Mips();
@@ -213,8 +213,8 @@ bool GrassHiZ::Build(ID3D11DeviceContext1* context, uint32_t frame)
 		depthViewportSlack = std::max(depthViewportSlack, 1.0f - viewport.MaxDepth + 4 * std::numeric_limits<float>::epsilon());
 		return true;
 	}
-	const UINT nextWidth = std::bit_ceil((desc.Width / eyes + 1) / 2) * eyes;
-	const UINT nextHeight = std::bit_ceil((desc.Height + 1) / 2);
+	const UINT nextWidth = std::bit_ceil((desc.Width / eyes + 3) / 4) * eyes;
+	const UINT nextHeight = std::bit_ceil((desc.Height + 3) / 4);
 	if (nextWidth > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || nextHeight > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION)
 		GRASS_HIZ_FAIL(Extent);
 	if (width != nextWidth || height != nextHeight || !pyramid.Allocated())
@@ -223,10 +223,10 @@ bool GrassHiZ::Build(ID3D11DeviceContext1* context, uint32_t frame)
 	CS_GPU_PASS("GrassOptimizations::BuildHiZ");
 #endif
 	OutputState restoreOutputs(context);
-	if (!pyramid.Build(context, source, desc.Width, desc.Height, currentWidth, currentHeight, eyes))
+	if (!pyramid.Build(context, source, desc.Width, desc.Height, currentWidth, currentHeight, eyes, 4))
 		GRASS_HIZ_FAIL(Resources);
 
-	scale = { float(currentWidth) / (width * 2), float(currentHeight) / (height * 2), 0, 0 };
+	scale = { float(currentWidth) / (width * 4), float(currentHeight) / (height * 4), 0, 0 };
 	depthViewportSlack = 1.0f - viewport.MaxDepth + 4 * std::numeric_limits<float>::epsilon();
 	sourceIdentity = sourceResource;
 	activeWidth = currentWidth;
