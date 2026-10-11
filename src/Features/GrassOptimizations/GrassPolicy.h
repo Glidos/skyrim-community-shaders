@@ -92,7 +92,11 @@ namespace GrassPolicy
 			if (nativeVisible)
 				lastVisibleFrame = frame;
 		}
-		uint32_t IdleFrames(uint32_t frame) const { return frame - lastVisibleFrame.value_or(createdFrame); }
+		uint32_t IdleFrames(uint32_t frame, uint64_t observedFrame = UINT64_MAX) const
+		{
+			const auto nativeAge = frame - lastVisibleFrame.value_or(createdFrame);
+			return observedFrame <= UINT32_MAX ? std::min(nativeAge, frame - uint32_t(observedFrame)) : nativeAge;
+		}
 		bool VisibleInFrame(uint32_t frame) const { return lastVisibleFrame && *lastVisibleFrame == frame; }
 	};
 

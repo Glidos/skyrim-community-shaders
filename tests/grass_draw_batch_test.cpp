@@ -62,6 +62,24 @@ int main()
 		require(GrassFrustum::WithinDistance(rotated, { NAN, 0, 0 }, { 1, 1, 1 }, 100));
 		rotated[15] = 0;
 		require(GrassFrustum::WithinDistance(rotated, { 1000, 0, 0 }, { 1010, 10, 10 }, 100));
+		require(GrassFrustum::DeformationPadding(identity, { 0, 0, 0 }, { 10, 10, 10 }, 20, 5, 100) == 65);
+		require(GrassFrustum::DeformationPadding(identity, { 1000, 0, 0 }, { 1010, 10, 10 }, 20, 5, 100) == 25);
+		require(GrassFrustum::DeformationPadding(identity, { 0, 0, 0 }, { 10, 10, 10 }, 20, 5, 0) == 25);
+		require(GrassFrustum::DeformationPadding(identity, { NAN, 0, 0 }, { 1, 1, 1 }, 20, 5, 100) == 65);
+		require(GrassFrustum::DeformationPadding(rotated, { 1000, 0, 0 }, { 1010, 10, 10 }, 20, 5, 100) == 65);
+		// Every sampled root that can collide must retain the full displacement bound.
+		for (int translation : { -500, 0, 500 }) {
+			auto world = identity;
+			world[3] = float(translation);
+			for (int x = -1000; x <= 1000; x += 37) {
+				const float lo = float(x), hi = lo + 100;
+				const float padding = GrassFrustum::DeformationPadding(world, { lo, -10, -10 }, { hi, 10, 10 }, 20, 5, 100);
+				require(padding == 25 || padding == 65);
+				for (float root = lo; root <= hi; root += 5)
+					if (std::abs(root + translation) <= 120)
+						require(padding == 65);
+			}
+		}
 		using Basis = std::array<std::array<float, 3>, 3>;
 		const Basis unit{ std::array{ 1.f, 0.f, 0.f }, std::array{ 0.f, 1.f, 0.f }, std::array{ 0.f, 0.f, 1.f } };
 		require(GrassPolicy::BasisNorm(unit) >= 1 && GrassPolicy::BasisNorm(unit) < 1.0001f);
@@ -108,8 +126,13 @@ int main()
 		require(generated.VisibleInFrame(200));
 		generated.Observe(250, false);
 		require(generated.IdleFrames(250) == 50 && !generated.VisibleInFrame(250));
+		require(generated.IdleFrames(250, 249) == 1);
+		require(generated.IdleFrames(250, 150) == 50);
+		require(generated.IdleFrames(250, UINT64_MAX) == 50);
 		GrassPolicy::Residency wrapped{ UINT32_MAX - 60, {} };
 		require(wrapped.IdleFrames(59) == 120);
+		require(wrapped.IdleFrames(59, UINT32_MAX) == 60);
+		require(wrapped.IdleFrames(59, 58) == 1);
 		wrapped.Observe(0, true);
 		require(wrapped.VisibleInFrame(0) && wrapped.IdleFrames(0) == 0);
 		require(GrassPolicy::MeshStride(0x8000000000000087ull) == 28);
