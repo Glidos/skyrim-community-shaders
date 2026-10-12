@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Utils/OpenVRFrameTiming.h"
+#include "Utils/VRFrameTiming.h"
 
 #include <Tracy/Tracy.hpp>
 
@@ -23,18 +24,16 @@ namespace Util::TracyVRFrameTiming
 
 	inline void PlotFrame(const vr::Compositor_FrameTiming& a_timing, std::uint32_t& a_lastFrameIndex, double& a_lastSystemTime)
 	{
+		const auto sample = VRFrameTiming::Decode(a_timing);
 		const double poseToSubmitMs = a_timing.m_flNewFrameReadyMs - a_timing.m_flWaitGetPosesCalledMs;
 		if (ValidMs(poseToSubmitMs))
 			TracyPlot("VR::PoseToSubmitMs", poseToSubmitMs);
-		const double poseWaitMs = a_timing.m_flNewPosesReadyMs - a_timing.m_flWaitGetPosesCalledMs;
-		const double renderToSubmitMs = a_timing.m_flNewFrameReadyMs - a_timing.m_flNewPosesReadyMs;
-		if (ValidMs(poseToSubmitMs) && ValidNonnegativeMs(poseWaitMs) && ValidNonnegativeMs(renderToSubmitMs)) {
-			TracyPlot("VR::PoseWaitElapsedMs", poseWaitMs);
-			TracyPlot("VR::RenderToSubmitElapsedMs", renderToSubmitMs);
+		if (ValidMs(poseToSubmitMs) && sample.hasPoseWait && sample.hasRenderCpu) {
+			TracyPlot("VR::PoseWaitElapsedMs", static_cast<double>(sample.poseWaitMs));
+			TracyPlot("VR::RenderToSubmitElapsedMs", static_cast<double>(sample.renderCpuMs));
 		}
-		if (ValidNonnegativeMs(renderToSubmitMs) && ValidNonnegativeMs(a_timing.m_flCompositorRenderCpuMs) &&
-			ValidMs(renderToSubmitMs + a_timing.m_flCompositorRenderCpuMs))
-			TracyPlot("VR::OpenVRCpuFrameMs", renderToSubmitMs + a_timing.m_flCompositorRenderCpuMs);
+		if (sample.hasCpu)
+			TracyPlot("VR::OpenVRCpuFrameMs", static_cast<double>(sample.cpuMs));
 		if (ValidMs(a_timing.m_flPreSubmitGpuMs))
 			TracyPlot("VR::AppPreSubmitGpuMs", a_timing.m_flPreSubmitGpuMs);
 		if (ValidNonnegativeMs(a_timing.m_flPostSubmitGpuMs))
@@ -82,15 +81,14 @@ namespace Util::TracyVRFrameTiming
 	{
 #if defined(TRACY_ENABLE) && defined(ENABLE_SKYRIM_VR)
 		static constexpr std::uint32_t kRetryFrames = 120;
-		// The newest compositor entries can still be receiving presentation data.
-		static constexpr std::uint32_t kCompletionLagFrames = 2;
-		static constexpr std::uint32_t kMaxCatchUpFrames = 16;
+		static VRFrameTiming::Cursor cursor;
 		static std::uint32_t lastFrameIndex = 0;
 		static double lastSystemTime = 0.0;
 		static std::uint32_t nextRetryFrame = 0;
 		static bool disabled = false;
 
 		if (!TracyIsConnected) {
+			cursor = {};
 			lastFrameIndex = 0;
 			lastSystemTime = 0.0;
 			nextRetryFrame = 0;
@@ -111,7 +109,7 @@ namespace Util::TracyVRFrameTiming
 			return;
 		}
 
-		std::array<vr::Compositor_FrameTiming, kMaxCatchUpFrames + kCompletionLagFrames> history{};
+		std::array<vr::Compositor_FrameTiming, VRFrameTiming::kMaxCatchUpFrames + VRFrameTiming::kCompletionLagFrames> history{};
 		const auto count = OpenVRFrameTiming::TryGetFrameTimings(
 			compositor, history.data(), static_cast<std::uint32_t>(history.size()), &faulted);
 		if (count == 0) {
@@ -120,29 +118,9 @@ namespace Util::TracyVRFrameTiming
 				nextRetryFrame = a_gameFrame + 1;
 			return;
 		}
-		if (count <= kCompletionLagFrames)
-			return;
-
-		const auto completedCount = count - kCompletionLagFrames;
-		const auto& newest = history[completedCount - 1];
-		if (newest.m_nFrameIndex == 0 || !std::isfinite(newest.m_flSystemTimeInSeconds) || newest.m_flSystemTimeInSeconds <= 0.0)
-			return;
-		if (newest.m_nFrameIndex < lastFrameIndex) {
-			lastFrameIndex = 0;
-			lastSystemTime = 0.0;
-		}
-		if (newest.m_nFrameIndex == lastFrameIndex)
-			return;
-
-		// Do not import pre-connection history into a new Tracy capture.
-		const auto first = lastFrameIndex == 0 ? completedCount - 1 : 0u;
-		for (std::uint32_t i = first; i < completedCount; ++i) {
-			const auto& timing = history[i];
-			if (timing.m_nFrameIndex <= lastFrameIndex || timing.m_nFrameIndex > newest.m_nFrameIndex ||
-				!std::isfinite(timing.m_flSystemTimeInSeconds) || timing.m_flSystemTimeInSeconds <= 0.0)
-				continue;
+		cursor.Consume(std::span<const vr::Compositor_FrameTiming>(history.data(), count), [&](const auto& timing) {
 			PlotFrame(timing, lastFrameIndex, lastSystemTime);
-		}
+		});
 #else
 		(void)a_gameFrame;
 #endif

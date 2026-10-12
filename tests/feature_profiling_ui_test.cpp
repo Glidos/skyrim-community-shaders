@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <functional>
 #include <imgui_internal.h>
 #include <iostream>
@@ -28,6 +29,10 @@ namespace SKSE::stl
 }
 namespace Util
 {
+	namespace Color
+	{
+		ImVec4 SecondaryText() { return ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled); }
+	}
 	float GetUIScale() { return 1.0f; }
 	bool HoverTooltipWrapper() { return false; }
 	void AddTooltip(const char*) {}
@@ -148,6 +153,36 @@ namespace
 		ImGui::End();
 		ImGui::Render();
 		return text;
+	}
+}
+
+static void TestMetricCounterLayout()
+{
+	for (const float fontSize : { 13.0f, 27.0f }) {
+		for (const float cardWidth : { fontSize * 10, fontSize * 16 }) {
+			ImGui::NewFrame();
+			ImGui::SetNextWindowPos({ 0, 0 });
+			ImGui::SetNextWindowSize({ cardWidth + 16, 600 });
+			ImGui::Begin("Counters", nullptr, ImGuiWindowFlags_NoDecoration);
+			ImGui::PushFont(ImGui::GetFont(), fontSize);
+			const auto colorDepth = GImGui->ColorStack.Size;
+			const auto styleDepth = GImGui->StyleVarStack.Size;
+			const auto fontDepth = GImGui->FontStack.Size;
+			for (const auto* label : { "Frame", "VR GPU total", "VR CPU", "FPS" }) {
+				RenderMetricCounter(label, 99.99f, "%.2f ms", true, 1000.0f);
+				const auto* child = GImGui->CurrentWindow->DC.ChildWindows.back();
+				Check(child->DC.CursorMaxPos.x <= child->InnerRect.Max.x,
+					"timing label or peak clips horizontally");
+				Check(child->DC.CursorMaxPos.y <= child->InnerRect.Max.y,
+					"timing average or peak clips vertically");
+			}
+			Check(GImGui->ColorStack.Size == colorDepth && GImGui->StyleVarStack.Size == styleDepth &&
+					  GImGui->FontStack.Size == fontDepth,
+				"timing cards leak UI style");
+			ImGui::PopFont();
+			ImGui::End();
+			ImGui::Render();
+		}
 	}
 }
 
@@ -336,6 +371,7 @@ int main()
 		Check(globals::source.requests == unavailableRequests, "unavailable profiler received capture requests");
 		globals::profiler = &globals::source;
 		globals::source.initialized = true;
+		TestMetricCounterLayout();
 		ImGui::DestroyContext();
 		std::cout << "Feature profiling attribution and native UI checks passed\n";
 		return 0;

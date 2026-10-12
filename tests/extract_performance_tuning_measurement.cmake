@@ -7,6 +7,11 @@ include("${PROJECT_ROOT}/tests/extract_source_region.cmake")
 file(READ "${PROJECT_ROOT}/src/Menu/ProfilingRenderer.h" profiling)
 extract_between("${profiling}" "struct PerformanceTimingTotals"
     "/** Shared runtime capture switch" "measurement_summary.h")
+file(READ "${PROJECT_ROOT}/src/Menu/ProfilingRenderer.cpp" profiling_source)
+extract_between("${profiling_source}" "static bool IsPositiveFinite"
+    "static bool IsDisplayTimingSampleValid" "measurement_timing_validity.h")
+extract_between("${profiling_source}" "static void NormalizeGameFrameTiming"
+    "static int ScaleToUiInt" "measurement_cadence.h")
 file(READ "${PROJECT_ROOT}/src/Menu/PerformanceTuningRenderer.cpp" source)
 extract_between("${source}" "constexpr double kFeatureCostMeasurementSeconds"
     "constexpr std::array<std::string_view, 21>" "measurement_constants.h")
@@ -45,7 +50,7 @@ file(READ "${OUTPUT_DIRECTORY}/measurement_upscaling_settle.h" settle)
 file(READ "${OUTPUT_DIRECTORY}/measurement_summary.h" summary)
 file(WRITE "${OUTPUT_DIRECTORY}/performance_tuning_measurement_under_test.h"
     "#pragma once\nstruct Upscaling : Feature {\n${settle}\n};\nstruct ProfilingRenderer {\n${summary}\n};\n")
-foreach(part IN ITEMS constants types active cooldown validity statistics samples phases phase_names trace_types trace_state trace_helpers)
+foreach(part IN ITEMS timing_validity cadence constants types active cooldown validity statistics samples phases phase_names trace_types trace_state trace_helpers)
     file(READ "${OUTPUT_DIRECTORY}/measurement_${part}.h" section)
     file(APPEND "${OUTPUT_DIRECTORY}/performance_tuning_measurement_under_test.h"
         "${section}\n")

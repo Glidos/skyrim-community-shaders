@@ -1,6 +1,7 @@
 #include "Menu/PerformanceTuningController.h"
 #include "Menu/PerformanceTuningStatistics.h"
 #include "Utils/FlatFrameTiming.h"
+#include "Utils/VRFrameTiming.h"
 
 #include <array>
 #include <cmath>
@@ -305,6 +306,88 @@ namespace
 #endif
 	}
 
+	void TestIndependentCadence()
+	{
+		auto timing = Timing(1, 20.0f);
+		timing.frameMs = 20.0f;
+		timing.gameCpuMs = timing.gameCpuSampleMs = 30.0f;
+		timing.gameGpuMs = timing.gameGpuSampleMs = 40.0f;
+		timing.hasGameCpu = timing.hasGameGpu = true;
+		NormalizeGameFrameTiming(timing);
+		Near(timing.frameMs, 20.0, "live frame cadence must not be clamped by CPU/GPU");
+		Near(timing.frameSampleMs, 20.0, "measurement frame cadence must not be clamped by CPU/GPU");
+		Near(timing.fps, 50.0, "live FPS must follow application cadence");
+		Near(timing.fpsSample, 50.0, "measurement FPS must follow application cadence");
+		timing.frameMs = std::numeric_limits<float>::quiet_NaN();
+		timing.hasFrameSample = false;
+		NormalizeGameFrameTiming(timing);
+		Require(timing.fps == 0.0f && timing.fpsSample == 0.0f && !timing.hasFrameSample,
+			"CPU/GPU must not fabricate missing frame cadence");
+	}
+
+	void TestVRMeasurementOwnership()
+	{
+		Feature feature;
+		feature.shortName = "TerrainBlending";
+		auto state = Begin(feature);
+		auto timing = Timing(500);
+		timing.vrTiming = true;
+		timing.vrTimingEpoch = 7;
+		timing.vrLatestFrameIndex = 100;
+		UpdateFeatureCostMeasurement(&feature, state, timing, 2.0);
+		Require(state.currentSample.lastFrameCount == 100, "VR window must exclude frames in flight at preparation end");
+		const auto append = [&](std::uint32_t index) {
+			Util::VRFrameTiming::Sample source;
+			source.frameIndex = index;
+			source.frameMs = 100.0f;
+			source.gpuMs = 15.5f;
+			source.cpuMs = 2.9f;
+			source.hasFrame = source.hasGpu = source.hasCpu = true;
+			timing.vrSamples.push_back(source);
+		};
+		append(99);
+		append(100);
+		UpdateFeatureCostMeasurement(&feature, state, timing, 2.1);
+		Near(state.currentSample.sampledDurationMs, 0.0, "delayed preparation frames must not enter the measurement");
+		append(101);
+		append(102);
+		UpdateFeatureCostMeasurement(&feature, state, timing, 2.2);
+		Near(state.currentSample.sampledDurationMs, 200.0, "each completed compositor frame must be counted");
+		UpdateFeatureCostMeasurement(&feature, state, timing, 2.3);
+		Near(state.currentSample.sampledDurationMs, 200.0, "repeated game polls must not duplicate compositor frames");
+		for (std::uint32_t index = 103; index <= 130; ++index) {
+			timing.vrSamples.clear();
+			append(index);
+			UpdateFeatureCostMeasurement(&feature, state, timing, 2.0 + (index - 100) * 0.1);
+		}
+		Require(state.phase == Phase::PreparingTest, "complete VR window must advance the protocol");
+		Near(state.currentSample.sampledDurationMs, 3000.0, "VR window must preserve the existing measurement duration");
+		Near(PerformanceTuningStatistics::GetMean(state.currentSample.gameGpu.blocks[0]), 15.5, "VR measurement must use total GPU time");
+		Near(PerformanceTuningStatistics::GetMean(state.currentSample.gameCpu.blocks[0]), 2.9f, "VR measurement must use corrected CPU time");
+		timing.vrLatestFrameIndex = 150;
+		UpdateFeatureCostMeasurement(&feature, state, timing, 8.0);
+		timing.vrSamples.clear();
+		append(152);
+		UpdateFeatureCostMeasurement(&feature, state, timing, 8.1);
+		Near(state.testSample.sampledDurationMs, 0.0, "missing compositor frame must restart the current window");
+		timing.vrTimingEpoch = 8;
+		timing.vrLatestFrameIndex = 2;
+		timing.vrSamples.clear();
+		UpdateFeatureCostMeasurement(&feature, state, timing, 8.2);
+		Require(state.testSample.vrTimingEpoch == 8 && state.testSample.lastFrameCount == 2,
+			"compositor reset must rebase measurement ownership");
+		FeatureCostSample unavailable;
+		timing.vrLatestFrameIndex = 0;
+		ResetFeatureCostSampleWindow(unavailable, timing);
+		Require(!unavailable.vrWindowInitialized, "unavailable compositor must not establish a measurement boundary");
+		timing.vrLatestFrameIndex = 100;
+		timing.vrSamples.clear();
+		append(98);
+		AddFeatureCostSample(unavailable, timing);
+		Require(unavailable.lastFrameCount == 100 && unavailable.sampledDurationMs == 0.0,
+			"first recovered history must establish ownership without importing pre-measurement frames");
+	}
+
 	void TestMissingMetricsAndSettleOverrides()
 	{
 		FeatureCostSample current;
@@ -348,6 +431,8 @@ int main()
 		TestRestorationAndCancellation();
 		TestMissingMetricsAndSettleOverrides();
 		TestDiagnosticStatus();
+		TestVRMeasurementOwnership();
+		TestIndependentCadence();
 	} catch (const std::exception& error) {
 		std::cerr << error.what() << '\n';
 		return 1;

@@ -10,6 +10,7 @@
 
 #include "Profiler.h"
 #include "Utils/LegitProfiler.h"
+#include "Utils/VRFrameTiming.h"
 
 class ProfilingRenderer
 {
@@ -54,6 +55,11 @@ public:
 		uint64_t flatTimingEpoch = 0;
 		bool flatTiming = false;
 		std::vector<Util::FlatFrameTiming::Sample> flatSamples;
+		bool vrTiming = false;
+		std::uint64_t vrTimingEpoch = 0;
+		std::uint32_t vrLatestFrameIndex = 0;
+		std::vector<Util::VRFrameTiming::Sample> vrSamples;
+		Util::VRFrameTiming::Statistics vrDisplay;
 		bool hasGameGpu = false;
 		bool hasGameCpu = false;
 		bool hasGameGpuSample = false;

@@ -23,8 +23,11 @@ extract_between("${source}"
     "void ProfilingRenderer::RenderFeatureTimers"
     "ProfilingRenderer::PerformanceTimingSummary ProfilingRenderer::CapturePerformanceTimingSummary"
     "profiling_controls.h")
+file(READ "${PROJECT_ROOT}/src/Menu/PerformanceTuningRenderer.cpp" tuning)
+extract_between("${tuning}" "void RenderMetricCounter"
+    "void RenderTopPerformanceCounters" "profiling_counter.h")
 file(WRITE "${OUTPUT_DIRECTORY}/feature_profiling_under_test.h" "")
-foreach(part IN ITEMS constants validity helpers columns views controls)
+foreach(part IN ITEMS constants validity helpers columns views controls counter)
     file(READ "${OUTPUT_DIRECTORY}/profiling_${part}.h" section)
     file(APPEND "${OUTPUT_DIRECTORY}/feature_profiling_under_test.h" "${section}\n")
 endforeach()

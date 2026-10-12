@@ -45,7 +45,6 @@ namespace Util::OpenVRFrameTiming
 		return result;
 	}
 
-#	ifdef TRACY_ENABLE
 	/** @brief Copies a bounded, oldest-first compositor timing history. */
 	inline std::uint32_t TryGetFrameTimings(
 		vr::IVRCompositor* a_compositor,
@@ -68,6 +67,5 @@ namespace Util::OpenVRFrameTiming
 		}
 		return count <= a_capacity ? count : 0;
 	}
-#	endif
 }
 #endif

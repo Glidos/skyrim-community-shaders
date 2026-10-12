@@ -2882,6 +2882,8 @@ if(BUILD_CONTROLLER_TESTS)
         IN
         ITEMS
             summary
+            timing_validity
+            cadence
             constants
             types
             active
@@ -2910,6 +2912,7 @@ if(BUILD_CONTROLLER_TESTS)
             "${PROJECT_SOURCE_DIR}/tests/extract_performance_tuning_measurement.cmake"
         DEPENDS
             src/Menu/PerformanceTuningRenderer.cpp
+            src/Menu/ProfilingRenderer.cpp
             src/Menu/ProfilingRenderer.h
             src/Features/Upscaling.h
             tests/extract_performance_tuning_measurement.cmake
@@ -4375,6 +4378,11 @@ if(BUILD_CONTROLLER_TESTS)
     )
 
     add_controller_test(
+        vr_frame_timing_test
+        VRFrameTiming
+        tests/vr_frame_timing_test.cpp
+    )
+    add_controller_test(
         profiler_timing_test
         ProfilerTiming
         tests/profiler_timing_test.cpp
@@ -4398,7 +4406,7 @@ if(BUILD_CONTROLLER_TESTS)
     foreach(
         _part
         IN
-        ITEMS constants validity helpers columns views controls
+        ITEMS constants validity helpers columns views controls counter
     )
         list(
             APPEND _profiling_ui_sources
@@ -4414,6 +4422,7 @@ if(BUILD_CONTROLLER_TESTS)
         DEPENDS
             src/Menu/ProfilingRenderer.cpp
             tests/extract_feature_profiling.cmake
+            src/Menu/PerformanceTuningRenderer.cpp
             tests/extract_source_region.cmake
         VERBATIM
     )

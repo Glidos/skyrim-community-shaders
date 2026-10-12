@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <imgui.h>
@@ -31,7 +32,6 @@ static constexpr uint32_t kDisplayedRollingFrameCount = 60;
 static constexpr float kMaxDisplayTimingSampleMs = 1000.0f;
 #ifdef ENABLE_SKYRIM_VR
 static constexpr uint32_t kOpenVRTimingRetryFrames = 120;
-static constexpr uint32_t kOpenVRTimingMaxCacheAgeFrames = 120;
 #endif
 
 static bool IsPositiveFinite(float value)
@@ -91,10 +91,12 @@ struct RollingTimingAverage
 #ifdef ENABLE_SKYRIM_VR
 struct OpenVRGameTimingCache
 {
-	RollingTimingAverage gpuMs;
-	RollingTimingAverage cpuMs;
+	Util::VRFrameTiming::Cursor cursor;
+	Util::VRFrameTiming::Window window;
+	std::vector<Util::VRFrameTiming::Sample> samples;
+	std::chrono::steady_clock::time_point lastObservation{};
+	double observedSystemTime = 0.0;
 	uint32_t lastSampleFrame = 0;
-	uint32_t lastValidFrame = 0;
 	uint32_t nextRetryFrame = 0;
 	bool disabled = false;
 };
@@ -153,86 +155,77 @@ static float GetAverageGameFrameMs(float& sampleMs, bool& hasSample)
 	return frameMsAverage.Get();
 }
 
-#ifdef ENABLE_SKYRIM_VR
-static void ApplyOpenVRTimingCache(
-	const OpenVRGameTimingCache& cache,
-	uint32_t frameCount,
-	ProfilingRenderer::PerformanceTimingSummary& summary)
-{
-	if (cache.disabled ||
-		cache.lastValidFrame == 0 ||
-		frameCount < cache.lastValidFrame ||
-		frameCount - cache.lastValidFrame > kOpenVRTimingMaxCacheAgeFrames) {
-		return;
-	}
-
-	const float gpuMs = cache.gpuMs.Get();
-	if (IsPositiveFinite(gpuMs)) {
-		summary.gameGpuMs = gpuMs;
-		summary.hasGameGpu = true;
-	}
-
-	const float cpuMs = cache.cpuMs.Get();
-	if (IsPositiveFinite(cpuMs)) {
-		summary.gameCpuMs = cpuMs;
-		summary.hasGameCpu = true;
-	}
-}
-#endif
-
 static void CaptureOpenVRGameTiming(ProfilingRenderer::PerformanceTimingSummary& summary)
 {
 #ifdef ENABLE_SKYRIM_VR
 	static OpenVRGameTimingCache cache;
-
+	summary.vrTiming = true;
 	const uint32_t frameCount = summary.frameCount;
-	if (!REL::Module::IsVR() || frameCount == 0 || cache.disabled)
+	if (frameCount == 0)
 		return;
-
-	if (cache.lastSampleFrame != 0 && frameCount < cache.lastSampleFrame) {
-		cache = {};
+	const auto now = std::chrono::steady_clock::now();
+	if (cache.lastSampleFrame != 0 && frameCount != cache.lastSampleFrame && frameCount != cache.lastSampleFrame + 1) {
+		cache.cursor.Reset();
+		cache.window = {};
+		cache.samples.clear();
+		cache.nextRetryFrame = 0;
+		cache.disabled = false;
 	}
-
-	if (cache.lastSampleFrame != frameCount && frameCount >= cache.nextRetryFrame) {
-		cache.lastSampleFrame = frameCount;
-
-		bool resolveFaulted = false;
-		auto* compositor = Util::OpenVRFrameTiming::TryResolveCompositor(&resolveFaulted);
-
-		if (resolveFaulted) {
-			cache.disabled = true;
-		} else if (!compositor) {
-			cache.nextRetryFrame = frameCount + kOpenVRTimingRetryFrames;
-		} else {
-			vr::Compositor_FrameTiming timing{};
-			timing.m_nSize = static_cast<uint32_t>(sizeof(timing));
-
-			bool faulted = false;
-			if (Util::OpenVRFrameTiming::TryGetFrameTiming(compositor, &timing, &faulted)) {
-				const float gpuMs = timing.m_flPreSubmitGpuMs;
-				if (IsPositiveFinite(gpuMs)) {
-					cache.gpuMs.Push(gpuMs);
-					summary.gameGpuSampleMs = gpuMs;
-					summary.hasGameGpuSample = true;
-				}
-
-				const float cpuMs = timing.m_flNewFrameReadyMs - timing.m_flWaitGetPosesCalledMs;
-				if (IsPositiveFinite(cpuMs)) {
-					cache.cpuMs.Push(cpuMs);
-					summary.gameCpuSampleMs = cpuMs;
-					summary.hasGameCpuSample = true;
-				}
-				cache.lastValidFrame = frameCount;
-				cache.nextRetryFrame = frameCount + 1;
-			} else if (faulted) {
-				cache.disabled = true;
-			} else {
-				cache.nextRetryFrame = frameCount + kOpenVRTimingRetryFrames;
+	const bool newGameFrame = cache.lastSampleFrame != frameCount;
+	cache.lastSampleFrame = frameCount;
+	if (newGameFrame)
+		cache.samples.clear();
+	if (newGameFrame && !cache.disabled && frameCount >= cache.nextRetryFrame) {
+		bool faulted = false;
+		auto* compositor = Util::OpenVRFrameTiming::TryResolveCompositor(&faulted);
+		if (compositor && !faulted) {
+			std::array<vr::Compositor_FrameTiming,
+				Util::VRFrameTiming::kMaxCatchUpFrames + Util::VRFrameTiming::kCompletionLagFrames>
+				history{};
+			const auto count = Util::OpenVRFrameTiming::TryGetFrameTimings(
+				compositor, history.data(), static_cast<uint32_t>(history.size()), &faulted);
+			const auto epoch = cache.cursor.epoch;
+			cache.cursor.Consume(std::span<const vr::Compositor_FrameTiming>(history.data(), count), [&](const auto& timing) {
+				cache.samples.push_back(Util::VRFrameTiming::Decode(timing));
+			});
+			if (epoch != cache.cursor.epoch)
+				cache.window = {};
+			for (const auto& sample : cache.samples)
+				cache.window.Push(sample);
+			if (cache.cursor.latestSystemTime > 0.0 && cache.cursor.latestSystemTime != cache.observedSystemTime) {
+				cache.lastObservation = now;
+				cache.observedSystemTime = cache.cursor.latestSystemTime;
 			}
+			cache.nextRetryFrame = frameCount + 1;
+		} else {
+			cache.nextRetryFrame = frameCount + kOpenVRTimingRetryFrames;
+		}
+		cache.disabled = faulted;
+	}
+	summary.vrTimingEpoch = cache.cursor.epoch;
+	summary.vrLatestFrameIndex = cache.cursor.latestFrameIndex;
+	if (cache.disabled)
+		return;
+	const double age = std::chrono::duration<double>(now - cache.lastObservation).count();
+	summary.vrDisplay = cache.window.Get(cache.cursor.latestSystemTime + age);
+	summary.frameMs = summary.vrDisplay.frame.Average();
+	summary.gameGpuMs = summary.vrDisplay.gpu.Average();
+	summary.gameCpuMs = summary.vrDisplay.cpu.Average();
+	summary.hasGameGpu = summary.vrDisplay.gpu.count != 0;
+	summary.hasGameCpu = summary.vrDisplay.cpu.count != 0;
+	if (frameCount == cache.lastSampleFrame && age < Util::VRFrameTiming::kDisplayWindowSeconds) {
+		summary.vrSamples = cache.samples;
+		if (!cache.samples.empty()) {
+			const auto& sample = cache.samples.back();
+			summary.sampleFrameCount = sample.frameIndex;
+			summary.frameSampleMs = sample.frameMs;
+			summary.gameGpuSampleMs = sample.gpuMs;
+			summary.gameCpuSampleMs = sample.cpuMs;
+			summary.hasFrameSample = sample.hasFrame;
+			summary.hasGameGpuSample = sample.hasGpu;
+			summary.hasGameCpuSample = sample.hasCpu;
 		}
 	}
-
-	ApplyOpenVRTimingCache(cache, frameCount, summary);
 #else
 	(void)summary;
 #endif
@@ -277,40 +270,14 @@ static void CaptureFlatGameTiming(Profiler& profiler, ProfilingRenderer::Perform
 
 static void NormalizeGameFrameTiming(ProfilingRenderer::PerformanceTimingSummary& summary)
 {
-	float frameMs = IsPositiveFinite(summary.frameMs) ? summary.frameMs : 0.0f;
-	if (summary.hasGameGpu)
-		frameMs = std::max(frameMs, summary.gameGpuMs);
-	if (summary.hasGameCpu)
-		frameMs = std::max(frameMs, summary.gameCpuMs);
-
-	if (IsPositiveFinite(frameMs)) {
-		summary.frameMs = frameMs;
-		summary.fps = 1000.0f / frameMs;
-	} else {
+	// Frame cadence is independent of overlapping CPU/GPU work and compositor waits.
+	if (!IsPositiveFinite(summary.frameMs))
 		summary.frameMs = 0.0f;
-		summary.fps = 0.0f;
-	}
-
-	if (!summary.hasFrameSample && !summary.hasGameGpuSample && !summary.hasGameCpuSample)
-		return;
-
-	float frameSampleMs = summary.frameSampleMs;
+	summary.fps = summary.frameMs > 0.0f ? 1000.0f / summary.frameMs : 0.0f;
+	summary.hasFrameSample = summary.hasFrameSample && IsPositiveFinite(summary.frameSampleMs);
 	if (!summary.hasFrameSample)
-		frameSampleMs = 0.0f;
-	if (summary.hasGameGpuSample)
-		frameSampleMs = std::max(frameSampleMs, summary.gameGpuSampleMs);
-	if (summary.hasGameCpuSample)
-		frameSampleMs = std::max(frameSampleMs, summary.gameCpuSampleMs);
-
-	if (IsPositiveFinite(frameSampleMs)) {
-		summary.hasFrameSample = true;
-		summary.frameSampleMs = frameSampleMs;
-		summary.fpsSample = 1000.0f / frameSampleMs;
-	} else {
 		summary.frameSampleMs = 0.0f;
-		summary.fpsSample = 0.0f;
-		summary.hasFrameSample = false;
-	}
+	summary.fpsSample = summary.hasFrameSample ? 1000.0f / summary.frameSampleMs : 0.0f;
 }
 
 static int ScaleToUiInt(float value)
@@ -1413,12 +1380,10 @@ ProfilingRenderer::PerformanceTimingSummary ProfilingRenderer::CapturePerformanc
 		}
 	}
 
-	summary.frameMs = GetAverageGameFrameMs(summary.frameSampleMs, summary.hasFrameSample);
-	summary.fps = summary.frameMs > 0.0f ? 1000.0f / summary.frameMs : 0.0f;
-	summary.fpsSample = summary.frameSampleMs > 0.0f ? 1000.0f / summary.frameSampleMs : 0.0f;
 	if (globals::game::isVR) {
 		CaptureOpenVRGameTiming(summary);
 	} else {
+		summary.frameMs = GetAverageGameFrameMs(summary.frameSampleMs, summary.hasFrameSample);
 		CaptureFlatGameTiming(profiler, summary);
 	}
 	if (gpuTotalSamples.HasSamples())

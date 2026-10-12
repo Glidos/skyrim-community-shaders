@@ -97,6 +97,8 @@ namespace
 		FeatureCostMetricSample gameGpu;
 		FeatureCostMetricSample gameCpu;
 		uint32_t lastFrameCount = 0;
+		std::uint64_t vrTimingEpoch = 0;
+		bool vrWindowInitialized = false;
 		std::deque<Util::FlatFrameTiming::PendingSample<kFeatureCostMeasurementBlockCount>> pendingFlatSamples;
 	};
 
@@ -212,6 +214,13 @@ namespace
 		std::uint32_t sampleFrameCount = 0;
 		std::uint64_t samplePresentId = 0;
 		bool flatTiming = false;
+		bool vrTiming = false;
+		std::uint64_t vrTimingEpoch = 0;
+		double compositorSystemTime = 0.0;
+		float sceneGpuMs = 0.0f;
+		float poseWaitMs = 0.0f;
+		bool hasSceneGpu = false;
+		bool hasPoseWait = false;
 		float frameMs = 0.0f;
 		float gameGpuMs = 0.0f;
 		float gameCpuMs = 0.0f;
@@ -538,9 +547,19 @@ namespace
 		sample.runElapsedMs = std::max(0.0, currentTime - runStartTime) * 1000.0;
 		sample.phaseElapsedMs = std::max(0.0, currentTime - phaseStartTime) * 1000.0;
 		sample.frameCount = summary.frameCount;
-		sample.sampleFrameCount = summary.flatTiming ? summary.sampleFrameCount : summary.frameCount;
+		sample.sampleFrameCount = summary.flatTiming || summary.vrTiming ? summary.sampleFrameCount : summary.frameCount;
 		sample.samplePresentId = summary.samplePresentId;
 		sample.flatTiming = summary.flatTiming;
+		sample.vrTiming = summary.vrTiming;
+		sample.vrTimingEpoch = summary.vrTimingEpoch;
+		if (summary.vrTiming && !summary.vrSamples.empty()) {
+			const auto& source = summary.vrSamples.back();
+			sample.compositorSystemTime = source.systemTime;
+			sample.sceneGpuMs = source.sceneGpuMs;
+			sample.poseWaitMs = source.poseWaitMs;
+			sample.hasSceneGpu = source.hasSceneGpu;
+			sample.hasPoseWait = source.hasPoseWait;
+		}
 		sample.hasFrame = summary.hasFrameSample && IsValidFeatureCostTiming(summary.frameSampleMs);
 		sample.hasGameGpu = summary.hasGameGpuSample && IsValidFeatureCostTiming(summary.gameGpuSampleMs);
 		sample.hasGameCpu = summary.hasGameCpuSample && IsValidFeatureCostTiming(summary.gameCpuSampleMs);
@@ -737,7 +756,7 @@ namespace
 			});
 	}
 
-	FeatureCostSampleResult AddFeatureCostSample(
+	FeatureCostSampleResult AddFeatureCostFrame(
 		FeatureCostSample& sample,
 		const ProfilingRenderer::PerformanceTimingSummary& summary)
 	{
@@ -922,6 +941,45 @@ namespace
 		// Readiness can extend a phase beyond its minimum deadline. Keep an active
 		// countdown visible until the safety timeout or successful restoration.
 		return IsFeatureCostMeasurementActive(state) ? std::max(1.0, remainingSeconds) : 0.0;
+	}
+
+	void ResetFeatureCostSampleWindow(FeatureCostSample& sample, const ProfilingRenderer::PerformanceTimingSummary& current)
+	{
+		sample = {};
+		// Exclude in-flight compositor frames which started before the measurement boundary.
+		sample.lastFrameCount = current.vrTiming ? current.vrLatestFrameIndex : current.frameCount;
+		sample.vrTimingEpoch = current.vrTimingEpoch;
+		sample.vrWindowInitialized = current.vrTiming && current.vrLatestFrameIndex != 0;
+	}
+
+	FeatureCostSampleResult AddFeatureCostSample(
+		FeatureCostSample& sample, const ProfilingRenderer::PerformanceTimingSummary& summary)
+	{
+		if (!summary.vrTiming)
+			return AddFeatureCostFrame(sample, summary);
+		if (!sample.vrWindowInitialized) {
+			ResetFeatureCostSampleWindow(sample, summary);
+			return FeatureCostSampleResult::Pending;
+		}
+		if (sample.vrTimingEpoch != summary.vrTimingEpoch)
+			return FeatureCostSampleResult::Interrupted;
+		for (const auto& source : summary.vrSamples) {
+			if (source.frameIndex <= sample.lastFrameCount)
+				continue;
+			ProfilingRenderer::PerformanceTimingSummary frame;
+			frame.frameCount = source.frameIndex;
+			frame.valid = source.hasFrame;
+			frame.frameSampleMs = source.frameMs;
+			frame.hasFrameSample = source.hasFrame;
+			frame.gameGpuSampleMs = source.gpuMs;
+			frame.hasGameGpuSample = source.hasGpu;
+			frame.gameCpuSampleMs = source.cpuMs;
+			frame.hasGameCpuSample = source.hasCpu;
+			const auto result = AddFeatureCostFrame(sample, frame);
+			if (result != FeatureCostSampleResult::Pending)
+				return result;
+		}
+		return FeatureCostSampleResult::Pending;
 	}
 
 	RE::FormID GetMeasurementCellId()
@@ -1303,9 +1361,7 @@ namespace
 		const ProfilingRenderer::PerformanceTimingSummary& current,
 		double currentTime)
 	{
-		sample = {};
-		// The frame which completed preparation belongs to the wait period.
-		sample.lastFrameCount = current.frameCount;
+		ResetFeatureCostSampleWindow(sample, current);
 		state.phase = phase;
 		state.phaseStartTime = currentTime;
 	}
@@ -1313,15 +1369,14 @@ namespace
 	bool RestartInterruptedFeatureCostSample(
 		FeatureCostSampleResult result,
 		FeatureCostSample& sample,
-		uint32_t currentFrameCount,
+		const ProfilingRenderer::PerformanceTimingSummary& current,
 		FeatureCostMeasurementState& state,
 		double currentTime)
 	{
 		if (result != FeatureCostSampleResult::Interrupted)
 			return false;
 
-		sample = {};
-		sample.lastFrameCount = currentFrameCount;
+		ResetFeatureCostSampleWindow(sample, current);
 		state.phaseStartTime = currentTime;
 		return true;
 	}
@@ -1401,7 +1456,7 @@ namespace
 			if (RestartInterruptedFeatureCostSample(
 					sampleResult,
 					state.currentSample,
-					current.frameCount,
+					current,
 					state,
 					currentTime)) {
 				return;
@@ -1432,7 +1487,7 @@ namespace
 			if (RestartInterruptedFeatureCostSample(
 					sampleResult,
 					state.testSample,
-					current.frameCount,
+					current,
 					state,
 					currentTime)) {
 				return;
@@ -1921,7 +1976,8 @@ namespace
 		}
 	}
 
-	void RenderMetricCounter(const char* label, float value, const char* format, bool valid)
+	void RenderMetricCounter(const char* label, float value, const char* format, bool valid,
+		float peak = -1.0f, const char* tooltip = nullptr)
 	{
 		ImGui::PushID(label);
 		const SKSE::stl::scope_exit restoreId([] { ImGui::PopID(); });
@@ -1931,23 +1987,29 @@ namespace
 		ImGui::PushStyleColor(ImGuiCol_ChildBg, background);
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { font * .75f, font * .6f });
 		const SKSE::stl::scope_exit restoreStyle([] { ImGui::PopStyleVar(); ImGui::PopStyleColor(); });
-		const float height = font * 3.8f + ImGui::GetStyle().ItemSpacing.y;
+		const float height = font * 5.0f + ImGui::GetStyle().ItemSpacing.y;
 		const bool visible = ImGui::BeginChild("##Counter", { 0, height }, ImGuiChildFlags_AlwaysUseWindowPadding,
 			ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 		const SKSE::stl::scope_exit endChild([] { ImGui::EndChild(); });
 		if (!visible)
 			return;
 		ImGui::TextColored(Util::Color::SecondaryText(), "%s", label);
+		if (tooltip)
+			Util::AddTooltip(tooltip);
 		char text[64];
 		std::snprintf(text, sizeof(text), valid ? format : "--", value);
 		const float textWidth = ImGui::GetFont()->CalcTextSizeA(font * 1.6f, FLT_MAX, 0, text).x;
 		const float textScale = std::min(1.0f, ImGui::GetContentRegionAvail().x / std::max(1.0f, textWidth));
-		ImGui::PushFont(ImGui::GetFont(), font * 1.6f * textScale);
-		const SKSE::stl::scope_exit restoreFont([] { ImGui::PopFont(); });
-		if (valid)
-			ImGui::TextUnformatted(text);
-		else
-			ImGui::TextDisabled("%s", text);
+		{
+			ImGui::PushFont(ImGui::GetFont(), font * 1.6f * textScale);
+			const SKSE::stl::scope_exit restoreFont([] { ImGui::PopFont(); });
+			if (valid)
+				ImGui::TextUnformatted(text);
+			else
+				ImGui::TextDisabled("%s", text);
+		}
+		if (valid && peak >= 0.0f)
+			ImGui::TextColored(Util::Color::SecondaryText(), "Peak %.2f ms", peak);
 	}
 
 	void RenderTopPerformanceCounters(const ProfilingRenderer::PerformanceTimingSummary& summary)
@@ -1957,15 +2019,37 @@ namespace
 		float displayCpuMs = 0.0f;
 		const bool hasDisplayCpu = TryGetDisplayCpuMs(summary, displayCpuMs);
 
-		const float minimumWidth = ImGui::GetFontSize() * 7;
-		const int columns = ImGui::GetContentRegionAvail().x >= minimumWidth * 4 ? 4 : 2;
+		MenuUI::DetailText(summary.vrTiming ?
+							   "Live averages over 1 s; peaks use the same window. Hover a timing label for details." :
+							   "Live averages over 60 samples. Frame and FPS show application cadence.");
+		const auto& stats = summary.vrDisplay;
+		const std::string gpuDetails = summary.vrTiming ? fmt::format(
+															  "SteamVR total GPU interval, including application and compositor work.\nScene GPU: {}\n"
+															  "fpsVR displays a peak; compare the peak below with its refresh interval set to 1 s.",
+															  stats.sceneGpu.count ? fmt::format("{:.2f} ms average / {:.2f} ms peak", stats.sceneGpu.Average(), stats.sceneGpu.peak) : "unavailable") :
+		                                                  "Whole-frame D3D11 GPU timing. Unavailable with the D3D12 frame-generation path.";
+		const std::string cpuDetails = summary.vrTiming ? fmt::format(
+															  "Poses ready to submission, plus compositor CPU time. Excludes pose waiting; does not measure all CPU threads.\n"
+															  "Pose wait: {}\nfpsVR displays the peak over its refresh interval.",
+															  stats.poseWait.count ? fmt::format("{:.2f} ms average / {:.2f} ms peak", stats.poseWait.Average(), stats.poseWait.peak) : "unavailable") :
+		                                                  "Elapsed CPU render-to-present interval.";
+		const float minimumWidth = ImGui::GetFontSize() * 12;
+		const float availableWidth = ImGui::GetContentRegionAvail().x;
+		const float gap = ImGui::GetStyle().ItemSpacing.x;
+		const int columns = availableWidth >= minimumWidth * 4 + gap * 3 ? 4 :
+		                    availableWidth >= minimumWidth * 2 + gap     ? 2 :
+		                                                                   1;
 		MenuUI::DetailGrid counters("##PerformanceTuningTopCounters", columns, minimumWidth);
 		counters.Next();
-		RenderMetricCounter("Game", summary.frameMs, "%.2f ms", summary.frameMs > 0.0f);
+		RenderMetricCounter("Frame", summary.frameMs, "%.2f ms", summary.frameMs > 0.0f,
+			summary.vrTiming && stats.frame.count ? stats.frame.peak : -1.0f,
+			"Application frame interval. FPS is the reciprocal of its average; CPU and GPU timings do not clamp it.");
 		counters.Next();
-		RenderMetricCounter("GPU", displayGpuMs, "%.2f ms", hasDisplayGpu);
+		RenderMetricCounter(summary.vrTiming ? "VR GPU total" : "GPU", displayGpuMs, "%.2f ms", hasDisplayGpu,
+			summary.vrTiming && stats.gpu.count ? stats.gpu.peak : -1.0f, gpuDetails.c_str());
 		counters.Next();
-		RenderMetricCounter("CPU", displayCpuMs, "%.2f ms", hasDisplayCpu);
+		RenderMetricCounter(summary.vrTiming ? "VR CPU" : "CPU", displayCpuMs, "%.2f ms", hasDisplayCpu,
+			summary.vrTiming && stats.cpu.count ? stats.cpu.peak : -1.0f, cpuDetails.c_str());
 		counters.Next();
 		RenderMetricCounter("FPS", summary.fps, "%.0f", summary.fps > 0.0f);
 	}
@@ -2105,7 +2189,7 @@ namespace
 			ImGui::TextWrapped(
 				"After completion, wait %.0f seconds before remeasuring or starting the next feature or Upscaling case.",
 				kFeatureCostRestartCooldownSeconds);
-			ImGui::TextWrapped("GPU/CPU rows allow two missing raw samples across both states. Three or more invalidate only that row; missing GPU/CPU data does not block Game/FPS.");
+			ImGui::TextWrapped("GPU/CPU rows allow two missing raw samples across both states. Three or more invalidate only that row; missing GPU/CPU data does not block Frame/FPS.");
 			ImGui::TextWrapped("The idle/vanity camera is suppressed throughout the run; its previous delay returns afterward.");
 			if (feature && feature->GetShortName() == "Skylighting") {
 				ImGui::TextWrapped("For Skylighting, the comparison state is its in-game Enable toggle set to Off, not a lower preset.");
@@ -2141,7 +2225,7 @@ namespace
 
 		ImGui::Spacing();
 		const std::string differenceHeader = fmt::format(
-			"Current - {} \xC2\xB1 SE",
+			"Mean: Current - {} \xC2\xB1 SE",
 			GetFeatureCostComparisonLabel(feature));
 		if (ImGui::BeginTable(
 				"##FeatureCostResults",
@@ -2151,12 +2235,12 @@ namespace
 					ImGuiTableFlags_PadOuterX |
 					ImGuiTableFlags_SizingStretchProp |
 					ImGuiTableFlags_NoSavedSettings)) {
-			ImGui::TableSetupColumn("Metric", ImGuiTableColumnFlags_WidthFixed, std::ceil(ImGui::CalcTextSize("Metric").x));
+			ImGui::TableSetupColumn("Metric", ImGuiTableColumnFlags_WidthFixed, std::ceil(ImGui::CalcTextSize(globals::game::isVR ? "VR GPU total" : "Metric").x));
 			ImGui::TableSetupColumn(differenceHeader.c_str(), ImGuiTableColumnFlags_WidthStretch);
 			ImGui::TableSetupColumn("Cost / FPS loss (%)", ImGuiTableColumnFlags_WidthStretch);
 			RenderMeasurementTableHeaders();
 			RenderFeatureCostMetricRow(
-				"Game",
+				"Frame",
 				state.delta.frame,
 				GetDirectionFromFeatureCostFrameTimeDelta(state.delta.frame.value),
 				false);
@@ -2166,12 +2250,12 @@ namespace
 				GetDirectionFromFeatureCostFpsDelta(state.delta.fps.value),
 				true);
 			RenderFeatureCostMetricRow(
-				"GPU",
+				globals::game::isVR ? "VR GPU total" : "GPU",
 				state.delta.gameGpu,
 				GetDirectionFromFeatureCostFrameTimeDelta(state.delta.gameGpu.value),
 				false);
 			RenderFeatureCostMetricRow(
-				"CPU",
+				globals::game::isVR ? "VR CPU" : "CPU",
 				state.delta.gameCpu,
 				GetDirectionFromFeatureCostFrameTimeDelta(state.delta.gameCpu.value),
 				false);
@@ -2448,6 +2532,7 @@ namespace
 		auto* feature = FindFeatureByShortName(shortName);
 		return {
 			{ "feature", shortName },
+			{ "timingDefinitionVersion", Util::VRFrameTiming::kDefinitionVersion },
 			{ "displayName", feature ? json(feature->GetDisplayName()) : json(nullptr) },
 			{ "owner", state.devBenchOwned ? "devbench_feature_cost" : "ui" },
 			{ "relativeTo", feature ? GetFeatureCostComparisonLabel(feature) : "Off" },
@@ -2491,6 +2576,7 @@ namespace
 		return {
 			{ "profile", UpscalingCostSweepProfileJson(result) },
 			{ "relativeTo", "none" },
+			{ "timingDefinitionVersion", Util::VRFrameTiming::kDefinitionVersion },
 			{ "game", FeatureCostMetricDeltaJson(result.delta.frame, "ms") },
 			{ "fps", FeatureCostMetricDeltaJson(result.delta.fps, "fps") },
 			{ "gpu", FeatureCostMetricDeltaJson(result.delta.gameGpu, "ms") },
@@ -2498,8 +2584,16 @@ namespace
 		};
 	}
 
-	void AppendFlatTimingSource(json& timing, const FeatureCostTraceSample& sample)
+	void AppendTimingSource(json& timing, const FeatureCostTraceSample& sample)
 	{
+		if (sample.vrTiming) {
+			timing["timingDefinitionVersion"] = Util::VRFrameTiming::kDefinitionVersion;
+			timing["compositorFrameIndex"] = sample.compositorSystemTime > 0.0 ? json(sample.sampleFrameCount) : json(nullptr);
+			timing["compositorSystemTimeSeconds"] = sample.compositorSystemTime > 0.0 ? json(sample.compositorSystemTime) : json(nullptr);
+			timing["timingEpoch"] = sample.vrTimingEpoch;
+			timing["sceneGpuMs"] = sample.hasSceneGpu ? json(sample.sceneGpuMs) : json(nullptr);
+			timing["poseWaitMs"] = sample.hasPoseWait ? json(sample.poseWaitMs) : json(nullptr);
+		}
 		if (!sample.flatTiming)
 			return;
 		timing["gpuCpuFrameCount"] = sample.samplePresentId != 0 ? json(sample.sampleFrameCount) : json(nullptr);
@@ -2537,7 +2631,7 @@ namespace
 				{ "gameGpuMs", sample.hasGameGpu ? json(sample.gameGpuMs) : json(nullptr) },
 				{ "gameCpuMs", sample.hasGameCpu ? json(sample.gameCpuMs) : json(nullptr) },
 			});
-			AppendFlatTimingSource(samples.back(), sample);
+			AppendTimingSource(samples.back(), sample);
 			nextAfterSequence = sample.sequence;
 		}
 
@@ -2636,7 +2730,7 @@ namespace
 				{ "gameGpuMs", sample.hasGameGpu ? json(sample.gameGpuMs) : json(nullptr) },
 				{ "gameCpuMs", sample.hasGameCpu ? json(sample.gameCpuMs) : json(nullptr) },
 			};
-			AppendFlatTimingSource(latestTiming, sample);
+			AppendTimingSource(latestTiming, sample);
 		}
 
 		const bool sweepKnown = g_upscalingCostSweep.phase != UpscalingCostSweepPhase::Idle;
@@ -2646,6 +2740,17 @@ namespace
 		const auto readiness = CaptureUpscalingCostSweepReadiness(currentTime);
 		const auto& fidelityFX = Upscaling::fidelityFX;
 		json response = json::object();
+		response["metricDefinitions"] = {
+			{ "version", Util::VRFrameTiming::kDefinitionVersion },
+			{ "runtime", globals::game::isVR ? "vr" : "flat" },
+			{ "frame", globals::game::isVR ? "OpenVR ClientFrameIntervalMs" : "game frame cadence" },
+			{ "gpu", globals::game::isVR ? "OpenVR TotalRenderGpuMs" : "D3D11 whole-frame GPU" },
+			{ "cpu", globals::game::isVR ? "OpenVR NewFrameReadyMs - NewPosesReadyMs + CompositorRenderCpuMs" : "QPC render-to-present CPU" },
+			{ "displayWindowMs", globals::game::isVR ? json(Util::VRFrameTiming::kDisplayWindowSeconds * 1000.0) : json(nullptr) },
+			{ "displayStatistic", globals::game::isVR ? "mean and peak" : "mean of 60 samples" },
+			{ "comparisonStatistic", "mean difference with standard error" },
+			{ "completionLagFrames", globals::game::isVR ? Util::VRFrameTiming::kCompletionLagFrames : 0 },
+		};
 		response["active"] = PerformanceTuningRenderer::HasActiveMeasurements();
 		response["quickScan"] = QuickScanStatus();
 		response["featureBatch"] = {
@@ -2805,14 +2910,14 @@ namespace
 		if (!g_featureCostBatch.failureMessage.empty())
 			MenuUI::DetailText(g_featureCostBatch.failureMessage.c_str());
 		MenuUI::SectionHeading("Features and results");
-		MenuUI::DetailText("Select enabled features below. Individual on/off costs do not add up to a total. -- = unmeasured or unavailable.");
+		MenuUI::DetailText("Select enabled features below. Comparisons use means with standard errors. Individual on/off costs do not add up to a total. -- = unmeasured or unavailable.");
 		const bool busy = PerformanceTuningRenderer::HasActiveMeasurements();
 		if (ImGui::BeginTable("##PerformanceFeatureCosts", 5,
 				ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_PadOuterX | ImGuiTableFlags_SizingStretchProp)) {
 			ImGui::TableSetupColumn("Feature (in game toggle)", ImGuiTableColumnFlags_WidthStretch, 2.0f);
 			ImGui::TableSetupColumn("Frame (%)");
-			ImGui::TableSetupColumn("CPU (%)");
-			ImGui::TableSetupColumn("GPU (%)");
+			ImGui::TableSetupColumn(globals::game::isVR ? "VR CPU (%)" : "CPU (%)");
+			ImGui::TableSetupColumn(globals::game::isVR ? "VR GPU total (%)" : "GPU (%)");
 			ImGui::TableSetupColumn("FPS loss (%)");
 			RenderMeasurementTableHeaders();
 			for (auto* feature : features) {
