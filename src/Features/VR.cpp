@@ -1544,15 +1544,16 @@ namespace
 
 		if (effectiveWandNavigation) {
 			ImGui::SetNextItemWidth(220.0f);
-			Util::Widgets::SliderFloat(
+			Util::Widgets::SliderFloatOnRelease(
 				"Wand Aim Pitch Trim",
 				&settings.WandAimPitchTrimDegrees,
 				VR::Config::kMinWandAimPitchTrimDegrees,
 				VR::Config::kMaxWandAimPitchTrimDegrees,
-				"%+.1f deg");
+				"%+.1f deg", ImGuiSliderFlags_AlwaysClamp);
 			if (auto _tt = Util::HoverTooltipWrapper()) {
 				ImGui::TextUnformatted("Rotates the pointer around the controller aim pose's local X axis.");
 				ImGui::TextUnformatted("Positive values pitch the pointer from local forward toward local up.");
+				ImGui::TextUnformatted("Applies when you release the slider or confirm a number.");
 				ImGui::TextUnformatted("Shared OCU pointing applies this trim once in OCU, then shares its smoothed ray and laser.");
 			}
 		}

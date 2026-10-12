@@ -709,6 +709,34 @@ namespace Util::Widgets
 	{
 		return SliderScalar(label, ImGuiDataType_Float, value, &minimum, &maximum, format, flags);
 	}
+	bool SliderFloatOnRelease(const char* label, float* value, float minimum, float maximum, const char* format, ImGuiSliderFlags flags)
+	{
+		ImGui::PushID(label);
+		const SKSE::stl::scope_exit popId([] { ImGui::PopID(); });
+		auto* storage = ImGui::GetStateStorage();
+		const auto valueId = ImGui::GetID("##PendingValue");
+		const auto originalId = ImGui::GetID("##OriginalValue");
+		const auto frameId = ImGui::GetID("##EditFrame");
+		const auto mouseId = ImGui::GetID("##MouseEdit");
+		const auto frame = ImGui::GetFrameCount();
+		const bool editing = storage->GetInt(frameId, -2) == frame - 1 && storage->GetFloat(originalId) == *value;
+		float pending = editing ? storage->GetFloat(valueId) : *value;
+		const bool mouseEdit = editing && storage->GetBool(mouseId);
+		SliderFloat(label, &pending, minimum, maximum, format, flags);
+		const bool editable = (GImGui->CurrentItemFlags & ImGuiItemFlags_Disabled) == 0 &&
+		                      (flags & static_cast<ImGuiSliderFlags>(ImGuiSliderFlags_ReadOnly)) == 0;
+		const bool completed = editable && ImGui::IsItemDeactivatedAfterEdit() &&
+		                       (!mouseEdit || (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && ImGui::IsMousePosValid()));
+		const bool changed = completed && std::isfinite(pending) && pending != *value;
+		if (changed)
+			*value = pending;
+		storage->SetFloat(valueId, pending);
+		storage->SetFloat(originalId, *value);
+		storage->SetInt(frameId, ImGui::IsItemActive() ? frame : -2);
+		storage->SetBool(mouseId, ImGui::IsItemActive() && GImGui->ActiveIdSource == ImGuiInputSource_Mouse &&
+									  !ImGui::TempInputIsActive(GImGui->LastItemData.ID));
+		return changed;
+	}
 	bool SliderInt(const char* label, int* value, int minimum, int maximum, const char* format, ImGuiSliderFlags flags)
 	{
 		return SliderScalar(label, ImGuiDataType_S32, value, &minimum, &maximum, format, flags);
