@@ -179,14 +179,29 @@ namespace
 		auto previous = saved;
 		previous["version"] = 2;
 		previous.erase("headsetOutlines");
+		previous.erase("coveragePercent");
 		Require(previous.get<Reference>() == reference, "Version-two manual references must remain usable without recalibration");
+		auto versionThree = saved;
+		versionThree["version"] = 3;
+		versionThree.erase("coveragePercent");
+		Require(versionThree.get<Reference>() == reference, "Version-three references retain their original 100-percent baseline");
+		for (float percent : { 50.0f, 80.0f, 130.0f }) {
+			auto captured = reference;
+			captured.coveragePercent = percent;
+			const auto reloaded = nlohmann::json::parse(nlohmann::json(captured).dump()).get<Reference>();
+			Require(reloaded == captured && BuildTargets(reloaded, percent) == BuildTargets(reference, 100),
+				"Saving and reloading a calibrated percentage must retain exactly the same outer target");
+			const auto fit = Solve(reloaded, percent), baseline = Solve(reference, 100);
+			Require(fit && baseline && fit->geometry == baseline->geometry,
+				"Calibration at the current percentage must not scale the current fit again");
+		}
 		std::vector<nlohmann::json> corrupt;
-		for (auto version : { nlohmann::json(-1), nlohmann::json(4), nlohmann::json(1.5), nlohmann::json(4294967297ULL) }) {
+		for (auto version : { nlohmann::json(-1), nlohmann::json(kReferenceVersion + 1), nlohmann::json(1.5), nlohmann::json(4294967297ULL) }) {
 			auto changed = saved;
 			changed["version"] = version;
 			corrupt.push_back(changed);
 		}
-		for (const char* key : { "outer", "leftToRight", "innerLimits", "feather", "peripheryTaa" }) {
+		for (const char* key : { "outer", "leftToRight", "innerLimits", "feather", "peripheryTaa", "coveragePercent" }) {
 			auto changed = saved;
 			changed.erase(key);
 			corrupt.push_back(changed);
@@ -216,6 +231,11 @@ namespace
 		for (const auto limits : { nlohmann::json{ 1, 0, 0 }, nlohmann::json{ 2, 0 }, nlohmann::json{ true, 0 } }) {
 			changed = saved;
 			changed["innerLimits"] = limits;
+			corrupt.push_back(changed);
+		}
+		for (const auto percent : { nlohmann::json(0), nlohmann::json(49), nlohmann::json(131), nlohmann::json(true), nlohmann::json("80"), nlohmann::json(nullptr) }) {
+			changed = saved;
+			changed["coveragePercent"] = percent;
 			corrupt.push_back(changed);
 		}
 		for (const auto& json : corrupt) {

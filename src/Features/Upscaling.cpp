@@ -1977,12 +1977,12 @@ namespace
 	};
 
 	constexpr const char* kFoveatedUpscalingMethodAvailabilityText = "VR FOV mask setup is available only with DLSS or FSR.";
-	constexpr const char* kFoveatedUpscalingSetupInstructions = R"(1) Select FOV only, then press Automatic Headset Setup.
-2) Turn FOV Mask Visualization on. It turns off when you close CSX.
-3) Lower Outer Coverage until the yellow-and-black stripes just enter your view. Then increase it slightly until the stripes are no longer visible.
-4) Check each eye separately, then with both eyes open. Unequal eye views may need manual fine-tuning using each eye's X/Y sliders. After manual changes, press Calibrate Masks and check again.
-5) When both eyes look clear, click Mask setup finished.
-6) Turn FOV Mask Visualization off and Save settings.
+	constexpr const char* kFoveatedUpscalingSetupInstructions = R"(1) In a loaded game, select FOV only, then press Automatic Headset Setup.
+2) Turn FOV Mask Visualization on. Yellow-and-black stripes show areas outside the mask.
+3) Lower Outer Coverage in small steps, releasing the slider after each change. When stripes just enter your view, increase it slightly until they disappear.
+4) Check the outer edges and corners with each eye separately, then both eyes open. If the views differ, fine-tune each eye's X/Y sliders. Press Calibrate Masks and check again.
+5) Turn FOV Mask Visualization off and check for flicker at the outer edges. If needed, increase Outer Coverage slightly, press Calibrate Masks and check again.
+6) When both eyes look clear, click Mask setup finished, then Save settings.
 
 Optional: select FOV + TAA for further performance savings (not compatible with NR). Adjust centre size; your outer borders stay fixed.)";
 
@@ -19522,6 +19522,17 @@ namespace
 		reference.leftToRight = projection;
 		return reference;
 	}
+
+	void ApplyFoveatedMaskGeometry(Upscaling::Settings& candidate, const FoveatedMaskCalibration::Geometry& geometry)
+	{
+		candidate.foveatedCenterArea = geometry.scale;
+		candidate.foveatedCenterHorizontalScale = geometry.horizontalScale;
+		const float expansion = geometry.scale * 0.5f * (geometry.horizontalScale - 1.0f);
+		candidate.foveatedLeftEyeMaskOffsetX = ClampFoveatedMaskOffsetAdjustment(geometry.centers[0] - 0.5f + expansion);
+		candidate.foveatedLeftEyeMaskOffsetY = ClampFoveatedMaskOffsetAdjustment(geometry.centers[1] - 0.5f);
+		candidate.foveatedRightEyeMaskOffsetX = ClampFoveatedMaskOffsetAdjustment(geometry.centers[2] - 0.5f - expansion);
+		candidate.foveatedRightEyeMaskOffsetY = ClampFoveatedMaskOffsetAdjustment(geometry.centers[3] - 0.5f);
+	}
 }
 
 FoveatedMaskCalibration::CoverageCheck Upscaling::GetFoveatedBinocularCoverage(const Settings& a_settings) const
@@ -19606,20 +19617,42 @@ bool Upscaling::PrepareFoveatedMaskCalibration(Settings& a_candidate, FoveatedMa
 		return false;
 	}
 	const auto& projection = headset->leftToRight;
+	if (a_captureMode == CaptureMode::Headset)
+		a_percent = 100.0f;
+	else if (a_captureMode == CaptureMode::Manual)
+		a_percent = a_candidate.foveatedAutomaticMaskScaling;
 	auto reference = a_candidate.foveatedCalibrationReference;
 	if (a_candidate.periphery_taa_enable) {
 		a_error = "Select FOV only before calibrating the visible boundary.";
 		return false;
 	}
-	if (a_captureMode != CaptureMode::Reuse) {
+	const float feather = GetNormalFoveatedBlendFeather(a_candidate, false);
+	std::optional<Solution> solution;
+	if (a_captureMode == CaptureMode::Manual &&
+		MatchesProfile(reference, false, a_candidate.foveatedCenterArea, FoveatedCommon::GetOuterFeather(a_candidate.foveatedOuterBlendFeather)) &&
+		headset->Matches(reference)) {
+		auto fittingReference = reference;
+		fittingReference.feather = feather;
+		solution = Solve(fittingReference, a_percent);
+		if (solution) {
+			auto previousFit = a_candidate;
+			ApplyFoveatedMaskGeometry(previousFit, solution->geometry);
+			// Recapturing an unchanged fit would accumulate contour approximation and coverage margins.
+			if (CaptureFoveatedMaskReference(previousFit, projection, headset->innerLimits).outer !=
+				CaptureFoveatedMaskReference(a_candidate, projection, headset->innerLimits).outer)
+				solution.reset();
+		}
+	}
+	if (a_captureMode != CaptureMode::Reuse && !solution) {
 		reference = CaptureFoveatedMaskReference(a_candidate, projection, headset->innerLimits);
+		reference.coveragePercent = a_percent;
 		if (a_captureMode == CaptureMode::Headset) {
 			reference.outer = {};
 			reference.centerScale = 1.0f;
 			reference.fullImage = false;
 			reference.headsetOutlines = headset->outlines;
 		}
-	} else {
+	} else if (a_captureMode == CaptureMode::Reuse) {
 		if (!MatchesProfile(reference, false, a_candidate.foveatedCenterArea, FoveatedCommon::GetOuterFeather(a_candidate.foveatedOuterBlendFeather))) {
 			a_error = "Use Automatic Headset Setup or calibrate a manual FOV-only fit first.";
 			return false;
@@ -19630,22 +19663,16 @@ bool Upscaling::PrepareFoveatedMaskCalibration(Settings& a_candidate, FoveatedMa
 		}
 	}
 	auto fittingReference = reference;
-	fittingReference.feather = GetNormalFoveatedBlendFeather(a_candidate, false);
-	const auto solution = Solve(fittingReference, a_percent);
+	fittingReference.feather = feather;
+	if (!solution)
+		solution = Solve(fittingReference, a_percent);
 	if (!solution) {
 		a_error = "No safe fit within the current controls. Check the FOV-only outer edges.";
 		return false;
 	}
-	const auto& geometry = solution->geometry;
 	auto fitted = a_candidate;
 	fitted.foveatedMaskSetup = {};
-	fitted.foveatedCenterArea = geometry.scale;
-	fitted.foveatedCenterHorizontalScale = geometry.horizontalScale;
-	const float expansion = geometry.scale * 0.5f * (geometry.horizontalScale - 1.0f);
-	fitted.foveatedLeftEyeMaskOffsetX = ClampFoveatedMaskOffsetAdjustment(geometry.centers[0] - 0.5f + expansion);
-	fitted.foveatedLeftEyeMaskOffsetY = ClampFoveatedMaskOffsetAdjustment(geometry.centers[1] - 0.5f);
-	fitted.foveatedRightEyeMaskOffsetX = ClampFoveatedMaskOffsetAdjustment(geometry.centers[2] - 0.5f - expansion);
-	fitted.foveatedRightEyeMaskOffsetY = ClampFoveatedMaskOffsetAdjustment(geometry.centers[3] - 0.5f);
+	ApplyFoveatedMaskGeometry(fitted, solution->geometry);
 	const auto applied = CaptureFoveatedMaskReference(fitted, projection, headset->innerLimits);
 	const auto coverage = CheckCoverage(fittingReference, a_percent, applied.outer, applied.centerScale, applied.fullImage, false);
 	if (!coverage.available || coverage.hasGap) {
@@ -19664,15 +19691,16 @@ void Upscaling::DrawFoveatedCalibration()
 	using FoveatedMaskCalibration::CaptureMode;
 	const bool headsetSetup = ImGui::Button("Automatic Headset Setup");
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::TextWrapped("Start in FOV only with conservative coverage of both headset outlines. No manual positioning is needed. Then lower Outer Coverage until approaching edge flicker and increase slightly. Missing headset outlines use full-eye bounds.");
+		ImGui::TextWrapped("Creates a starting fit from your headset and resets Outer Coverage to 100%%. This usually covers more than you can see. Follow the setup instructions to reduce it to fit your view; each eye may need X/Y fine-tuning.");
 	bool capture = false;
 	{
 		auto guard = Util::DisableGuard(settings.periphery_taa_enable);
 		capture = ImGui::Button("Calibrate Masks");
 	}
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::TextWrapped("In FOV only, fit each eye's top, bottom, outer side and corners first. Calibration completes each eye to its headset inner limit and minimizes the shared size and R/L expansion. Manual inward overlap is ignored.");
-	float percent = capture || headsetSetup ? 100.0f : pendingFoveatedMaskScaling.value_or(settings.foveatedAutomaticMaskScaling);
+		ImGui::TextWrapped("Press after adjusting Outer Coverage or each eye's X/Y sliders in FOV only. Uses each eye's outer edges to refit the masks and cover the centre, keeping your chosen Outer Coverage percentage. Check each eye separately, then both eyes open; repeat after manual changes.");
+	float percent = headsetSetup ? 100.0f : capture ? settings.foveatedAutomaticMaskScaling :
+	                                                  pendingFoveatedMaskScaling.value_or(settings.foveatedAutomaticMaskScaling);
 	bool scaleChanged = false;
 	{
 		const bool compatible = FoveatedMaskCalibration::MatchesProfile(settings.foveatedCalibrationReference,
@@ -19687,7 +19715,10 @@ void Upscaling::DrawFoveatedCalibration()
 		scaleChanged = pendingFoveatedMaskScaling.has_value() && !ImGui::IsItemActive();
 	}
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::TextWrapped("Applies on release. Lower reduces outer coverage; higher expands it. Size, R/L expansion and both eye positions refit the inside automatically. Increase slightly if an outer edge flickers. 100%% restores the saved starting fit. Headset setup or Calibrate Masks replaces that reference; manual edits do not.");
+		ImGui::TextWrapped(
+			"Controls how far the FOV masks extend toward the outer edges of your view. Lower values cover less; higher values cover more.\n\n"
+			"Automatic Headset Setup starts at a conservative 100%%, often covering more than you can actually see. Decrease until you just see flicker at the outer edges (or yellow-and-black stripes with FOV Mask Visualization on). Then increase slightly until the flicker or stripes disappear. Press Calibrate Masks and check each eye separately, then both eyes open.\n\n"
+			"Release the slider after each adjustment to apply it and refit the centre. Calibrate Masks keeps your chosen percentage.");
 	if (headsetSetup || capture || scaleChanged) {
 		pendingFoveatedMaskScaling.reset();
 		const auto previous = settings;

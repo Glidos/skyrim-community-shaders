@@ -167,6 +167,43 @@ void CheckHeadsetSetupTransaction()
 	Require(!CheckCoverage(fitting, 50, applied.outer, applied.centerScale, applied.fullImage, false).hasGap,
 		"Applied slider values must retain verified full-strength headset coverage");
 	const auto scaled = candidate;
+	for (bool hardEdge : { false, true }) {
+		for (float percent : { 50.0f, 65.0f, 80.0f, 115.0f, 130.0f }) {
+			auto manual = baseline;
+			manual.foveatedDisableOuterFeather = hardEdge;
+			Require(upscaling.PrepareFoveatedMaskCalibration(manual, CaptureMode::Reuse, percent, error),
+				"Outer Coverage must establish the selected fit before manual fine-tuning");
+			const auto automaticFit = manual;
+			Require(upscaling.PrepareFoveatedMaskCalibration(manual, CaptureMode::Manual, 100, error) && manual == automaticFit,
+				"Calibration after automatic outer scaling must retain the headset reference and fit when no manual controls changed");
+			manual.foveatedLeftEyeMaskOffsetY += 0.01f;
+			auto outer = CaptureFoveatedMaskReference(manual, liveHeadset->leftToRight, liveHeadset->innerLimits);
+			outer.feather = GetNormalFoveatedBlendFeather(manual, false);
+			Require(upscaling.PrepareFoveatedMaskCalibration(manual, CaptureMode::Manual, 100, error) &&
+						manual.foveatedAutomaticMaskScaling == percent && manual.foveatedCalibrationReference.coveragePercent == percent &&
+						!UsesHeadsetOutline(manual.foveatedCalibrationReference),
+				"Calibrate Masks must retain the selected Outer Coverage percentage");
+			const auto fitted = CaptureFoveatedMaskReference(manual, liveHeadset->leftToRight, liveHeadset->innerLimits);
+			Require(!CheckCoverage(outer, 100, fitted.outer, fitted.centerScale, fitted.fullImage, false).hasGap,
+				"Manual recalibration must preserve the current outer contour without scaling it a second time");
+			const auto calibrated = manual;
+			Require(upscaling.PrepareFoveatedMaskCalibration(manual, CaptureMode::Reuse, percent, error) && manual == calibrated,
+				"Reapplying the retained percentage must reproduce the calibrated fit");
+			for (unsigned repeat = 0; repeat < 3; ++repeat)
+				Require(upscaling.PrepareFoveatedMaskCalibration(manual, CaptureMode::Manual, percent, error) && manual == calibrated,
+					"Calibrating an unchanged fit must not progressively expand or reposition the masks");
+			const float otherPercent = percent == 50.0f ? 55.0f : percent - 5;
+			Require(upscaling.PrepareFoveatedMaskCalibration(manual, CaptureMode::Reuse, otherPercent, error) &&
+						upscaling.PrepareFoveatedMaskCalibration(manual, CaptureMode::Reuse, percent, error) &&
+						manual.foveatedAutomaticMaskScaling == percent && manual.foveatedCalibrationReference == calibrated.foveatedCalibrationReference &&
+						CaptureFoveatedMaskReference(manual, liveHeadset->leftToRight, liveHeadset->innerLimits) == fitted,
+				"Outer Coverage must scale from and return to the same calibrated outer geometry and percentage");
+			Require(upscaling.PrepareFoveatedMaskCalibration(manual, CaptureMode::Headset, percent, error) &&
+						manual.foveatedAutomaticMaskScaling == 100 && manual.foveatedCalibrationReference == baseline.foveatedCalibrationReference &&
+						CaptureFoveatedMaskReference(manual, liveHeadset->leftToRight, liveHeadset->innerLimits) == CaptureFoveatedMaskReference(baseline, liveHeadset->leftToRight, liveHeadset->innerLimits),
+				"Automatic Headset Setup must deliberately restore the headset baseline at 100 percent");
+		}
+	}
 	Require(upscaling.PrepareFoveatedMaskCalibration(candidate, CaptureMode::Reuse, 100, error) && candidate == baseline,
 		"Returning to 100 percent must restore every fitted baseline control exactly");
 	for (bool hardEdge : { false, true }) {

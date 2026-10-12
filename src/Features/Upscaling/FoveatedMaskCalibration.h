@@ -12,7 +12,7 @@
 
 namespace FoveatedMaskCalibration
 {
-	constexpr uint32_t kReferenceVersion = 3;
+	constexpr uint32_t kReferenceVersion = 4;
 	constexpr float kMinimumOffset = FoveatedCommon::kMaskOffsetMin;
 	constexpr float kMaximumOffset = FoveatedCommon::kMaskOffsetMax;
 	constexpr double kCoverageMargin = 1e-5;
@@ -55,6 +55,8 @@ namespace FoveatedMaskCalibration
 		float centerScale = 0.3f;
 		// Compatibility tracks the configured fade independently of the full-strength outer fit.
 		float feather = FoveatedCommon::kCenterFeather;
+		/** Slider percentage at which the outer contour was captured. */
+		float coveragePercent = 100.0f;
 		bool operator==(const Reference&) const = default;
 	};
 
@@ -131,7 +133,8 @@ namespace FoveatedMaskCalibration
 		if (reference.version != kReferenceVersion || !Inverse(reference.leftToRight) ||
 			!finiteRange(reference.outer.scale, 0.25f, 1.2f) ||
 			!finiteRange(reference.outer.horizontalScale, 1.0f, 2.0f) ||
-			!finiteRange(reference.centerScale, 0.25f, 1.0f) || !finiteRange(reference.feather, 0.0f, 0.1f))
+			!finiteRange(reference.centerScale, 0.25f, 1.0f) || !finiteRange(reference.feather, 0.0f, 0.1f) ||
+			!finiteRange(reference.coveragePercent, kMinimumPercent, kMaximumPercent))
 			return false;
 		if (reference.headsetOutlines[0].empty() != reference.headsetOutlines[1].empty())
 			return false;
@@ -385,9 +388,10 @@ namespace FoveatedMaskCalibration
 		auto scaled = reference;
 		if (reference.fullImage)
 			scaled.outer = {};
-		scaled.outer.scale *= percent / 100.0f;
+		const float scale = percent / reference.coveragePercent;
+		scaled.outer.scale *= scale;
 		for (auto& center : scaled.outer.centers)
-			center = 0.5f + (center - 0.5f) * percent / 100.0f;
+			center = 0.5f + (center - 0.5f) * scale;
 		return scaled;
 	}
 
@@ -395,7 +399,7 @@ namespace FoveatedMaskCalibration
 	[[nodiscard]] inline std::array<Polygon, 2> ScaleHeadsetOutlines(const Reference& reference, float percent)
 	{
 		std::array<Polygon, 2> targets;
-		const double scale = percent / 100.0;
+		const double scale = static_cast<double>(percent) / reference.coveragePercent;
 		for (unsigned eye = 0; eye < 2; ++eye) {
 			Polygon points;
 			for (bool temporal : { true, false }) {
@@ -423,7 +427,7 @@ namespace FoveatedMaskCalibration
 				return std::nullopt;
 			return targets;
 		}
-		if (reference.fullImage && percent >= 100.0f)
+		if (reference.fullImage && percent >= reference.coveragePercent)
 			return std::array<Polygon, 2>{ Polygon{ { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } }, Polygon{ { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } } };
 		const auto scaled = ScaleOuterReference(reference, percent);
 		const double outerRadius = scaled.outer.scale * scaled.outer.horizontalScale * 0.5;

@@ -2613,7 +2613,7 @@ public:
 	bool SetFoveatedBlendCurve(bool a_enabled, float a_falloff);
 	/** Draw the shared FOV-only and FOV + TAA blend controls. */
 	void DrawFoveatedBlendSettings();
-	/** Prepares calibrated settings without mutation; missing projections or infeasible fits retain the caller settings. */
+	/** Applies a verified fit: manual capture retains the current percentage, headset capture starts at 100; failure retains settings. */
 	bool PrepareFoveatedMaskCalibration(Settings& a_candidate, FoveatedMaskCalibration::CaptureMode a_captureMode, float a_percent, std::string& a_error) const;
 	/** Checks configured shared-view coverage independently of the diagnostic overlay. */
 	FoveatedMaskCalibration::CoverageCheck GetFoveatedBinocularCoverage() const { return GetFoveatedBinocularCoverage(settings); }

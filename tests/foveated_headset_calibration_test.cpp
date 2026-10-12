@@ -368,6 +368,10 @@ namespace
 			reference.headsetOutlines[eye] = *outline;
 		}
 		const auto saved = reference;
+		auto legacy = nlohmann::json(reference);
+		legacy["version"] = 3;
+		legacy.erase("coveragePercent");
+		Require(legacy.get<Reference>() == reference, "Existing headset outlines must migrate without changing their 100-percent reference");
 		const auto baseline = Solve(reference, 100);
 		Require(baseline && baseline->fullImage, "Full-height headset optics require conservative full-eye startup with current controls");
 		Require(nlohmann::json::parse(nlohmann::json(reference).dump()).get<Reference>() == reference,

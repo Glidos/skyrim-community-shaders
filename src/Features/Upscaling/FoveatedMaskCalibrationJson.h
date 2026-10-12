@@ -21,7 +21,7 @@ namespace FoveatedMaskCalibration
 		}
 		json = { { "version", value.version }, { "outer", value.outer }, { "leftToRight", value.leftToRight },
 			{ "innerLimits", value.innerLimits }, { "headsetOutlines", std::move(outlines) }, { "peripheryTaa", value.peripheryTaa }, { "fullImage", value.fullImage },
-			{ "centerScale", value.centerScale }, { "feather", value.feather } };
+			{ "centerScale", value.centerScale }, { "feather", value.feather }, { "coveragePercent", value.coveragePercent } };
 	}
 
 	/** Reject incomplete or corrupt references before they can alter live geometry. */
@@ -29,10 +29,10 @@ namespace FoveatedMaskCalibration
 	{
 		Reference parsed;
 		const auto& version = json.at("version");
-		if (!version.is_number_integer() || (version != 0 && version != 1 && version != 2 && version != kReferenceVersion))
+		if (!version.is_number_integer() || (version != 0 && version != 1 && version != 2 && version != 3 && version != kReferenceVersion))
 			throw std::invalid_argument("Unsupported FOV calibration version");
 		// Legacy references use scene-camera projection and do not prove nasal coverage.
-		parsed.version = version == 2 || version == kReferenceVersion ? kReferenceVersion : 0;
+		parsed.version = version == 2 || version == 3 || version == kReferenceVersion ? kReferenceVersion : 0;
 		if (parsed.version != 0) {
 			const auto& centers = json.at("outer").at("centers");
 			const auto& projection = json.at("leftToRight");
@@ -53,6 +53,10 @@ namespace FoveatedMaskCalibration
 			for (const auto& number : innerLimits)
 				requireNumber(number);
 			if (version == kReferenceVersion) {
+				requireNumber(json.at("coveragePercent"));
+				json.at("coveragePercent").get_to(parsed.coveragePercent);
+			}
+			if (version == 3 || version == kReferenceVersion) {
 				const auto& outlines = json.at("headsetOutlines");
 				if (!outlines.is_array() || outlines.size() != 2)
 					throw std::invalid_argument("Invalid headset outline dimensions");

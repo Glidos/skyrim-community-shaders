@@ -305,6 +305,7 @@ void CheckFoveationTransactions()
 			Upscaling upscaling;
 			SetFovOnlySetup(upscaling);
 			upscaling.settings.foveatedCenterArea = 1.0f;
+			upscaling.settings.foveatedAutomaticMaskScaling = 80.0f;
 			upscaling.settings.neuralRenderingMode = mode;
 			upscaling.settings.neuralRenderingEnabled = true;
 			NeuralRendering::NormalizeRenderingCoverage(upscaling.settings, true);
@@ -316,10 +317,21 @@ void CheckFoveationTransactions()
 			upscaling.DrawFoveatedCalibration();
 			ImGui::captureCalibration = false;
 			Require(upscaling.capturedMode == FoveatedMaskCalibration::CaptureMode::Manual, "Manual calibration must retain its own capture action");
-			Require(succeeds ? upscaling.settings.foveatedCenterArea == 0.6f : upscaling.settings == previous,
-				"Calibration must commit only after safe NR retirement, preserving all prior settings on failure");
+			Require(succeeds ? upscaling.settings.foveatedCenterArea == 0.6f && upscaling.settings.foveatedAutomaticMaskScaling == 80.0f : upscaling.settings == previous,
+				"Manual calibration must retain Outer Coverage and commit only after safe NR retirement");
 			Require(succeeds || upscaling.foveatedCalibrationMessage.find("previous calibration retained") != std::string::npos,
 				"Rejected calibration must explain that the previous fit is retained");
+			upscaling.settings = previous;
+			renderer = {};
+			renderer.quarantined = true;
+			renderer.resetSucceeds = succeeds;
+			FoveationConfigurationRequest manualRequest;
+			manualRequest.calibrateMasks = true;
+			const auto manualResponse = ApplyFoveationConfiguration(upscaling, manualRequest, "foveation_configure", true);
+			Require(upscaling.capturedMode == FoveatedMaskCalibration::CaptureMode::Manual &&
+						manualResponse.at("ok") == succeeds && upscaling.settings.foveatedAutomaticMaskScaling == 80.0f &&
+						(succeeds || upscaling.settings == previous),
+				"DevBench manual calibration must retain the same percentage as the menu and roll back on failure");
 			upscaling.settings = previous;
 			renderer = {};
 			renderer.quarantined = true;
@@ -328,7 +340,7 @@ void CheckFoveationTransactions()
 			upscaling.DrawFoveatedCalibration();
 			ImGui::captureHeadset = false;
 			Require(upscaling.capturedMode == FoveatedMaskCalibration::CaptureMode::Headset &&
-						(succeeds ? upscaling.settings.foveatedCenterArea == .6f : upscaling.settings == previous),
+						(succeeds ? upscaling.settings.foveatedCenterArea == .6f && upscaling.settings.foveatedAutomaticMaskScaling == 100.0f : upscaling.settings == previous),
 				"Headset setup must use its own action and retain all settings when NR refuses the transition");
 			upscaling.settings = previous;
 			renderer = {};
@@ -339,7 +351,7 @@ void CheckFoveationTransactions()
 			const auto headsetResponse = ApplyFoveationConfiguration(upscaling, headsetRequest, "foveation_configure", true);
 			Require(upscaling.capturedMode == FoveatedMaskCalibration::CaptureMode::Headset &&
 						headsetResponse.at("ok") == succeeds && headsetResponse.at("mutationApplied") == succeeds &&
-						(succeeds ? upscaling.settings.foveatedCenterArea == .6f : upscaling.settings == previous),
+						(succeeds ? upscaling.settings.foveatedCenterArea == .6f && upscaling.settings.foveatedAutomaticMaskScaling == 100.0f : upscaling.settings == previous),
 				"DevBench headset setup must use the same transactional fit and report the retained state");
 			upscaling.settings = previous;
 			renderer = {};
