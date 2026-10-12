@@ -6,6 +6,7 @@
 #include "Globals.h"
 #include "GpuPass.h"
 #include "GrassD3DState.h"
+#include "GrassFadeHistory.h"
 #include "GrassFrustum.h"
 #include "GrassHiZ.h"
 #include "GrassPassCache.h"
@@ -50,7 +51,7 @@ namespace
 		std::atomic_bool alive{ true };
 		std::atomic_uint64_t generation{ 0 };
 		std::atomic_uint64_t observedFrame{ UINT64_MAX };
-		std::unordered_map<RE::BSGraphics::VertexBuffer*, float> birthTimes;
+		GrassPolicy::FadeHistory<RE::BSGraphics::VertexBuffer*> fadeHistory;
 	};
 	struct Group
 	{
@@ -506,7 +507,7 @@ namespace
 	{
 		static void thunk(RE::BSMultiStreamInstanceTriShape* shape, uint32_t group)
 		{
-			globals::features::grassOptimizations.GetRenderer().MarkGroupsChanged(shape);
+			globals::features::grassOptimizations.GetRenderer().MarkGroupsChanged(shape, group);
 			original(shape, group);
 		}
 		static inline REL::Relocation<decltype(thunk)> original;
@@ -516,7 +517,9 @@ namespace
 		static uint32_t thunk(RE::BSMultiStreamInstanceTriShape* shape, uint32_t count, uint16_t& data, uint32_t arg, float fade)
 		{
 			globals::features::grassOptimizations.GetRenderer().MarkGroupsChanged(shape);
-			return original(shape, count, data, arg, fade);
+			const auto group = original(shape, count, data, arg, fade);
+			globals::features::grassOptimizations.GetRenderer().RecordGeneratedGroups(shape, { &group, 1 }, true);
+			return group;
 		}
 		static inline REL::Relocation<decltype(thunk)> original;
 	};
@@ -524,8 +527,12 @@ namespace
 	{
 		static void thunk(RE::BSMultiStreamInstanceTriShape* shape, RE::BSTArray<uint32_t>& instances)
 		{
+			const auto previousCount = instances.size();
 			original(shape, instances);
 			globals::features::grassOptimizations.GetRenderer().MarkGenerated(shape);
+			if (instances.size() > previousCount)
+				globals::features::grassOptimizations.GetRenderer().RecordGeneratedGroups(shape,
+					{ instances.data() + previousCount, instances.size() - previousCount });
 			globals::features::grassOptimizations.GetRenderer().CaptureVisible(shape, false);
 		}
 		static inline REL::Relocation<decltype(thunk)> original;
@@ -669,21 +676,44 @@ void GrassBucketRenderer::RecordModel(RE::BSMultiStreamInstanceTriShape* shape, 
 }
 void GrassBucketRenderer::MarkGenerated(RE::BSMultiStreamInstanceTriShape* shape)
 {
-	std::scoped_lock lock(impl->captureMutex);
-	impl->EraseResident(shape);
-	++impl->residentRevision;
-	if (auto found = impl->identities.find(shape); found != impl->identities.end() && found->second.first) {
-		++found->second.first->generation;
-		found->second.first->birthTimes.clear();
-	}
+	MarkGroupsChanged(shape);
 }
-void GrassBucketRenderer::MarkGroupsChanged(RE::BSMultiStreamInstanceTriShape* shape)
+void GrassBucketRenderer::MarkGroupsChanged(RE::BSMultiStreamInstanceTriShape* shape, std::optional<uint32_t> removedGroup)
 {
 	std::scoped_lock lock(impl->captureMutex);
 	impl->EraseResident(shape);
 	++impl->residentRevision;
 	if (auto found = impl->identities.find(shape); found != impl->identities.end() && found->second.first) {
 		++found->second.first->generation;
+		if (removedGroup) {
+			const auto& groups = shape->GetMultiStreamTrishapeRuntimeData().instanceGroups;
+			if (*removedGroup < groups.size() && groups[*removedGroup])
+				found->second.first->fadeHistory.Removed(groups[*removedGroup]->vertexBuffer);
+		}
+	}
+}
+void GrassBucketRenderer::RecordGeneratedGroups(RE::BSMultiStreamInstanceTriShape* shape,
+	std::span<const uint32_t> groupIndices, bool replace)
+{
+	if (!shape || groupIndices.empty())
+		return;
+	const auto property = shape->GetGeometryRuntimeData().shaderProperty.get();
+	if (!property || property->GetRTTI() != REL::Relocation<const RE::NiRTTI*>{ RE::NiRTTI_BSGrassShaderProperty }.get())
+		return;
+	try {
+		std::scoped_lock lock(impl->captureMutex);
+		auto& lifetime = impl->identities[shape].first;
+		if (!lifetime)
+			lifetime = std::make_shared<Lifetime>();
+		const auto& groups = shape->GetMultiStreamTrishapeRuntimeData().instanceGroups;
+		const auto now = globals::state->timer;
+		for (auto index : groupIndices) {
+			if (index >= groups.size() || !groups[index] || !groups[index]->vertexBuffer || !groups[index]->instanceCount)
+				continue;
+			lifetime->fadeHistory.Generated(groups[index]->vertexBuffer, now, replace);
+		}
+	} catch (const std::exception& error) {
+		logger::warn("Grass spawn fade history unavailable; retaining visible grass: {}", error.what());
 	}
 }
 void GrassBucketRenderer::RemoveShape(RE::BSMultiStreamInstanceTriShape* shape)
@@ -762,8 +792,7 @@ void GrassBucketRenderer::Impl::MakeNativeVisible(RE::BSMultiStreamInstanceTriSh
 		auto live = runtime.instanceGroups[group];
 		if (!live || !live->instanceCount)
 			continue;
-		const auto birth = source.lifetime->birthTimes.find(live->vertexBuffer);
-		const auto time = birth == source.lifetime->birthTimes.end() ? globals::state->timer - fadeInSeconds : birth->second;
+		const auto time = source.lifetime->fadeHistory.Start(live->vertexBuffer);
 		live->isVisible = true;
 		data.fadeAlphas[group] = fadeInSeconds > 0 ? std::clamp((globals::state->timer - time) / fadeInSeconds, 0.0f, 1.0f) : 1.0f;
 	}
@@ -1070,16 +1099,12 @@ bool GrassBucketRenderer::CaptureVisible(RE::BSMultiStreamInstanceTriShape* shap
 		const auto existing = impl->residents.find(shape);
 		const uint64_t previousBytes = existing != impl->residents.end() ? existing->second.cpuRecordBytes : 0;
 		const auto now = globals::state->timer;
-		std::unordered_map<RE::BSGraphics::VertexBuffer*, float> activeBirthTimes;
 		for (auto& group : source.groups) {
-			auto found = source.lifetime->birthTimes.find(group.identity);
-			const auto born = found == source.lifetime->birthTimes.end() ? now : found->second;
-			activeBirthTimes.emplace(group.identity, born);
+			const auto born = source.lifetime->fadeHistory.Capture(group.identity);
 			group.birthTime = born;
 			if (!group.visible)
 				group.fade = impl->fadeInSeconds > 0 ? std::clamp((now - born) / impl->fadeInSeconds, 0.0f, 1.0f) : 1.0f;
 		}
-		source.lifetime->birthTimes = std::move(activeBirthTimes);
 		const uint64_t nextCpuBytes = impl->cpuRecordBytes - previousBytes + source.cpuRecordBytes;
 		impl->EraseResident(shape);
 		impl->AssignQueue(source);

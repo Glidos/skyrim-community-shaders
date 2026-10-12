@@ -1,3 +1,4 @@
+#include "Features/GrassOptimizations/GrassFadeHistory.h"
 #include "Features/GrassOptimizations/GrassPassCache.h"
 
 #include <array>
@@ -61,6 +62,35 @@ namespace
 			auto [outcome, fresh] = cache.Acquire(key);
 			Require(fresh && *outcome == Outcome::Native, "Every new frame must reconsider both successful and failed passes");
 		}
+	}
+
+	void CheckFadeHistoryAllocations()
+	{
+		GrassPolicy::FadeHistory<int> history;
+		for (int group = 0; group < 32; ++group)
+			history.Generated(group, 10.f);
+		const auto before = allocations.load();
+		for (int repeat = 0; repeat < 1000; ++repeat) {
+			for (int group = 0; group < 32; ++group) {
+				history.Generated(group, 20.f, true);
+				history.Generated(group, 30.f);
+				Require(history.Capture(group) == 20.f && history.Start(group) == 20.f,
+					"Repeated capture must preserve the current group's spawn age");
+			}
+		}
+		Require(allocations.load() == before, "Warm fade reads, recaptures and replacements must not allocate");
+		bool rejected = false;
+		failAllocation = true;
+		try {
+			history.Capture(32);
+		} catch (const std::bad_alloc&) {
+			rejected = true;
+		}
+		failAllocation = false;
+		Require(rejected, "New history allocation failures must reach the renderer's fallback handler");
+		Require(history.Start(0) == 20.f && history.Start(32) < 0.f,
+			"Failed history growth must preserve existing ages and keep unknown grass visible");
+		Require(history.Capture(32) < 0.f, "Retrying delayed capture must not start a new fade");
 	}
 
 	void CheckCapacityAndReuse()
@@ -150,9 +180,10 @@ int main()
 	try {
 		CheckPassDecisions();
 		CheckCapacityAndReuse();
+		CheckFadeHistoryAllocations();
 		CheckAllocationFailure();
 		CheckPopulatedAllocationFailure();
-		std::cout << "Grass pass isolation, fallback, growth, frame reset and zero warm allocations passed\n";
+		std::cout << "Grass pass isolation, fade history, fallback, growth, frame reset and zero warm allocations passed\n";
 		return 0;
 	} catch (const std::exception& error) {
 		failAllocation = false;

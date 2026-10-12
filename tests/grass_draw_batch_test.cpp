@@ -1,3 +1,4 @@
+#include "Features/GrassOptimizations/GrassFadeHistory.h"
 #include "Features/GrassOptimizations/GrassFrustum.h"
 #include "Features/GrassOptimizations/GrassPolicy.h"
 #include <iostream>
@@ -7,6 +8,53 @@
 #include <vector>
 namespace
 {
+	void CheckSpawnFades()
+	{
+		const auto require = [](bool condition) {
+			if (!condition)
+				throw std::runtime_error("Grass spawn fade history failed");
+		};
+		GrassPolicy::FadeHistory<int> history;
+		const auto fade = [&](int group, float now) {
+			return std::clamp((now - history.Start(group)) / 2.f, 0.f, 1.f);
+		};
+		// Generation can precede GPU readiness and the first visible traversal by many frames.
+		history.Generated(1, 10.f);
+		require(fade(1, 10.f) == 0.f && fade(1, 11.f) == .5f);
+		require(fade(1, 30.f) == 1.f && history.Capture(1) == 10.f);
+		// Cache-loaded or already visible grass without a creation receipt must stay visible.
+		require(fade(2, 30.f) == 1.f);
+		require(history.Capture(2) == history.Start(2));
+		require(fade(2, 30.f) == 1.f && fade(2, 60.f) == 1.f);
+		// Finishing generation or recapturing must not restart surviving groups' fades.
+		history.Generated(1, 40.f);
+		history.Generated(2, 40.f);
+		history.Generated(3, 40.f);
+		require(fade(1, 40.f) == 1.f && fade(2, 40.f) == 1.f && fade(3, 40.f) == 0.f);
+		for (int repeat = 0; repeat < 10; ++repeat) {
+			require(history.Capture(1) == 10.f && history.Capture(3) == 40.f);
+			require(history.Capture(2) == history.Start(2) && fade(2, 40.f) == 1.f);
+		}
+		require(fade(3, 42.f) == 1.f);
+		// Reusing a removed group's native address is a new spawn, not a surviving group.
+		history.Removed(1);
+		history.Generated(1, 50.f);
+		require(fade(1, 50.f) == 0.f && fade(1, 51.f) == .5f);
+		require(fade(2, 51.f) == 1.f);
+		// AddGroup may reuse storage without a separate observed removal.
+		history.Generated(1, 55.f, true);
+		require(fade(1, 55.f) == 0.f && fade(1, 56.f) == .5f);
+		// Subtracting a short duration from a large float clock can round to the clock itself.
+		require(std::clamp((65536.f - history.Start(4)) / .001f, 0.f, 1.f) == 1.f);
+		history.Generated(4, std::numeric_limits<float>::quiet_NaN());
+		require(fade(4, 50.f) == 1.f);
+		// A fresh shape lifetime cannot inherit fade state from the previous save.
+		history = {};
+		require(fade(1, 70.f) == 1.f);
+		history.Generated(1, 70.f);
+		require(fade(1, 70.f) == 0.f);
+	}
+
 	void CheckWindHistory()
 	{
 		const auto require = [](bool condition) {
@@ -55,6 +103,7 @@ namespace
 int main()
 {
 	try {
+		CheckSpawnFades();
 		CheckWindHistory();
 		const auto require = [](bool condition) {if(!condition)throw std::runtime_error("Grass settings policy failed"); };
 		GrassFrustum::Matrix identity{};
@@ -218,7 +267,7 @@ int main()
 			settings.*field = -1;
 			require(!settings.Valid());
 		}
-		std::cout << "Grass rendered wind history, bounded settings and threshold ordering passed\n";
+		std::cout << "Grass spawn fades, rendered wind history, bounded settings and threshold ordering passed\n";
 		return 0;
 	} catch (const std::exception& error) {
 		std::cerr << error.what() << '\n';

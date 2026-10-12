@@ -18,8 +18,11 @@ public:
 	/** @brief Whether native integration is installed without a latched rendering failure. */
 	bool IsRenderingAvailable() const;
 	void RecordModel(RE::BSMultiStreamInstanceTriShape* shape, const char* path);
-	void MarkGroupsChanged(RE::BSMultiStreamInstanceTriShape* shape);
+	/** @brief Invalidate records and retire a removed group's fade before its storage is reused. */
+	void MarkGroupsChanged(RE::BSMultiStreamInstanceTriShape* shape, std::optional<uint32_t> removedGroup = std::nullopt);
 	void MarkGenerated(RE::BSMultiStreamInstanceTriShape* shape);
+	/** @brief Record native creation independently of capture readiness; replacements receive a new spawn time. */
+	void RecordGeneratedGroups(RE::BSMultiStreamInstanceTriShape* shape, std::span<const uint32_t> groupIndices, bool replace = false);
 	void RemoveShape(RE::BSMultiStreamInstanceTriShape* shape);
 	/** @brief Snapshot generated grass without changing visibility; generation hooks invalidate retained records. */
 	bool CaptureVisible(RE::BSMultiStreamInstanceTriShape* shape, bool nativeVisible);
