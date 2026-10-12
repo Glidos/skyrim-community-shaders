@@ -72,6 +72,7 @@ namespace
 	bool gHasMouseNavigationCursorPos = false;
 	bool gHasLastMenuNavigationMode = false;
 	bool gLastMenuNavigationUsesWand = false;
+	bool gWandActivationPending = false;
 	bool gWandClaimedCursorThisFrame = false;
 	bool gWandInputCancelledThisFrame = false;
 	bool gHasOCUPointerInputSource = false;
@@ -254,6 +255,9 @@ namespace
 			gVRScrollAccums.clear();
 			CancelWandMouseInput(globals::features::vr);
 			gBlockRawTriggerUntilRelease.fill(true);
+			gWandActivationPending = a_useWandNavigation && globals::features::vr.GetEffectiveMenuAttachMode() != AttachMode::None;
+			if (gWandActivationPending)
+				gCursorOwner = CursorOwner::Wand;
 		}
 
 		gHasLastMenuNavigationMode = true;
@@ -763,6 +767,7 @@ void VR::ResetComboRecordingState()
 void VR::ReleaseMenuImGuiInputState()
 {
 	ReleaseOCUPointerState();
+	gWandActivationPending = false;
 	gHasOCUPointerInputSource = false;
 	gUsingOCUPointerInput = false;
 	CancelWandMouseInput(*this);
@@ -809,7 +814,7 @@ void VR::ProcessControllerInputForWandPointingPath(bool testMode, float mouseDea
 			const float dy = desktopBaselineMousePos.y - gLastDesktopMousePos.y;
 			desktopMouseMoved = (dx * dx + dy * dy) > kDesktopCursorMotionThresholdSq;
 		} else {
-			desktopMouseMoved = gCursorOwner == CursorOwner::Desktop;
+			desktopMouseMoved = gCursorOwner == CursorOwner::Desktop && !gWandActivationPending;
 		}
 	}
 	for (int button = 0; button < ImGuiMouseButton_COUNT; ++button) {
@@ -840,6 +845,7 @@ void VR::ProcessControllerInputForWandPointingPath(bool testMode, float mouseDea
 		IsThumbstickActive(secondaryControllerState, static_cast<size_t>(RE::ControllerRole::Secondary), mouseDeadzone);
 
 	if (desktopMouseMoved || desktopMouseClicked) {
+		gWandActivationPending = false;
 		gCursorOwner = CursorOwner::Desktop;
 	}
 
@@ -886,8 +892,9 @@ void VR::ProcessControllerInputForWandPointingPath(bool testMode, float mouseDea
 			wandCursorUsable &&
 			(gWandClaimedCursorThisFrame ||
 				(wandState.isActivelyDrivingCursor && !desktopMouseMoved && !desktopMouseClicked) ||
-				gCursorOwner == CursorOwner::Wand);
+				gCursorOwner == CursorOwner::Wand || gWandActivationPending);
 		if (canAdoptWandCursor) {
+			gWandActivationPending = false;
 			gCursorOwner = CursorOwner::Wand;
 			gLastControllerCursorPos = io.MousePos;
 			gHasLastControllerCursorPos = true;

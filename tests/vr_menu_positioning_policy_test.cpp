@@ -1,4 +1,9 @@
 #include "Features/VR/MenuPositioningPolicy.h"
+#include "Utils/UISmoothing.h"
+
+#include <cmath>
+#include <initializer_list>
+#include <limits>
 
 namespace
 {
@@ -32,5 +37,28 @@ namespace
 
 int main()
 {
-	return CoversMenuLayoutSelection() ? 0 : 1;
+	if (!CoversMenuLayoutSelection())
+		return 1;
+	for (const int rate : { 60, 90, 144 }) {
+		float position = 0;
+		const float amount = Util::UISmoothing::Amount(1.0f / rate);
+		for (int frame = 0; frame < rate; ++frame) {
+			const float next = std::lerp(position, 1.0f, amount);
+			if (next < position || next > 1)
+				return 1;
+			position = next;
+		}
+		if (position < .999f)
+			return 1;
+	}
+	const float once = Util::UISmoothing::Amount(1.0f / 60);
+	const float twice = Util::UISmoothing::Amount(1.0f / 120);
+	if (std::abs(once - (1 - (1 - twice) * (1 - twice))) > 1e-6f)
+		return 1;
+	return Util::UISmoothing::Amount(0) == 0 &&
+	               Util::UISmoothing::Amount(-1) == 0 &&
+	               Util::UISmoothing::Amount(std::numeric_limits<float>::quiet_NaN()) == 0 &&
+	               Util::UISmoothing::Amount(10) == 1 ?
+	           0 :
+	           1;
 }

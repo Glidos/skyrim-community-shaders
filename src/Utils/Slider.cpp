@@ -3,6 +3,7 @@
 #include "Menu.h"
 #include "NumericEntry.h"
 #include "UI.h"
+#include "UISmoothing.h"
 #include <array>
 #include <cstring>
 #include <format>
@@ -101,6 +102,76 @@ namespace Util::Widgets
 				if (!(flags & ImGuiSliderFlags_NoRoundToFormat))
 					value = ImGui::RoundScalarWithFormatT<T>(format, type, value);
 			return std::clamp(value, minimum, maximum);
+		}
+
+		template <class T>
+		T SliderValue(ImGuiDataType type, float ratio, T minimum, T maximum, bool logarithmic, float epsilon, float deadzone)
+		{
+			if constexpr (std::is_floating_point_v<T>)
+				return ImGui::ScaleValueFromRatioT<T, T, T>(type, ratio, minimum, maximum, logarithmic, epsilon, deadzone);
+			else if constexpr (sizeof(T) <= sizeof(int))
+				return ImGui::ScaleValueFromRatioT<T, std::make_signed_t<T>, float>(type, ratio, minimum, maximum, logarithmic, epsilon, deadzone);
+			else
+				return ImGui::ScaleValueFromRatioT<T, std::make_signed_t<T>, double>(type, ratio, minimum, maximum, logarithmic, epsilon, deadzone);
+		}
+
+		struct SliderGeometry
+		{
+			float start, finish, epsilon, deadzone;
+		};
+
+		template <class T>
+		SliderGeometry GetSliderGeometry(T minimum, T maximum, const char* format)
+		{
+			const auto& style = ImGui::GetStyle();
+			const auto trackMin = ImGui::GetItemRectMin();
+			const auto trackMax = ImGui::GetItemRectMax();
+			const float span = trackMax.x - trackMin.x - 4;
+			float grab = std::min(style.GrabMinSize, span);
+			if constexpr (std::is_integral_v<T>) {
+				const auto range = static_cast<long double>(maximum) - static_cast<long double>(minimum);
+				grab = std::min(span, std::max(grab, static_cast<float>(span / (range + 1))));
+			}
+			const float start = trackMin.x + 2 + grab * .5f;
+			const float finish = trackMax.x - 2 - grab * .5f;
+			const float epsilon = std::pow(.1f, static_cast<float>(std::max(0, ImParseFormatPrecision(format, 3))));
+			const float deadzone = style.LogSliderDeadzone * .5f / std::max(1.0f, finish - start);
+			return { start, finish, epsilon, deadzone };
+		}
+
+		template <class T>
+		T SmoothSliderValue(ImGuiID trackId, ImGuiDataType type, T previous, T requested, T minimum, T maximum, const char* format, ImGuiSliderFlags flags, const SliderGeometry& geometry)
+		{
+			const bool dragging = GImGui->ActiveId == trackId && GImGui->ActiveIdSource == ImGuiInputSource_Mouse;
+			const bool pointerValid = ImGui::IsMousePosValid();
+			if (dragging && !pointerValid)
+				return previous;
+			const bool released = ImGui::IsMouseReleased(ImGuiMouseButton_Left) && pointerValid;
+			if (!dragging && (!released || !ImGui::IsItemDeactivatedAfterEdit()))
+				return requested;
+			auto* storage = ImGui::GetStateStorage();
+			const auto frameId = ImGui::GetID("##SmoothFrame");
+			const auto ratioId = ImGui::GetID("##SmoothRatio");
+			const auto targetId = ImGui::GetID("##SmoothTarget");
+			const int frame = ImGui::GetFrameCount();
+			const int lastFrame = storage->GetInt(frameId, -2);
+			const bool logarithmic = (flags & ImGuiSliderFlags_Logarithmic) != 0;
+			float ratio;
+			if (dragging) {
+				const float target = SliderPosition(type, requested, minimum, maximum, logarithmic, geometry.epsilon, geometry.deadzone);
+				const float start = lastFrame == frame - 1 && !GImGui->ActiveIdIsJustActivated ? storage->GetFloat(ratioId) :
+				                                                                                 SliderPosition(type, previous, minimum, maximum, logarithmic, geometry.epsilon, geometry.deadzone);
+				ratio = std::lerp(start, target, Util::UISmoothing::Amount(ImGui::GetIO().DeltaTime));
+				storage->SetFloat(ratioId, ratio);
+				storage->SetFloat(targetId, target);
+				storage->SetInt(frameId, frame);
+			} else {
+				if (lastFrame != frame - 1)
+					return requested;
+				// Finalize at the requested target before callers consume the release event.
+				ratio = storage->GetFloat(targetId);
+			}
+			return RoundEntry(SliderValue(type, ratio, minimum, maximum, logarithmic, geometry.epsilon, geometry.deadzone), minimum, maximum, type, format, flags);
 		}
 
 		template <class T>
@@ -226,8 +297,9 @@ namespace Util::Widgets
 			const SKSE::stl::scope_exit popId([] { ImGui::PopID(); });
 			ImGui::BeginGroup();
 			SKSE::stl::scope_exit endGroup([] { ImGui::EndGroup(); });
-			const bool locked = (ImGui::GetItemFlags() & ImGuiItemFlags_Disabled) != 0 ||
-			                    (flags & (static_cast<ImGuiSliderFlags>(ImGuiSliderFlags_NoInput) | static_cast<ImGuiSliderFlags>(ImGuiSliderFlags_ReadOnly))) != 0;
+			const bool readOnly = (GImGui->CurrentItemFlags & ImGuiItemFlags_Disabled) != 0 ||
+			                      (flags & static_cast<ImGuiSliderFlags>(ImGuiSliderFlags_ReadOnly)) != 0;
+			const bool locked = readOnly || (flags & ImGuiSliderFlags_NoInput) != 0;
 			const bool headset = globals::features::vr.IsMenuPointerInHeadset();
 			const float requestedWidth = ImGui::CalcItemWidth();
 			const float gap = ImGui::GetStyle().ItemInnerSpacing.x;
@@ -240,7 +312,8 @@ namespace Util::Widgets
 			ImGui::SetNextItemWidth(std::max(ImGui::GetFontSize() * 3, requestedWidth - valueWidth - gap));
 			const auto trackId = ImGui::GetID("##Track");
 			const bool textHidden = !ImGui::TempInputIsActive(trackId);
-			bool changed;
+			const T previousValue = *value;
+			T requestedValue = *value;
 			bool entryCommitted = false;
 			{
 				if (textHidden) {
@@ -248,31 +321,27 @@ namespace Util::Widgets
 						ImGui::PushStyleColor(color, ImVec4(0, 0, 0, 0));
 				}
 				const SKSE::stl::scope_exit restoreText([textHidden] { if (textHidden) ImGui::PopStyleColor(7); });
-				changed = ImGui::SliderScalar("##Track", type, value, &minimum, &maximum, format, flags);
+				ImGui::SliderScalar("##Track", type, &requestedValue, &minimum, &maximum, format, flags);
 			}
+			const auto geometry = GetSliderGeometry(minimum, maximum, format);
+			*value = headset && !readOnly && !ImGui::TempInputIsActive(trackId) ?
+			             SmoothSliderValue(trackId, type, previousValue, requestedValue, minimum, maximum, format, flags, geometry) :
+			             requestedValue;
+			bool changed = *value != previousValue;
+			if (changed)
+				ImGui::MarkItemEdited(trackId);
 			const auto trackItem = GImGui->LastItemData;
 			if (!ImGui::TempInputIsActive(trackId)) {
-				const auto& style = ImGui::GetStyle();
 				const auto trackMin = ImGui::GetItemRectMin();
 				const auto trackMax = ImGui::GetItemRectMax();
-				const float span = trackMax.x - trackMin.x - 4;
-				float grab = std::min(style.GrabMinSize, span);
-				if constexpr (std::is_integral_v<T>) {
-					const auto range = static_cast<long double>(maximum) - static_cast<long double>(minimum);
-					grab = std::min(span, std::max(grab, static_cast<float>(span / (range + 1))));
-				}
-				const float start = trackMin.x + 2 + grab * .5f;
-				const float finish = trackMax.x - 2 - grab * .5f;
-				const float epsilon = std::pow(.1f, static_cast<float>(std::max(0, ImParseFormatPrecision(format, 3))));
-				const float deadzone = style.LogSliderDeadzone * .5f / std::max(1.0f, finish - start);
-				const float ratio = SliderPosition(type, *value, minimum, maximum, (flags & ImGuiSliderFlags_Logarithmic) != 0, epsilon, deadzone);
-				const float centre = start + (finish - start) * ratio;
+				const float ratio = SliderPosition(type, *value, minimum, maximum, (flags & ImGuiSliderFlags_Logarithmic) != 0, geometry.epsilon, geometry.deadzone);
+				const float centre = geometry.start + (geometry.finish - geometry.start) * ratio;
 				const float y = (trackMin.y + trackMax.y) * .5f;
 				const float radius = ImGui::GetFontSize() * handleRadius;
 				const float thickness = std::max(2.0f, ImGui::GetFontSize() * .3f);
 				auto* draw = ImGui::GetWindowDrawList();
-				draw->AddLine({ start, y }, { finish, y }, ImGui::GetColorU32(ImGuiCol_Text), thickness);
-				draw->AddLine({ start, y }, { centre, y }, ImGui::GetColorU32(ImGuiCol_SliderGrab), thickness);
+				draw->AddLine({ geometry.start, y }, { geometry.finish, y }, ImGui::GetColorU32(ImGuiCol_Text), thickness);
+				draw->AddLine({ geometry.start, y }, { centre, y }, ImGui::GetColorU32(ImGuiCol_SliderGrab), thickness);
 				auto handle = ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
 				handle.w = 1;
 				draw->AddCircleFilled({ centre, y }, radius, ImGui::GetColorU32(handle));
@@ -289,8 +358,9 @@ namespace Util::Widgets
 			const float numberY = numberOrigin.y + ImGui::GetFrameHeight() * .5f - (numberDigit->Y0 + numberDigit->Y1) * .5f;
 			ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), numberFontSize, { numberOrigin.x, numberY }, ImGui::GetColorU32(color), formatted);
 			ImGui::GetWindowDrawList()->PopClipRect();
-			Util::AddTooltip("Double-click to enter a value. In the headset, this opens the number pad.");
-			const bool edit = !locked && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
+			Util::AddTooltip(headset ? "Click to open the number pad." : "Double-click to enter a value.");
+			const bool edit = !locked && ImGui::IsItemHovered() &&
+			                  (headset ? ImGui::IsItemClicked(ImGuiMouseButton_Left) : ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left));
 
 			if (edit && headset)
 				ImGui::OpenPopup("Enter value");
@@ -334,7 +404,7 @@ namespace Util::Widgets
 			}
 			const std::string name(label, ImGui::FindRenderedTextEnd(label));
 			if (!name.empty())
-				Util::AddTooltip(std::format("Adjust {}. Double-click the value to enter a number.", name).c_str());
+				Util::AddTooltip(std::format("Adjust {}. {}", name, headset ? "Click the value to open the number pad." : "Double-click the value to enter a number.").c_str());
 			return changed;
 		}
 	}

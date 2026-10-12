@@ -2,6 +2,7 @@
 #include "Features/VR/MenuPositioningPolicy.h"
 #include "RE/B/BSOpenVR.h"
 #include "RE/P/PlayerCharacter.h"
+#include "Utils/UISmoothing.h"
 #include "Utils/VRUtils.h"
 
 #include <SimpleMath.h>
@@ -156,11 +157,15 @@ void VR::UpdateActiveDrag()
 		return;
 	}
 
-	auto resetDragState = [&]() {
-		overlayDragState.dragging = false;
-		overlayDragState.controllerIndex = vr::k_unTrackedDeviceIndexInvalid;
-		overlayDragState.isPrimary = false;
-		overlayDragState.isSecondary = false;
+	auto resetDragState = [&]() { overlayDragState = {}; };
+	if (!GetGripPressed(overlayDragState.isPrimary, overlayDragState.isSecondary)) {
+		resetDragState();
+		return;
+	}
+	const float smoothing = Util::UISmoothing::Amount(ImGui::GetIO().DeltaTime);
+	const auto smoothDelta = [&](const Vector3& delta) {
+		overlayDragState.smoothedDelta = Vector3::Lerp(overlayDragState.smoothedDelta, delta, smoothing);
+		return overlayDragState.smoothedDelta;
 	};
 
 	float rawMatrix[3][4];
@@ -198,7 +203,7 @@ void VR::UpdateActiveDrag()
 					Vector3 localDelta = Vector3::TransformNormal(worldDelta, worldToLocal);
 					Vector3 offset;
 					if (!IsFiniteVector(worldDelta) ||
-						!TryApplyOffsetDelta(overlayDragState.initialControllerOffset, localDelta, offset)) {
+						!TryApplyOffsetDelta(overlayDragState.initialControllerOffset, smoothDelta(localDelta), offset)) {
 						resetDragState();
 						return;
 					}
@@ -223,10 +228,11 @@ void VR::UpdateActiveDrag()
 				resetDragState();
 				return;
 			}
+			const Vector3 delta = smoothDelta(worldDelta);
 			Matrix translated = overlayDragState.initialOverlayMatrix;
-			translated._41 += worldDelta.x;
-			translated._42 += worldDelta.y;
-			translated._43 += worldDelta.z;
+			translated._41 += delta.x;
+			translated._42 += delta.y;
+			translated._43 += delta.z;
 			if (!IsFiniteVector(translated.Translation())) {
 				resetDragState();
 				return;
@@ -257,7 +263,7 @@ void VR::UpdateActiveDrag()
 			Vector3 localDelta = Vector3::TransformNormal(worldDelta, worldToLocal);
 			Vector3 offset;
 			if (!IsFiniteVector(worldDelta) ||
-				!TryApplyOffsetDelta(overlayDragState.initialHMDOffset, localDelta, offset)) {
+				!TryApplyOffsetDelta(overlayDragState.initialHMDOffset, smoothDelta(localDelta), offset)) {
 				resetDragState();
 				return;
 			}
@@ -285,11 +291,6 @@ void VR::UpdateActiveDrag()
 		}
 	default:
 		break;
-	}
-
-	bool gripPressed = GetGripPressed(overlayDragState.isPrimary, overlayDragState.isSecondary);
-	if (!gripPressed) {
-		resetDragState();
 	}
 }
 
@@ -419,6 +420,7 @@ void VR::TryStartNewDrag()
 			Matrix controllerMatrix = Util::HmdMatrix34ToMatrix(mat);
 			if (!IsFiniteVector(controllerMatrix.Translation()))
 				continue;
+			overlayDragState.smoothedDelta = Vector3::Zero;
 			overlayDragState.dragging = true;
 			overlayDragState.mode = mode.mode;
 			overlayDragState.controllerIndex = i;

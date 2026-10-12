@@ -657,6 +657,7 @@ public:
 			Controller
 		} mode = DragMode::None;
 
+		Vector3 smoothedDelta = Vector3::Zero;
 		Vector3 initialHMDOffset = Vector3::Zero;
 		Vector3 initialControllerOffset = Vector3::Zero;
 		float initialHMDScale = 1.0f;

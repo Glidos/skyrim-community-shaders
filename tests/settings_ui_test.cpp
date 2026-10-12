@@ -2,6 +2,7 @@
 #include "Menu/SettingsPage.h"
 #include "Utils/FeatureProfiling.h"
 #include "Utils/NumericEntry.h"
+#include "Utils/UISmoothing.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -1366,9 +1367,9 @@ int main()
 				detailToggle = { ImGui::GetItemRectMin(), ImGui::GetItemRectMax() };
 				Util::Widgets::SliderFloat("Short", &first, 0, 1, "%.2f");
 				commits += ImGui::IsItemDeactivatedAfterEdit() ? 1 : 0;
-				firstNumber = Util::controls.at("Double-click to enter a value. In the headset, this opens the number pad.");
+				firstNumber = Util::controls.at("Click to open the number pad.");
 				Util::Widgets::SliderFloat("A longer label", &second, 0, 1, "%.2f");
-				secondNumber = Util::controls.at("Double-click to enter a value. In the headset, this opens the number pad.");
+				secondNumber = Util::controls.at("Click to open the number pad.");
 			};
 			globals::features::vr.headset = true;
 			frame(form);
@@ -1377,7 +1378,6 @@ int main()
 			require(std::abs(firstNumber.Min.x - secondNumber.Min.x) < 1 && std::abs(firstNumber.Max.x - secondNumber.Max.x) < 1, "detail values align independently of label lengths");
 			require(firstNumber.GetHeight() >= ImGui::GetFontSize() * 1.95f && firstNumber.GetWidth() >= ImGui::GetFontSize() * 5, "compact numeric entry retains a padded HMD target and full value-column width");
 			const ImVec2 paddedCorner{ firstNumber.Min.x + 2, firstNumber.Min.y + 2 };
-			click(paddedCorner, form);
 			click(paddedCorner, form);
 			frame(form);
 			require(!GImGui->OpenPopupStack.empty(), "the padded numeric target opens the headset keypad");
@@ -1425,6 +1425,125 @@ int main()
 			require(enabled[6] && std::count(enabled.begin(), enabled.end(), true) == 1, "aligned checkbox grid edits only the clicked setting");
 		}
 
+		{
+			float scale = .2f;
+			int completed = 0;
+			ImRect number;
+			globals::features::vr.headset = true;
+			auto drag = [&] {
+				ImGui::SetNextItemWidth(300);
+				Util::Widgets::SliderFloat("Smooth scale", &scale, 0, 1, "%.2f");
+				completed += ImGui::IsItemDeactivatedAfterEdit() ? 1 : 0;
+				number = Util::controls.at(globals::features::vr.headset ? "Click to open the number pad." : "Double-click to enter a value.");
+			};
+			frame(drag);
+			frame(drag);
+			const ImVec2 end{ number.Min.x - ImGui::GetStyle().ItemInnerSpacing.x - 2, number.GetCenter().y };
+			io.AddMousePosEvent(end.x, end.y);
+			frame(drag);
+			io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+			frame(drag);
+			require(scale > .2f && scale < .9f, "headset slider press is damped instead of jumping to its target");
+			for (int i = 0; i < 30; ++i)
+				frame(drag);
+			require(scale >= .99f, "headset slider reaches the target without rounding dead zones");
+			io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+			frame(drag);
+			require(scale == 1 && completed == 1, "release commits the exact slider endpoint once");
+			frame(drag);
+			require(scale == 1 && completed == 1, "a released slider does not keep changing settings");
+			globals::features::vr.headset = false;
+			scale = .2f;
+			click(end, drag);
+			require(scale == 1 && completed == 2, "desktop sliders retain immediate native input");
+		}
+
+		{
+			float scale = .2f;
+			bool disabled = false, cancelCapture = false;
+			ImRect number;
+			globals::features::vr.headset = true;
+			auto draw = [&] {
+				if (cancelCapture)
+					ImGui::ClearActiveID();
+				Util::DisableGuard guard(disabled);
+				ImGui::SetNextItemWidth(300);
+				Util::Widgets::SliderFloat("Interrupted scale", &scale, 0, 1, "%.2f");
+				number = Util::controls.at("Click to open the number pad.");
+			};
+			frame(draw);
+			frame(draw);
+			const ImVec2 end{ number.Min.x - ImGui::GetStyle().ItemInnerSpacing.x - 2, number.GetCenter().y };
+			const auto beginDrag = [&] {
+				scale = .2f;
+				io.AddMousePosEvent(end.x, end.y);
+				frame(draw);
+				io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+				frame(draw);
+				require(scale > .2f && scale < .9f, "a new drag starts from its current value");
+			};
+			beginDrag();
+			const float trackingLost = scale;
+			io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+			frame(draw);
+			require(scale == trackingLost, "an invalid pointer sample must not move an active slider");
+			io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+			frame(draw);
+			require(scale == trackingLost, "tracking loss cancels slider damping without snapping to a stale target");
+			beginDrag();
+			const float captureLost = scale;
+			cancelCapture = true;
+			frame(draw);
+			require(scale == captureLost, "lost mouse capture must not finalize an unfinished drag");
+			cancelCapture = false;
+			io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+			frame(draw);
+			beginDrag();
+			const float unavailable = scale;
+			disabled = true;
+			io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+			frame(draw);
+			require(scale == unavailable, "a disabled slider cannot finalize a pending smoothed edit");
+			disabled = false;
+			for (int i = 0; i < 5; ++i)
+				frame(draw);
+			require(scale == unavailable, "an interrupted slider does not retain delayed setting writes");
+		}
+
+		{
+			int count = 0;
+			double logarithmic = .01;
+			ImRect countNumber, logNumber;
+			globals::features::vr.headset = true;
+			auto draw = [&] {
+				ImGui::SetNextItemWidth(300);
+				Util::Widgets::SliderInt("Smooth count", &count, 0, 100, "%d", ImGuiSliderFlags_NoInput);
+				countNumber = Util::controls.at("Click to open the number pad.");
+				ImGui::SetNextItemWidth(300);
+				const double lower = .01, upper = 100;
+				Util::Widgets::SliderScalar("Smooth log", ImGuiDataType_Double, &logarithmic, &lower, &upper, "%.3f", ImGuiSliderFlags_Logarithmic);
+				logNumber = Util::controls.at("Click to open the number pad.");
+			};
+			frame(draw);
+			frame(draw);
+			const auto dragToEnd = [&](const ImRect& number) {
+				io.AddMousePosEvent(number.Min.x - ImGui::GetStyle().ItemInnerSpacing.x - 2, number.GetCenter().y);
+				frame(draw);
+				io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+				frame(draw);
+			};
+			dragToEnd(countNumber);
+			require(count > 0 && count < 100, "integer tracks remain smoothed when direct entry is disabled");
+			io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+			frame(draw);
+			require(count == 100, "integer slider release preserves its exact range endpoint");
+			dragToEnd(logNumber);
+			require(logarithmic > .01 && logarithmic < 10, "logarithmic sliders are smoothed in track space");
+			io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+			frame(draw);
+			require(logarithmic == 100, "logarithmic release preserves its exact range endpoint");
+		}
+
 		float value = .5f;
 		bool disabled = false;
 		ImGuiSliderFlags sliderFlags = 0;
@@ -1440,12 +1559,11 @@ int main()
 		globals::features::vr.headset = true;
 		frame(drawSlider);
 		frame(drawSlider);
-		auto bounds = Util::controls.at("Adjust Strength. Double-click the value to enter a number.");
+		auto bounds = Util::controls.at("Adjust Strength. Click the value to open the number pad.");
 		ImVec2 number(bounds.Min.x + 290, bounds.Min.y + ImGui::GetFrameHeight() * .5f);
 		click(number, drawSlider);
-		click(number, drawSlider);
 		frame(drawSlider);
-		require(!GImGui->OpenPopupStack.empty(), "headset double-click opens keypad");
+		require(!GImGui->OpenPopupStack.empty(), "one headset click opens keypad");
 		require(value == .5f, "opening keypad preserves value");
 		click(Util::controls.at("Clear this entry. Your setting is unchanged.").GetCenter(), drawSlider);
 		click(Util::controls.at("Add this digit.").GetCenter(), drawSlider);
@@ -1458,7 +1576,6 @@ int main()
 
 		require(value == .5f && GImGui->OpenPopupStack.empty(), "cancel discards draft");
 		for (int i = 0; i < 25; ++i) frame(drawSlider);
-		click(number, drawSlider);
 		click(number, drawSlider);
 		frame(drawSlider);
 		click(Util::controls.at("Clear this entry. Your setting is unchanged.").GetCenter(), drawSlider);
@@ -1581,7 +1698,6 @@ int main()
 			globals::features::vr.headset = true;
 			for (int i = 0; i < 25; ++i) frame(drawNeuralSlider);
 			click(sliderNumber, drawNeuralSlider);
-			click(sliderNumber, drawNeuralSlider);
 			frame(drawNeuralSlider);
 			require(!GImGui->OpenPopupStack.empty(), std::format("{} supports the headset keypad", test.label).c_str());
 			click(Util::controls.at("Clear this entry. Your setting is unchanged.").GetCenter(), drawNeuralSlider);
@@ -1597,7 +1713,6 @@ int main()
 			click(Util::controls.at("Use this value.").GetCenter(), drawNeuralSlider);
 			require(neuralSettings.*test.member == 70 && GImGui->OpenPopupStack.empty(), "NR slider keypad Apply commits the deferred integer setting");
 			for (int i = 0; i < 25; ++i) frame(drawNeuralSlider);
-			click(sliderNumber, drawNeuralSlider);
 			click(sliderNumber, drawNeuralSlider);
 			frame(drawNeuralSlider);
 			click(Util::controls.at("Clear this entry. Your setting is unchanged.").GetCenter(), drawNeuralSlider);
