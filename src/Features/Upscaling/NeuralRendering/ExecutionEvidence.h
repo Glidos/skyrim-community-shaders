@@ -195,6 +195,7 @@ namespace NeuralRendering
 		ExecutionTiming batchGpu{};
 		std::uint32_t attemptedPhysicalSlotMask = 0, succeededPhysicalSlotMask = 0, committedPhysicalSlotMask = 0;
 		bool finished = false, succeeded = false;
+		bool parallelEyes = false;
 		bool evidenceFailed = false;
 		std::uint32_t failureStage = 0;
 		std::optional<std::uint64_t> preparationCpuMicroseconds, commitCpuMicroseconds;

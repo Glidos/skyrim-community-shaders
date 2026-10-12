@@ -150,6 +150,7 @@ namespace NeuralRendering
 	};
 	struct InteropFixture
 	{
+		bool IsParallelDisabled() const { return true; }
 		DeviceFixture device;
 		bool present = true, captureThrows = false;
 		std::uint32_t captures = 0;

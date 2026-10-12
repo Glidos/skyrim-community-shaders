@@ -36,6 +36,11 @@ namespace NeuralRendering
 		std::shared_ptr<ExecutionEvidence> execution;
 	};
 
+	struct ParallelEyeStatus
+	{
+		bool available = false, disabled = false, lastSubmission = false;
+	};
+
 	struct D3D12InteropTelemetry
 	{
 		std::uint64_t commandSubmissions = 0;
@@ -70,6 +75,9 @@ namespace NeuralRendering
 		std::uint32_t lastFeatureSlotMask = 0;
 		InsertionPoint lastInsertionPoint = InsertionPoint::Count;
 #ifdef DEVBENCH_BRIDGE_ENABLED
+		std::uint64_t parallelCommandSubmissions = 0;
+		bool lastFeatureParallel = false;
+		std::array<std::optional<std::uint64_t>, kMaximumExecutionRegions> lastEvaluationGpuMicroseconds{};
 		std::optional<ExecutionPlanSummary> lastExecutionPlan;
 #endif
 	};
@@ -102,6 +110,14 @@ namespace NeuralRendering
 		bool CreateSharedTexture(const D3D11_TEXTURE2D_DESC& a_sourceDesc, SharedTexture& a_texture, const char* a_name);
 
 		bool BeginD3D12(ID3D12GraphicsCommandList** a_commandList, const std::shared_ptr<ExecutionEvidence>& a_evidence = {});
+		/** Selects an independent compute list for a warmed stereo pair; null retains serial execution. */
+		[[nodiscard]] ID3D12GraphicsCommandList* ParallelList();
+		/** Latches serial execution across backend resets for the remainder of this session. */
+		void DisableParallel(const char* a_reason);
+		/** Cheap session latch; failed queues are not probed again while rendering. */
+		[[nodiscard]] bool IsParallelDisabled() const noexcept { return parallelDisabled_.load(std::memory_order_relaxed); }
+		/** Reads scheduling state without polling fences or collecting GPU timings. */
+		[[nodiscard]] ParallelEyeStatus GetParallelStatus() const;
 		/** Opens optional timestamps and reports submission-scope ownership to the caller. */
 		bool BeginFeatureTiming(
 			ID3D12GraphicsCommandList* a_commandList,
@@ -138,10 +154,20 @@ namespace NeuralRendering
 #endif
 
 	private:
+		struct CommandRecording
+		{
+			bool recording = false;
+			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+			Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
+		};
+
 		struct CommandContext
 		{
 			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
 			Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
+			CommandRecording parallel, timingBegin, timingEnd;
+			std::uint64_t inputReady = 0;
+			bool parallelRecording = false;
 			std::uint64_t fenceValue = 0;
 			D3D12InteropSubmissionTiming timing{};
 			bool timingPending = false;
@@ -165,6 +191,10 @@ namespace NeuralRendering
 		};
 
 		bool CreateCommandContextLocked(std::size_t a_index);
+		bool CreateRecordingLocked(CommandRecording& a_recording, D3D12_COMMAND_LIST_TYPE a_type, const std::string& a_name);
+		bool CreateParallelQueueLocked();
+		bool PrepareParallelTimingLocked(CommandContext& a_context);
+		bool CloseRecordingLocked(CommandContext& a_context);
 		bool CreateTimingResourcesLocked();
 		static constexpr std::uint32_t kQueriesPerContext = kExecutionTimestampQueriesPerContext;
 		void CollectCompletedTimingLocked(
@@ -185,6 +215,8 @@ namespace NeuralRendering
 		Microsoft::WRL::ComPtr<ID3D11DeviceContext4> context11_;
 		Microsoft::WRL::ComPtr<ID3D12Device> device12_;
 		Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue12_;
+		Microsoft::WRL::ComPtr<ID3D12CommandQueue> parallelQueue_;
+		Microsoft::WRL::ComPtr<ID3D12Fence> parallelFence_;
 		Microsoft::WRL::ComPtr<ID3D12Fence> fence12_;
 		Microsoft::WRL::ComPtr<ID3D12QueryHeap> timestampQueryHeap_;
 		Microsoft::WRL::ComPtr<ID3D12Resource> timestampReadback_;
@@ -193,6 +225,7 @@ namespace NeuralRendering
 		std::vector<ResourceLease> resourceLeases_;
 		std::vector<PendingFenceEvent> pendingFenceEvents_;
 		std::uint64_t fenceValue_ = 0;
+		std::uint64_t parallelFenceValue_ = 0;
 		std::uint64_t lastCompletedTimingFenceValue_ = 0;
 		std::size_t commandContextCursor_ = 0;
 		std::size_t recordingContext_ = kCommandContextCount;
@@ -201,6 +234,10 @@ namespace NeuralRendering
 		std::shared_ptr<ExecutionEvidence> waitEvidence_;
 		std::atomic_bool executionTimingFailed_{ false };
 		std::uint64_t timestampFrequency_ = 0;
+		std::uint64_t parallelTimestampFrequency_ = 0;
+		std::atomic_bool parallelDisabled_{ false };
+		bool lastSubmissionParallel_ = false;
+		bool parallelTimingFailed_ = false;
 		bool timingResourcesAttempted_ = false;
 		bool timingReadbackFailureLogged_ = false;
 		HRESULT lastError_ = S_OK;

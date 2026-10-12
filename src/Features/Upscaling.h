@@ -479,6 +479,7 @@ public:
 		bool foveatedVendorDispatch = false;
 		bool neuralRenderingEnabled = false;
 		bool neuralRenderingPrewarmEnabled = false;
+		bool neuralRenderingParallelEyes = false;
 		uint neuralRenderingMode = static_cast<uint>(NeuralRendering::RenderingMode::ReducedResolution);
 		// Compatibility fields are derived from shared VR FOV coverage for both placements.
 		bool neuralRenderingFovOnly = false;

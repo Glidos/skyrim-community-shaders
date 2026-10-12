@@ -17,20 +17,20 @@ def read(name):
 
 
 class PreparedSelectionContract(unittest.TestCase):
-    def test_each_character_override_participates_in_change_detection(self):
+    def test_each_neural_override_participates_in_change_detection(self):
         import re
 
         source = read("src/Features/Upscaling/VRRenderScaleDevBenchBridge.cpp")
-        assigned = set(re.findall(r"requestedSettings\.(neuralCharacter\w+)\s*=", source))
+        assigned = set(re.findall(r"requestedSettings\.(neural(?:Rendering|Character)\w+)\s*=", source))
         start = source.index("const bool runtimeSettingsChanged = fovTaaDisabled")
         detection = source[start:source.index("if (!settingsChanged)", start)]
         compared = set(re.findall(
-            r"previousSettings\.(neuralCharacter\w+)\s*!=\s*requestedSettings\.\1", detection))
+            r"previousSettings\.(neural(?:Rendering|Character)\w+)\s*!=\s*requestedSettings\.\1", detection))
         self.assertTrue({"neuralCharacterRenderingEnabled", "neuralCharacterFacesEnabled",
                          "neuralCharacterSkinEnabled", "neuralCharacterHairEnabled",
                          "neuralCharacterRoiMargin"}.issubset(assigned))
         self.assertEqual(assigned - compared, set(),
-                         "A standalone character override would be rejected as nr_configure_noop")
+                         "A standalone NR override would be rejected as nr_configure_noop")
 
     def test_atomic_lookup_and_consumers(self):
         source = read("src/Features/Upscaling/NeuralRendering/CharacterRendering.cpp")

@@ -36,6 +36,9 @@ int main()
 		failure.before.completedKnown = true;
 		failure.before.completed = 0;
 		failure.after.deviceRemoved = true;
+		failure.before.parallelIssued = UINT64_MAX - 3;
+		failure.before.parallelCompleted = 0;
+		failure.after.parallelCompleted = UINT64_MAX;
 		history.Record(failure);
 		LifetimeRecord cleanup;
 		cleanup.operation = LifetimeOperation::BackendRetirement;
@@ -48,6 +51,9 @@ int main()
 		const auto json = LifetimeDiagnosticsJson(snapshot, false);
 		Require(!json["enabled"].get<bool>() && json["frozen"].get<bool>(), "disabling capture hid failure");
 		const auto& pinned = json["firstFailure"];
+		Require(pinned["before"]["parallelIssued"] == "18446744073709551612" &&
+					pinned["before"]["parallelCompleted"] == "0" && pinned["after"]["parallelCompleted"].is_null(),
+			"parallel fence precision, zero or device-loss sentinel lost");
 		Require(pinned["before"]["completed"] == "0" && pinned["after"]["completed"].is_null(), "unknown completion or real zero misrepresented");
 		Require(pinned["regions"][0]["resourceSerial"] == "18446744073709551614", "serial precision lost");
 		Require(pinned["regions"][0]["resources12"][0] == "18446744073709551613", "resource identity precision lost");

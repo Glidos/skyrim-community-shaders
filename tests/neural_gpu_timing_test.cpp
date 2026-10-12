@@ -50,6 +50,7 @@ namespace globals
 #endif
 #include <d3d11_4.h>
 #include <d3d12.h>
+#include <d3d12sdklayers.h>
 #include <wrl/client.h>
 // Model D3D11's buffered Signal/Wait packets using a second real D3D12 queue.
 class BufferedD3D11Context : public IUnknown
@@ -153,11 +154,25 @@ namespace
 		~Fixture()
 		{
 			try {
+				if (!interop.initialized_)
+					return;
 				interop.context11_->holdSubmission = false;
 				Require(interop.queue12_ != nullptr, "test cleanup lost its consumer queue");
 				if (interop.recording_)
 					Require(interop.AbortD3D12(), "test cleanup could not abort command recording");
 				Require(interop.WaitForIdle(), "test cleanup could not drain the queues");
+				ComPtr<ID3D12InfoQueue> messages;
+				if (SUCCEEDED(interop.device12_.As(&messages))) {
+					for (UINT64 i = 0; i < messages->GetNumStoredMessages(); ++i) {
+						SIZE_T size = 0;
+						Check(messages->GetMessage(i, nullptr, &size));
+						std::vector<std::byte> storage(size);
+						auto* message = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
+						Check(messages->GetMessage(i, message, &size));
+						if (message->Severity <= D3D12_MESSAGE_SEVERITY_ERROR)
+							throw std::runtime_error(message->pDescription);
+					}
+				}
 			} catch (const std::exception& error) {
 				// Do not release resources or event handles while GPU work may still use them.
 				std::cerr << "GPU fixture cleanup failed: " << error.what() << std::endl;
@@ -208,60 +223,65 @@ namespace
 			interop.BeginEvaluationTiming(list, region);
 			interop.EndEvaluationTiming(list, region);
 		}
-		void RecordSubmission(ID3D12GraphicsCommandList* list, std::uint32_t frame)
+		void RecordSubmission(ID3D12GraphicsCommandList* list, std::uint32_t frame, bool parallel = false)
 		{
+			auto* right = parallel ? interop.ParallelList() : list;
+			Require(right != nullptr, "parallel command acquisition failed");
 			auto timing = Timing();
 			timing.frameId = frame;
 			Require(BeginFeatureScope(list, timing), "submission timing scope failed");
 			Evaluate(list, 0);
-			Evaluate(list, 1);
+			Evaluate(right, 1);
 			Require(EndFeatureScope(list), "submission timing scope close failed");
 			Require(interop.EndD3D12(), "command submission failed");
 		}
 	};
+#include "neural_parallel_eyes_cases.h"
+
 	void CommandBackpressure()
 	{
 		for (std::size_t cursor = 0; cursor < D3D12Interop::kCommandContextCount; ++cursor)
 			for (const auto epoch : { 0u, 1u })
-				for (const bool stall : { false, true }) {
-					Fixture f;
-					globals::source.epoch = epoch;
-					f.interop.commandContextCursor_ = cursor;
-					auto& immediate = *f.interop.context11_.Get();
-					ID3D12GraphicsCommandList* list = nullptr;
-					for (std::uint32_t i = 0; i < f.interop.kCommandContextCount; ++i) {
-						Require(f.interop.BeginD3D12(&list), "free command slot could not begin recording");
-						f.RecordSubmission(list, i + 1);
-					}
-					Require(immediate.flushes == 0, "a free command slot unnecessarily flushed D3D11");
-					Require(globals::source.samples.empty(), "timing published before producer submission");
-					std::array<std::uint64_t, D3D12Interop::kCommandContextCount> busyFences{};
-					for (std::size_t i = 0; i < busyFences.size(); ++i)
-						busyFences[i] = f.interop.commandContexts_[i].fenceValue;
-					const auto submittedFence = f.interop.fenceValue_;
-					immediate.holdSubmission = stall;
-					const bool began = f.interop.BeginD3D12(&list);
-					Require(began != stall, "buffered producer submission timed out or a stalled queue reused a busy allocator");
-					Require(f.interop.recording_ == began && (list != nullptr) == began, "command recording ownership does not match its result");
-					if (stall) {
-						Require(f.interop.lastError_ == HRESULT_FROM_WIN32(ERROR_TIMEOUT) &&
-									f.interop.lastOperation_ == "BeginD3D12 backpressure" && f.interop.pendingFenceEvents_.size() == 1,
-							"genuine backpressure timeout lost its bounded failure and pending fence ownership");
-						Require(f.interop.commandContextCursor_ == cursor && f.interop.fenceValue_ == submittedFence,
-							"timeout advanced command or fence ownership");
+				for (const bool parallel : { false, true })
+					for (const bool stall : { false, true }) {
+						Fixture f;
+						globals::source.epoch = epoch;
+						f.interop.commandContextCursor_ = cursor;
+						auto& immediate = *f.interop.context11_.Get();
+						ID3D12GraphicsCommandList* list = nullptr;
+						for (std::uint32_t i = 0; i < f.interop.kCommandContextCount; ++i) {
+							Require(f.interop.BeginD3D12(&list), "free command slot could not begin recording");
+							f.RecordSubmission(list, i + 1, parallel);
+						}
+						Require(immediate.flushes == 0, "a free command slot unnecessarily flushed D3D11");
+						Require(globals::source.samples.empty(), "timing published before producer submission");
+						std::array<std::uint64_t, D3D12Interop::kCommandContextCount> busyFences{};
 						for (std::size_t i = 0; i < busyFences.size(); ++i)
-							Require(f.interop.commandContexts_[i].fenceValue == busyFences[i], "timeout discarded an in-flight context fence");
-						immediate.holdSubmission = false;
-						Require(f.interop.BeginD3D12(&list), "command recording did not recover after producer submission resumed");
+							busyFences[i] = f.interop.commandContexts_[i].fenceValue;
+						const auto submittedFence = f.interop.fenceValue_;
+						immediate.holdSubmission = stall;
+						const bool began = f.interop.BeginD3D12(&list);
+						Require(began != stall, "buffered producer submission timed out or a stalled queue reused a busy allocator");
+						Require(f.interop.recording_ == began && (list != nullptr) == began, "command recording ownership does not match its result");
+						if (stall) {
+							Require(f.interop.lastError_ == HRESULT_FROM_WIN32(ERROR_TIMEOUT) &&
+										f.interop.lastOperation_ == "BeginD3D12 backpressure" && f.interop.pendingFenceEvents_.size() == 1,
+								"genuine backpressure timeout lost its bounded failure and pending fence ownership");
+							Require(f.interop.commandContextCursor_ == cursor && f.interop.fenceValue_ == submittedFence,
+								"timeout advanced command or fence ownership");
+							for (std::size_t i = 0; i < busyFences.size(); ++i)
+								Require(f.interop.commandContexts_[i].fenceValue == busyFences[i], "timeout discarded an in-flight context fence");
+							immediate.holdSubmission = false;
+							Require(f.interop.BeginD3D12(&list), "command recording did not recover after producer submission resumed");
+						}
+						f.RecordSubmission(list, 4);
+						Require(f.interop.WaitForIdle(), "backpressure submissions failed to drain");
+						Require(f.interop.pendingFenceEvents_.empty(), "completed timeout event was not retired");
+						const auto& samples = globals::source.samples;
+						Require(samples.size() == 4 * epoch, "backpressure lost or fabricated an inference sample");
+						for (std::size_t i = 0; i < samples.size(); ++i)
+							Require(samples[i].frameId == i + 1, "command reuse published inference samples out of submission order");
 					}
-					f.RecordSubmission(list, 4);
-					Require(f.interop.WaitForIdle(), "backpressure submissions failed to drain");
-					Require(f.interop.pendingFenceEvents_.empty(), "completed timeout event was not retired");
-					const auto& samples = globals::source.samples;
-					Require(samples.size() == 4 * epoch, "backpressure lost or fabricated an inference sample");
-					for (std::size_t i = 0; i < samples.size(); ++i)
-						Require(samples[i].frameId == i + 1, "command reuse published inference samples out of submission order");
-				}
 	}
 	void OffAndLive()
 	{
@@ -400,6 +420,19 @@ namespace
 int main()
 {
 	try {
+		ComPtr<ID3D12Debug> debug;
+		if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
+			debug->EnableDebugLayer();
+			std::cout << "D3D12 debug-layer validation enabled\n";
+		} else {
+			std::cout << "D3D12 debug-layer validation unavailable\n";
+		}
+		ParallelSynchronizationFailures();
+		ParallelTimingFailure();
+		ParallelSubmissionAndTiming();
+		ParallelJoinedInterval();
+		ParallelPartialSubmissionRetirement();
+		ParallelAbortAndCaptureCancellation();
 		CommandBackpressure();
 		OffAndLive();
 		CancelAndFailure();

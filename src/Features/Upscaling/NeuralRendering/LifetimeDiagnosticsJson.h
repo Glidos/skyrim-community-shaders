@@ -15,6 +15,9 @@ namespace NeuralRendering
 		return {
 			{ "device", std::to_string(value.device) }, { "queue", std::to_string(value.queue) },
 			{ "device11", std::to_string(value.device11) }, { "context11", std::to_string(value.context11) },
+			{ "parallelQueue", std::to_string(value.parallelQueue) }, { "parallelFence", std::to_string(value.parallelFence) },
+			{ "parallelIssued", std::to_string(value.parallelIssued) },
+			{ "parallelCompleted", value.parallelCompleted == UINT64_MAX ? nlohmann::json(nullptr) : nlohmann::json(std::to_string(value.parallelCompleted)) },
 			{ "fence", std::to_string(value.fence) }, { "issued", std::to_string(value.issued) },
 			{ "completed", value.completedKnown ? nlohmann::json(std::to_string(value.completed)) : nlohmann::json(nullptr) },
 			{ "contextFences", { std::to_string(value.contexts[0]), std::to_string(value.contexts[1]), std::to_string(value.contexts[2]) } },

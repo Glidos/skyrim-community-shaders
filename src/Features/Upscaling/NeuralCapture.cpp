@@ -11,6 +11,7 @@ void Upscaling::SetNeuralExecutionContext(NeuralRendering::RendererApplyArgs& ar
 	args.modelResolutionPercent = NeuralRendering::EffectiveModelResolutionPercent(
 		*args.renderingMode, settings.neuralRenderingModelResolutionPercent);
 	args.pressureResolutionEnabled = settings.neuralRenderingPressureResolutionEnabled;
+	args.parallelEyes = globals::game::isVR && settings.neuralRenderingParallelEyes && settings.neuralRenderingBatchedStereo;
 	args.centralArea = {
 		settings.neuralRenderingCentralAreaPercent, settings.neuralRenderingCentralFeatherPixels,
 		globals::game::isVR ? FoveatedCommon::ClampCenterHorizontalScale(settings.foveatedCenterHorizontalScale) : 1.0f,

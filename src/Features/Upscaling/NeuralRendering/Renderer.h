@@ -127,6 +127,9 @@ namespace NeuralRendering
 		std::uint32_t lastFeatureSlotMask = 0;
 		InsertionPoint lastInsertionPoint = InsertionPoint::Count;
 #ifdef DEVBENCH_BRIDGE_ENABLED
+		std::uint64_t parallelCommandSubmissions = 0;
+		bool lastFeatureParallel = false;
+		std::array<std::optional<std::uint64_t>, kMaximumExecutionRegions> lastEvaluationGpuMicroseconds{};
 		std::optional<ExecutionPlanSummary> lastExecutionPlan;
 #endif
 	};
@@ -186,6 +189,7 @@ namespace NeuralRendering
 		bool failureLatched = false;
 		bool quarantined = false;
 		bool outputCommitted = false;
+		bool parallelEyesAvailable = false, parallelEyesDisabled = false, parallelEyesLastSubmission = false;
 		bool controlMaskPresent = false;
 		bool providerBlending = false;
 		bool useAutoMask = true;
@@ -230,6 +234,7 @@ namespace NeuralRendering
 		ComputeSubrect actorSelectionSupport{};
 		std::uint32_t modelResolutionPercent = 100;
 		bool pressureResolutionEnabled = false;
+		bool parallelEyes = false;
 		CentralArea centralArea{};
 		/** Original sampling basis retained by independently scaled temporal inputs. */
 		std::optional<ModelResolutionHistory> modelResolutionHistory;
@@ -297,7 +302,7 @@ namespace NeuralRendering
 		bool Apply(
 			const RendererApplyArgs& a_args,
 			RendererApplyOutcome* a_outcome = nullptr);
-		/** Runs both eye slots in one command list and commits neither output on failure. */
+		/** Submits a validated eye pair together and commits neither output on failure. */
 		bool ApplyStereo(
 			const std::array<RendererApplyArgs, 2>& a_args,
 			RendererApplyOutcome* a_outcome = nullptr);

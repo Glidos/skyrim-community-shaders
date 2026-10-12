@@ -44,6 +44,9 @@ int main()
 			baseline.neuralRenderingCentralAreaPercent = 100;
 			baseline.neuralRenderingCentralFeatherPixels = 64;
 			const auto key = BuildNeuralRenderingSettingsKey(baseline);
+			auto parallel = baseline;
+			parallel.neuralRenderingParallelEyes = true;
+			require(BuildNeuralRenderingSettingsKey(parallel) == key);
 			auto prewarm = baseline;
 			prewarm.neuralRenderingPrewarmEnabled = true;
 			require(BuildNeuralRenderingSettingsKey(prewarm) == key);

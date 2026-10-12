@@ -101,14 +101,14 @@ namespace NeuralRendering::Evidence
 	{
 		return { { "state", value ? "complete" : "unavailable" }, { "microseconds", OptionalJson(value) }, { "clock", "cpu_steady_clock" } };
 	}
-	inline Json GpuTimingJson(const ExecutionTiming& value)
+	inline Json GpuTimingJson(const ExecutionTiming& value, const char* clock = "d3d12_nr_queue")
 	{
 		const char* state = value.state == ExecutionTimingState::Complete ? "complete" :
 		                    value.state == ExecutionTimingState::Pending  ? "pending" :
 		                    value.state == ExecutionTimingState::Failed   ? "failed" :
 		                                                                    "unavailable";
 		return { { "state", state }, { "microseconds", value.state == ExecutionTimingState::Complete ? OptionalJson(value.microseconds) : Json(nullptr) },
-			{ "clock", "d3d12_nr_queue" }, { "reason", value.state == ExecutionTimingState::NotRequested ? "not_requested" : state } };
+			{ "clock", clock }, { "reason", value.state == ExecutionTimingState::NotRequested ? "not_requested" : state } };
 	}
 	inline Json TextureJson(const ExecutionTexture& value)
 	{
@@ -165,7 +165,7 @@ namespace NeuralRendering::Evidence
 				{ "inputTransportOwnerSlot", o.inputTransportOwnerSlot ? Json(*o.inputTransportOwnerSlot) : Json(nullptr) },
 				{ "timing", { { "createCpu", CpuTimingJson(o.runtime.createCpuMicroseconds) },
 								{ "sourceInputPreparation", PassTimingJson(r.context.inputPreparation) },
-								{ "evaluationCpu", CpuTimingJson(o.runtime.evaluateCpuMicroseconds) }, { "evaluationGpu", GpuTimingJson(o.evaluationGpu) },
+								{ "evaluationCpu", CpuTimingJson(o.runtime.evaluateCpuMicroseconds) }, { "evaluationGpu", GpuTimingJson(o.evaluationGpu, s.parallelEyes && i == 1 ? "d3d12_nr_compute_queue" : "d3d12_nr_queue") },
 								{ "colorPreparation", PassTimingJson(o.colorPreparePass) }, { "reconstruction", PassTimingJson(o.colorReconstructPass) },
 								{ "depthGuide", PassTimingJson(o.depthGuidePass) }, { "colorCopy", PassTimingJson(o.colorCopyPass) },
 								{ "motionCopy", PassTimingJson(o.motionCopyPass) }, { "controlCopy", PassTimingJson(o.controlCopyPass) },
@@ -180,11 +180,12 @@ namespace NeuralRendering::Evidence
 			{ "plannedPhysicalSlotMask", d.plannedPhysicalSlotMask }, { "attemptedPhysicalSlotMask", s.attemptedPhysicalSlotMask },
 			{ "succeededPhysicalSlotMask", s.succeededPhysicalSlotMask }, { "privateCommittedPhysicalSlotMask", s.committedPhysicalSlotMask },
 			{ "finished", s.finished }, { "succeeded", s.succeeded }, { "failureStage", s.failureStage }, { "evidenceFailed", s.evidenceFailed },
-			{ "transportBypass", d.transportBypass }, { "regions", std::move(regions) },
+			{ "transportBypass", d.transportBypass }, { "parallelEyes", s.parallelEyes }, { "regions", std::move(regions) },
 			{ "timing", { { "wholeNrLegacy", PassTimingJson(s.wholePass) }, { "wholeFeatureBatchGpuLegacy", GpuTimingJson(s.batchGpu) },
 							{ "aggregateEvaluationGpu", { { "state", actualEvaluations && aggregateComplete ? "complete" : "unavailable" },
 															{ "microseconds", actualEvaluations && aggregateComplete ? Json(aggregateGpuMicroseconds) : Json(nullptr) },
-															{ "clock", "d3d12_nr_queue" }, { "semantics", "sum_nonoverlapping_actual_evaluate_feature_intervals" } } },
+															{ "clock", s.parallelEyes ? "d3d12_nr_per_queue_frequencies" : "d3d12_nr_queue" },
+															{ "semantics", s.parallelEyes ? "sum_overlapping_actual_evaluate_feature_intervals_not_elapsed_time" : "sum_nonoverlapping_actual_evaluate_feature_intervals" } } },
 							{ "preparationCpuInclusive", CpuTimingJson(s.preparationCpuMicroseconds) }, { "commitCpuInclusive", CpuTimingJson(s.commitCpuMicroseconds) },
 							{ "resourceRetirementCpuInclusive", CpuTimingJson(s.resourceRetirementCpuMicroseconds) }, { "commandBeginCpuInclusive", CpuTimingJson(s.commandBeginCpuMicroseconds) },
 							{ "explicitCpuWait", CpuTimingJson(s.cpuWaitMicroseconds) }, { "explicitCpuWaitCalls", s.cpuWaitCalls },

@@ -114,31 +114,135 @@ namespace NeuralRendering
 		return false;
 	}
 
+	bool D3D12Interop::CreateRecordingLocked(CommandRecording& recording, D3D12_COMMAND_LIST_TYPE type, const std::string& name)
+	{
+		CommandRecording replacement;
+		HRESULT result = device12_->CreateCommandAllocator(type, IID_PPV_ARGS(&replacement.allocator));
+		if (FAILED(result))
+			return RecordFailureLocked(result, "ID3D12Device::CreateCommandAllocator");
+		result = device12_->CreateCommandList(0, type, replacement.allocator.Get(), nullptr, IID_PPV_ARGS(&replacement.commandList));
+		if (FAILED(result))
+			return RecordFailureLocked(result, "ID3D12Device::CreateCommandList");
+		result = replacement.commandList->Close();
+		if (FAILED(result))
+			return RecordFailureLocked(result, "ID3D12GraphicsCommandList::Close(initial)");
+		SetD3D12Name(replacement.allocator.Get(), name + "Allocator");
+		SetD3D12Name(replacement.commandList.Get(), name + "Commands");
+		recording = std::move(replacement);
+		return true;
+	}
+
 	bool D3D12Interop::CreateCommandContextLocked(std::size_t a_index)
 	{
 		if (!device12_ || a_index >= commandContexts_.size())
 			return RecordFailureLocked(E_INVALIDARG, "CreateCommandContext arguments");
-
+		CommandRecording commands;
+		if (!CreateRecordingLocked(commands, D3D12_COMMAND_LIST_TYPE_DIRECT,
+				std::format("NeuralRendering::Primary{}", a_index)))
+			return false;
 		CommandContext replacement;
-		HRESULT result = device12_->CreateCommandAllocator(
-			D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&replacement.allocator));
-		if (FAILED(result))
-			return RecordFailureLocked(result, "ID3D12Device::CreateCommandAllocator");
-
-		result = device12_->CreateCommandList(
-			0, D3D12_COMMAND_LIST_TYPE_DIRECT, replacement.allocator.Get(), nullptr,
-			IID_PPV_ARGS(&replacement.commandList));
-		if (FAILED(result))
-			return RecordFailureLocked(result, "ID3D12Device::CreateCommandList");
-
-		result = replacement.commandList->Close();
-		if (FAILED(result))
-			return RecordFailureLocked(result, "ID3D12GraphicsCommandList::Close(initial)");
-
-		SetD3D12Name(replacement.allocator.Get(), std::format("NeuralRendering::CommandAllocator{}", a_index));
-		SetD3D12Name(replacement.commandList.Get(), std::format("NeuralRendering::CommandList{}", a_index));
+		replacement.allocator = std::move(commands.allocator);
+		replacement.commandList = std::move(commands.commandList);
 		commandContexts_[a_index] = std::move(replacement);
 		return true;
+	}
+
+	bool D3D12Interop::CreateParallelQueueLocked()
+	{
+		if (parallelQueue_)
+			return true;
+		Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
+		Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+		D3D12_COMMAND_QUEUE_DESC description{};
+		description.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+		HRESULT result = device12_->CreateCommandQueue(&description, IID_PPV_ARGS(&queue));
+		if (FAILED(result))
+			return RecordFailureLocked(result, "ID3D12Device::CreateCommandQueue(parallel)");
+		result = device12_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+		if (FAILED(result))
+			return RecordFailureLocked(result, "ID3D12Device::CreateFence(parallel)");
+		SetD3D12Name(queue.Get(), "NeuralRendering::ParallelQueue");
+		SetD3D12Name(fence.Get(), "NeuralRendering::ParallelFence");
+		parallelQueue_ = std::move(queue);
+		parallelFence_ = std::move(fence);
+		return true;
+	}
+
+	void D3D12Interop::DisableParallel(const char* reason)
+	{
+		std::scoped_lock lock(mutex_);
+		if (parallelDisabled_)
+			return;
+		parallelDisabled_ = true;
+		logger::warn("[DLSSNR] Parallel eyes disabled for this session: {}; backend recovery retains serial execution", reason);
+	}
+
+	ID3D12GraphicsCommandList* D3D12Interop::ParallelList()
+	{
+		std::scoped_lock lock(mutex_);
+		if (parallelDisabled_)
+			return nullptr;
+		if (!initialized_ || !recording_ || recordingContext_ >= commandContexts_.size() ||
+			recordingThread_ != std::this_thread::get_id() || featureTimingOpen_ || featureTimingCompleted_) {
+			(void)RecordFailureLocked(E_UNEXPECTED, "ParallelList state");
+			return nullptr;
+		}
+		auto& context = commandContexts_[recordingContext_];
+		if (context.parallelRecording)
+			return context.parallel.commandList.Get();
+		if (!CreateParallelQueueLocked() ||
+			(!context.parallel.commandList && !CreateRecordingLocked(context.parallel,
+												  D3D12_COMMAND_LIST_TYPE_COMPUTE, std::format("NeuralRendering::Parallel{}", recordingContext_)))) {
+			DisableParallel(lastOperation_.c_str());
+			return nullptr;
+		}
+		HRESULT result = context.parallel.allocator->Reset();
+		if (SUCCEEDED(result))
+			result = context.parallel.commandList->Reset(context.parallel.allocator.Get(), nullptr);
+		if (FAILED(result)) {
+			(void)RecordFailureLocked(result, "ParallelList reset");
+			DisableParallel("compute command recording unavailable");
+			return nullptr;
+		}
+		context.parallel.recording = context.parallelRecording = true;
+		return context.parallel.commandList.Get();
+	}
+
+	bool D3D12Interop::PrepareParallelTimingLocked(CommandContext& context)
+	{
+		if (parallelTimingFailed_)
+			return false;
+		if (!parallelTimestampFrequency_) {
+			const HRESULT result = parallelQueue_->GetTimestampFrequency(&parallelTimestampFrequency_);
+			if (FAILED(result) || !parallelTimestampFrequency_)
+				return RecordFailureLocked(FAILED(result) ? result : E_FAIL, "Parallel timestamp frequency");
+		}
+		for (auto* recording : { &context.timingBegin, &context.timingEnd }) {
+			const auto name = std::format("NeuralRendering::Timing{}{}", recordingContext_, recording == &context.timingBegin ? "Begin" : "End");
+			if (!recording->commandList && !CreateRecordingLocked(*recording, D3D12_COMMAND_LIST_TYPE_DIRECT, name))
+				return false;
+			HRESULT result = recording->allocator->Reset();
+			if (SUCCEEDED(result))
+				result = recording->commandList->Reset(recording->allocator.Get(), nullptr);
+			if (FAILED(result))
+				return RecordFailureLocked(result, "Parallel timestamp recording reset");
+			recording->recording = true;
+		}
+		return true;
+	}
+
+	bool D3D12Interop::CloseRecordingLocked(CommandContext& context)
+	{
+		HRESULT result = context.commandList->Close();
+		for (auto* recording : { &context.parallel, &context.timingBegin, &context.timingEnd }) {
+			if (!recording->recording)
+				continue;
+			const HRESULT closed = recording->commandList->Close();
+			recording->recording = false;
+			if (FAILED(closed))
+				result = closed;
+		}
+		return SUCCEEDED(result) || RecordFailureLocked(result, "ID3D12GraphicsCommandList::Close(batch)");
 	}
 
 	bool D3D12Interop::CreateTimingResourcesLocked()
@@ -214,6 +318,9 @@ namespace NeuralRendering
 		if (SUCCEEDED(mapResult) && mapped) {
 			const auto* timestamps = reinterpret_cast<const std::uint64_t*>(
 				static_cast<const std::byte*>(mapped) + offset);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			std::array<std::optional<std::uint64_t>, kMaximumExecutionRegions> evaluationMicroseconds{};
+#endif
 			std::optional<std::uint64_t> inferenceMicroseconds = 0;
 			if (static_cast<std::uint32_t>(std::popcount(commandContext.evaluationTimingMask)) != commandContext.timing.evaluationCount)
 				inferenceMicroseconds.reset();
@@ -221,19 +328,26 @@ namespace NeuralRendering
 				if ((commandContext.evaluationTimingMask & (1u << region)) == 0)
 					continue;
 				const auto query = 2u + region * 2u;
-				const auto timing = ResolveExecutionGpuTiming(timestamps[query], timestamps[query + 1u], timestampFrequency_);
+				const auto timing = ResolveExecutionGpuTiming(timestamps[query], timestamps[query + 1u],
+					commandContext.parallelRecording && region == 1 ? parallelTimestampFrequency_ : timestampFrequency_);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				evaluationMicroseconds[region] = timing.microseconds;
+#endif
 				if (!timing.microseconds || *timing.microseconds > UINT64_MAX - *inferenceMicroseconds)
 					inferenceMicroseconds.reset();
 				else
 					*inferenceMicroseconds += *timing.microseconds;
 			}
-			const auto batchTiming = kDevelopmentDiagnostics ?
+			const auto batchTiming = kDevelopmentDiagnostics || commandContext.parallelRecording ?
 			                             ResolveExecutionGpuTiming(timestamps[0], timestamps[1], timestampFrequency_) :
 			                             ExecutionTiming{};
+			if (commandContext.parallelRecording && inferenceMicroseconds)
+				inferenceMicroseconds = batchTiming.microseconds;
 			if (const auto& execution = commandContext.timing.execution) {
 				execution->Update([&](auto& evidence) {
 					const auto resolved = [&](std::uint32_t query) -> ExecutionTiming {
-						return ResolveExecutionGpuTiming(timestamps[query], timestamps[query + 1u], timestampFrequency_);
+						return ResolveExecutionGpuTiming(timestamps[query], timestamps[query + 1u],
+							commandContext.parallelRecording && query == ExecutionEvaluationQuery(0, 1) ? parallelTimestampFrequency_ : timestampFrequency_);
 					};
 					if (evidence.batchGpu.state == ExecutionTimingState::Pending)
 						evidence.batchGpu = resolved(0);
@@ -298,6 +412,8 @@ namespace NeuralRendering
 					telemetry_.lastInsertionPoint =
 						commandContext.timing.insertionPoint;
 #ifdef DEVBENCH_BRIDGE_ENABLED
+					telemetry_.lastFeatureParallel = commandContext.parallelRecording;
+					telemetry_.lastEvaluationGpuMicroseconds = evaluationMicroseconds;
 					const auto& execution = commandContext.timing.execution;
 					telemetry_.lastExecutionPlan = SummarizeExecutionPlan(execution ? &execution->Descriptor() : nullptr,
 						commandContext.timing.frameId, commandContext.timing.insertionPoint);
@@ -627,8 +743,11 @@ namespace NeuralRendering
 			AddSaturating(telemetry_.backpressureWaitMicroseconds, waitMicroseconds);
 			telemetry_.maximumBackpressureWaitMicroseconds = std::max(
 				telemetry_.maximumBackpressureWaitMicroseconds, waitMicroseconds);
-			if (!waitSucceeded)
+			if (!waitSucceeded) {
+				if (commandContext.parallelRecording)
+					DisableParallel("parallel submission backpressure");
 				return false;
+			}
 			CollectCompletedTimingLocked(contextIndex, fence12_->GetCompletedValue());
 		}
 
@@ -636,8 +755,10 @@ namespace NeuralRendering
 		commandContext.fenceValue = 0;
 		commandContext.timing = {};
 		commandContext.timingPending = false;
+		commandContext.parallelRecording = false;
 		commandContext.evaluationTimingOpenMask = commandContext.evaluationTimingMask = 0;
 		const std::uint64_t readyValue = ++fenceValue_;
+		commandContext.inputReady = readyValue;
 		HRESULT result = context11_->Signal(fence11_.Get(), readyValue);
 		if (FAILED(result))
 			return RecordFailureLocked(result, "ID3D11DeviceContext4::Signal");
@@ -744,6 +865,7 @@ namespace NeuralRendering
 		a_scopeOpened = true;
 		if (a_timing.execution)
 			a_timing.execution->Update([&](auto& evidence) {
+				evidence.parallelEyes = commandContext.parallelRecording;
 				evidence.batchGpu = { captureEpoch && timestampQueryHeap_ && timestampReadback_ && timestampFrequency_ ?
 										  ExecutionTimingState::Pending :
 										  ExecutionTimingState::Unavailable,
@@ -751,10 +873,20 @@ namespace NeuralRendering
 			});
 		if (!captureEpoch || !timestampQueryHeap_ || !timestampReadback_ || !timestampFrequency_)
 			return true;
+		if (commandContext.parallelRecording && !PrepareParallelTimingLocked(commandContext)) {
+			if (!parallelTimingFailed_)
+				logger::warn("[DLSSNR] Parallel inference profiling unavailable at {}; rendering will continue", lastOperation_);
+			parallelTimingFailed_ = true;
+			if (a_timing.execution)
+				a_timing.execution->FailPendingTimings();
+			return true;
+		}
 
-		if constexpr (kDevelopmentDiagnostics)
-			a_commandList->EndQuery(timestampQueryHeap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+		if (kDevelopmentDiagnostics || commandContext.parallelRecording) {
+			auto* beginList = commandContext.parallelRecording ? commandContext.timingBegin.commandList.Get() : a_commandList;
+			beginList->EndQuery(timestampQueryHeap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
 				static_cast<UINT>(recordingContext_ * kQueriesPerContext));
+		}
 		timingRecording_ = true;
 		return true;
 	}
@@ -768,7 +900,10 @@ namespace NeuralRendering
 			if (!recording_ || recordingContext_ >= commandContexts_.size() || a_region >= kMaximumExecutionRegions)
 				return;
 			auto& context = commandContexts_[recordingContext_];
-			if (a_commandList != context.commandList.Get())
+			const auto* expected = context.parallelRecording && a_region == 1 ?
+			                           context.parallel.commandList.Get() :
+			                           context.commandList.Get();
+			if (a_commandList != expected)
 				return;
 			const bool available = context.gpuCaptureEpoch != 0 && context.gpuCaptureEpoch == CurrentGpuCaptureEpoch() && featureTimingOpen_ && timingRecording_ && timestampQueryHeap_ && timestampReadback_ &&
 			                       timestampFrequency_ && recordingThread_ == std::this_thread::get_id() &&
@@ -798,7 +933,10 @@ namespace NeuralRendering
 			if (!recording_ || recordingContext_ >= commandContexts_.size() || a_region >= kMaximumExecutionRegions)
 				return;
 			auto& context = commandContexts_[recordingContext_];
-			if (a_commandList != context.commandList.Get() || !context.gpuCaptureEpoch || context.gpuCaptureEpoch != CurrentGpuCaptureEpoch() || (context.evaluationTimingOpenMask & (1u << a_region)) == 0)
+			const auto* expected = context.parallelRecording && a_region == 1 ?
+			                           context.parallel.commandList.Get() :
+			                           context.commandList.Get();
+			if (a_commandList != expected || !context.gpuCaptureEpoch || context.gpuCaptureEpoch != CurrentGpuCaptureEpoch() || (context.evaluationTimingOpenMask & (1u << a_region)) == 0)
 				return;
 			const auto query = ExecutionEvaluationQuery(static_cast<std::uint32_t>(recordingContext_), a_region);
 			a_commandList->EndQuery(timestampQueryHeap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 1u);
@@ -831,17 +969,19 @@ namespace NeuralRendering
 			return true;
 		}
 
+		auto& context = commandContexts_[recordingContext_];
+		auto* resolveList = context.parallelRecording ? context.timingEnd.commandList.Get() : a_commandList;
 		const UINT queryIndex = static_cast<UINT>(recordingContext_ * kQueriesPerContext);
-		if constexpr (kDevelopmentDiagnostics) {
-			a_commandList->EndQuery(timestampQueryHeap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, queryIndex + 1u);
-			a_commandList->ResolveQueryData(timestampQueryHeap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+		if (kDevelopmentDiagnostics || context.parallelRecording) {
+			resolveList->EndQuery(timestampQueryHeap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, queryIndex + 1u);
+			resolveList->ResolveQueryData(timestampQueryHeap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
 				queryIndex, 2u, timestampReadback_.Get(), sizeof(std::uint64_t) * queryIndex);
 		}
 		for (std::uint32_t region = 0; region < kMaximumExecutionRegions; ++region) {
 			if ((commandContexts_[recordingContext_].evaluationTimingMask & (1u << region)) == 0)
 				continue;
 			const auto query = ExecutionEvaluationQuery(static_cast<std::uint32_t>(recordingContext_), region);
-			a_commandList->ResolveQueryData(timestampQueryHeap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query, 2u,
+			resolveList->ResolveQueryData(timestampQueryHeap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query, 2u,
 				timestampReadback_.Get(), sizeof(std::uint64_t) * query);
 		}
 		commandContexts_[recordingContext_].timingPending = true;
@@ -868,11 +1008,14 @@ namespace NeuralRendering
 
 		auto& commandContext = commandContexts_[recordingContext_];
 		const std::size_t submittedContext = recordingContext_;
-		const HRESULT closeResult = commandContext.commandList->Close();
+		const bool closed = CloseRecordingLocked(commandContext);
+		const HRESULT closeResult = closed ? S_OK : lastError_;
 		recording_ = false;
 		recordingContext_ = kCommandContextCount;
 		recordingThread_ = {};
 		if (FAILED(closeResult)) {
+			if (commandContext.parallelRecording)
+				DisableParallel("parallel command close failed");
 			if (commandContext.timing.execution)
 				commandContext.timing.execution->FailPendingTimings();
 			commandContext.usable = false;
@@ -882,19 +1025,56 @@ namespace NeuralRendering
 			return RecordFailureLocked(closeResult, "ID3D12GraphicsCommandList::Close");
 		}
 
-		ID3D12CommandList* commandLists[]{ commandContext.commandList.Get() };
-		queue12_->ExecuteCommandLists(1, commandLists);
-		const std::uint64_t completeValue = ++fenceValue_;
-		const HRESULT signalResult = queue12_->Signal(fence12_.Get(), completeValue);
-		if (FAILED(signalResult)) {
+		const auto submit = [](ID3D12CommandQueue* queue, ID3D12GraphicsCommandList* list) {
+			ID3D12CommandList* commands[]{ list };
+			queue->ExecuteCommandLists(1, commands);
+		};
+		const auto failSubmission = [&](HRESULT result, const char* operation) {
+			commandContext.usable = false;
 			if (commandContext.timing.execution)
 				commandContext.timing.execution->FailPendingTimings();
-			commandContext.usable = false;
-			unfencedSubmission_ = true;
-			return RecordFailureLocked(signalResult, "ID3D12CommandQueue::Signal(submission)");
+			if (commandContext.parallelRecording)
+				DisableParallel(operation);
+			return RecordFailureLocked(result, operation);
+		};
+		unfencedSubmission_ = true;
+		if (commandContext.parallelRecording) {
+			std::uint64_t ready = commandContext.inputReady;
+			if (commandContext.timingPending) {
+				// The common timestamp precedes both queues; the end timestamp follows their join.
+				submit(queue12_.Get(), commandContext.timingBegin.commandList.Get());
+				ready = ++fenceValue_;
+				const HRESULT result = queue12_->Signal(fence12_.Get(), ready);
+				if (FAILED(result))
+					return failSubmission(result, "ID3D12CommandQueue::Signal(parallel timing start)");
+			}
+			const HRESULT readyResult = parallelQueue_->Wait(fence12_.Get(), ready);
+			if (FAILED(readyResult))
+				return failSubmission(readyResult, "ID3D12CommandQueue::Wait(parallel input)");
 		}
+		submit(queue12_.Get(), commandContext.commandList.Get());
+		if (commandContext.parallelRecording) {
+			submit(parallelQueue_.Get(), commandContext.parallel.commandList.Get());
+			const auto parallelComplete = ++parallelFenceValue_;
+			const HRESULT signal = parallelQueue_->Signal(parallelFence_.Get(), parallelComplete);
+			if (FAILED(signal))
+				return failSubmission(signal, "ID3D12CommandQueue::Signal(parallel completion)");
+			const HRESULT join = queue12_->Wait(parallelFence_.Get(), parallelComplete);
+			if (FAILED(join))
+				return failSubmission(join, "ID3D12CommandQueue::Wait(parallel completion)");
+			if (commandContext.timingPending)
+				submit(queue12_.Get(), commandContext.timingEnd.commandList.Get());
+		}
+		const std::uint64_t completeValue = ++fenceValue_;
+		const HRESULT signalResult = queue12_->Signal(fence12_.Get(), completeValue);
+		if (FAILED(signalResult))
+			return failSubmission(signalResult, "ID3D12CommandQueue::Signal(submission)");
 		commandContext.fenceValue = completeValue;
 		IncrementSaturating(telemetry_.commandSubmissions);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		if (commandContext.parallelRecording)
+			IncrementSaturating(telemetry_.parallelCommandSubmissions);
+#endif
 		const auto route = ClassifyFeatureSlotMask(commandContext.timing.featureSlotMask);
 		if (route == FeatureSlotRoute::Main)
 			IncrementSaturating(telemetry_.mainCommandSubmissions);
@@ -909,12 +1089,12 @@ namespace NeuralRendering
 		}
 
 		const HRESULT waitResult = context11_->Wait(fence11_.Get(), completeValue);
-		if (FAILED(waitResult)) {
-			unfencedSubmission_ = true;
-			return RecordFailureLocked(waitResult, "ID3D11DeviceContext4::Wait");
-		}
+		if (FAILED(waitResult))
+			return failSubmission(waitResult, "ID3D11DeviceContext4::Wait");
+		unfencedSubmission_ = false;
 
 		lastError_ = S_OK;
+		lastSubmissionParallel_ = commandContext.parallelRecording;
 		lastOperation_ = "EndD3D12";
 		return true;
 	}
@@ -928,7 +1108,8 @@ namespace NeuralRendering
 
 		const std::size_t abortedContext = recordingContext_;
 		auto& commandContext = commandContexts_[abortedContext];
-		const HRESULT closeResult = commandContext.commandList->Close();
+		const bool closed = CloseRecordingLocked(commandContext);
+		const HRESULT closeResult = closed ? S_OK : lastError_;
 		recording_ = false;
 		recordingContext_ = kCommandContextCount;
 		recordingThread_ = {};
@@ -967,12 +1148,27 @@ namespace NeuralRendering
 			return RecordFailureLocked(E_PENDING, "WaitForIdle while recording");
 
 		context11_->Flush();
+		// A partial submission may have skipped the normal join; retire compute independently.
+		if (parallelQueue_) {
+			const auto complete = ++parallelFenceValue_;
+			HRESULT result = parallelQueue_->Signal(parallelFence_.Get(), complete);
+			if (SUCCEEDED(result))
+				result = queue12_->Wait(parallelFence_.Get(), complete);
+			if (FAILED(result)) {
+				unfencedSubmission_ = true;
+				DisableParallel("parallel drain failed");
+				return RecordFailureLocked(result, "WaitForIdle parallel fence");
+			}
+		}
 		const std::uint64_t idleValue = ++fenceValue_;
 		const HRESULT signalResult = queue12_->Signal(fence12_.Get(), idleValue);
 		if (FAILED(signalResult))
 			return RecordFailureLocked(signalResult, "ID3D12CommandQueue::Signal(idle)");
-		if (!WaitForFenceLocked(idleValue, kTeardownTimeoutMilliseconds, "WaitForIdle D3D12 fence"))
+		if (!WaitForFenceLocked(idleValue, kTeardownTimeoutMilliseconds, "WaitForIdle D3D12 fence")) {
+			if (parallelQueue_)
+				DisableParallel("parallel retirement did not complete");
 			return false;
+		}
 
 		// A D3D12 completion alone does not prove that D3D11 consumed its queued
 		// waits and copies. Signal after the D3D11 tail and wait for that value too.
@@ -1025,6 +1221,12 @@ namespace NeuralRendering
 		fence12_.Reset();
 		timestampReadback_.Reset();
 		timestampQueryHeap_.Reset();
+		parallelQueue_.Reset();
+		parallelFence_.Reset();
+		parallelFenceValue_ = 0;
+		parallelTimestampFrequency_ = 0;
+		parallelTimingFailed_ = false;
+		lastSubmissionParallel_ = false;
 		queue12_.Reset();
 		device12_.Reset();
 		context11_.Reset();
@@ -1064,11 +1266,17 @@ namespace NeuralRendering
 		for (auto& commandContext : commandContexts_) {
 			(void)commandContext.allocator.Detach();
 			(void)commandContext.commandList.Detach();
+			for (auto* recording : { &commandContext.parallel, &commandContext.timingBegin, &commandContext.timingEnd }) {
+				(void)recording->allocator.Detach();
+				(void)recording->commandList.Detach();
+			}
 		}
 		(void)fence11_.Detach();
 		(void)fence12_.Detach();
 		(void)timestampReadback_.Detach();
 		(void)timestampQueryHeap_.Detach();
+		(void)parallelQueue_.Detach();
+		(void)parallelFence_.Detach();
 		(void)queue12_.Detach();
 		(void)device12_.Detach();
 		(void)context11_.Detach();
@@ -1187,10 +1395,25 @@ namespace NeuralRendering
 			result.deviceRemoved = result.completed == UINT64_MAX;
 			result.completedKnown = !result.deviceRemoved;
 		}
+		if (parallelFence_) {
+			result.parallelQueue = reinterpret_cast<std::uintptr_t>(parallelQueue_.Get());
+			result.parallelFence = reinterpret_cast<std::uintptr_t>(parallelFence_.Get());
+			result.parallelIssued = parallelFenceValue_;
+			result.parallelCompleted = parallelFence_->GetCompletedValue();
+			result.deviceRemoved |= result.parallelCompleted == UINT64_MAX;
+			result.completedKnown &= !result.deviceRemoved && result.parallelCompleted >= result.parallelIssued;
+		}
+		result.completedKnown &= !unfencedSubmission_;
 		for (std::size_t index = 0; index < commandContexts_.size(); ++index)
 			result.contexts[index] = commandContexts_[index].fenceValue;
 		return result;
 	}
+	ParallelEyeStatus D3D12Interop::GetParallelStatus() const
+	{
+		std::scoped_lock lock(mutex_);
+		return { parallelQueue_ != nullptr, IsParallelDisabled(), lastSubmissionParallel_ };
+	}
+
 	D3D12InteropTelemetry D3D12Interop::GetTelemetry()
 	{
 		std::scoped_lock lock(mutex_);

@@ -27,6 +27,21 @@ int main()
 		if (!value)
 			throw std::runtime_error("Neural Rendering request validation invariant");
 	};
+	const auto descriptor = json::parse(kNeuralRenderingDescriptor);
+	const auto& performanceSchema = descriptor.at("outputSchema").at("properties").at("neuralRendering").at("properties").at("performance").at("properties");
+	require(performanceSchema.contains("lastFeatureParallel") && performanceSchema.contains("lastEvaluationGpuMicroseconds") &&
+			performanceSchema.contains("parallelCommandSubmissions"));
+	require(descriptor.at("description").get<std::string>().find("parallelEyes") != std::string::npos);
+	const auto& parallelProperty = descriptor.at("inputSchema").at("properties").at("parallelEyes");
+	require(parallelProperty.at("type") == "boolean" && parallelProperty.at("default") == false);
+	for (const auto& value : { json(true), json(false), json(1), json("true"), json(nullptr) }) {
+		NeuralRenderingConfigurationRequest request;
+		json error;
+		const bool accepted = TryParseNeuralRenderingConfiguration({ { "action", "nr_configure" }, { "parallelEyes", value } }, request, error);
+		require(accepted == value.is_boolean());
+		if (accepted)
+			require(request.HasAnyControl() && request.parallelEyes == value.get<bool>());
+	}
 	for (const auto& [field, minimum, maximum, member] : {
 			 std::tuple{ "centralAreaPercent", 25u, 100u, &NeuralRenderingConfigurationRequest::centralAreaPercent },
 			 std::tuple{ "centralFeatherPixels", 0u, 256u, &NeuralRenderingConfigurationRequest::centralFeatherPixels } }) {

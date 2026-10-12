@@ -149,6 +149,15 @@ namespace
 			});
 			completion.join();
 			const auto complete = ExecutionJson(*evidence);
+			evidence->Update([](auto& state) { state.parallelEyes = true; });
+			const auto parallel = ExecutionJson(*evidence);
+			Check(parallel["parallelEyes"] == true &&
+					  parallel["timing"]["aggregateEvaluationGpu"]["semantics"] == "sum_overlapping_actual_evaluate_feature_intervals_not_elapsed_time" &&
+					  parallel["timing"]["wholeFeatureBatchGpuLegacy"]["microseconds"] == 1000,
+				"parallel work sum was confused with joined elapsed time");
+			if (attempted > 1)
+				Check(parallel["regions"][1]["timing"]["evaluationGpu"]["clock"] == "d3d12_nr_compute_queue",
+					"second-eye timing lost its compute queue attribution");
 			Check(complete["source"] == pending["source"] && complete["regions"][0]["nrViewport"] == pending["regions"][0]["nrViewport"], "delayed timing replaced descriptor identity");
 			Check(complete["regions"][0]["roi"] == pending["regions"][0]["roi"] &&
 					  complete["regions"][0]["roi"]["inferencePixels"] == 256u * 192u,

@@ -371,6 +371,7 @@ namespace FSRTemporalTuningPolicy
 	OP(neuralRenderingBatchedStereo)             \
 	OP(neuralRenderingDirectCommit)              \
 	OP(neuralRenderingModelResolutionPercent)    \
+	OP(neuralRenderingParallelEyes)              \
 	OP(neuralRenderingPrewarmEnabled)            \
 	OP(neuralRenderingPressureResolutionEnabled) \
 	OP(neuralRenderingCentralAreaPercent)        \
@@ -18788,6 +18789,11 @@ namespace
 	void DrawNeuralModelResolutionSettings(Upscaling::Settings& settings)
 	{
 		if (globals::game::isVR) {
+			Util::Widgets::Checkbox("Evaluate NR eyes in parallel", &settings.neuralRenderingParallelEyes);
+			Util::AddTooltip("Overlap both eye models on separate GPU queues. Experimental and off by default. Keeps NR resolution, coverage and strength. Parallel faults disable this option until restart. NR resumes serially only after safe recovery. GPU profiling includes the queue join.");
+			const auto parallel = NeuralRendering::Renderer::Instance().GetSnapshot();
+			if (settings.neuralRenderingParallelEyes && parallel.parallelEyesDisabled)
+				MenuUI::DetailNote("Parallel evaluation unavailable this session; NR uses serial evaluation.");
 			Util::Widgets::Checkbox("Prewarm NR while loading", &settings.neuralRenderingPrewarmEnabled);
 			Util::AddTooltip("Prepare NR during the main menu or loading when GPU memory permits. Requires Before DLSS, 100% NR resolution, full coverage and automatic masking, with Actors only, scene category adjustments and Lower NR resolution under memory pressure off. Other configurations initialize during gameplay.");
 		}

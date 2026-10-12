@@ -299,6 +299,7 @@ namespace NeuralRendering
 				left.featureUpscaling == right.featureUpscaling &&
 				left.modelResolutionPercent == right.modelResolutionPercent &&
 				left.pressureResolutionEnabled == right.pressureResolutionEnabled &&
+				left.parallelEyes == right.parallelEyes &&
 				left.renderingMode == right.renderingMode &&
 				left.providerBlending == right.providerBlending &&
 				left.reset == right.reset &&
@@ -1493,6 +1494,9 @@ namespace NeuralRendering
 			performance.lastFeatureLogicalEyeCount = telemetry.lastFeatureLogicalEyeCount;
 			performance.lastFeatureSlotMask = telemetry.lastFeatureSlotMask;
 #ifdef DEVBENCH_BRIDGE_ENABLED
+			performance.parallelCommandSubmissions = telemetry.parallelCommandSubmissions;
+			performance.lastFeatureParallel = telemetry.lastFeatureParallel;
+			performance.lastEvaluationGpuMicroseconds = telemetry.lastEvaluationGpuMicroseconds;
 			performance.lastExecutionPlan = telemetry.lastExecutionPlan;
 #endif
 			performance.lastInsertionPoint = telemetry.lastInsertionPoint;
@@ -1601,6 +1605,9 @@ namespace NeuralRendering
 				"[DLSSNR][Failure] fences: initialized={}, recording={}, issued={}, completed={}, completed_known={}, device_removed={}, contexts=[{},{},{}]",
 				fences.initialized, fences.recording, fences.issued, fences.completed,
 				fences.completedKnown, fences.deviceRemoved, fences.contexts[0], fences.contexts[1], fences.contexts[2]);
+			if (fences.parallelQueue)
+				logger::error("[DLSSNR][Failure] parallel fences: issued={}, completed={}, session_disabled={}",
+					fences.parallelIssued, fences.parallelCompleted, interop_.IsParallelDisabled());
 			logger::error(
 				"[DLSSNR][Failure] devices: d3d11_present={}, d3d11_removal_hr=0x{:08X}, d3d12_present={}, d3d12_removal_hr=0x{:08X}",
 				static_cast<bool>(device_), static_cast<std::uint32_t>(reason11),
@@ -3631,8 +3638,16 @@ namespace NeuralRendering
 		RecordingGuard recordingGuard(interop_);
 		snapshot_.lastCompletedStage = RendererStage::CommandBegin;
 
+		ID3D12GraphicsCommandList* parallelCommands = nullptr;
+		// Feature creation stays on the primary queue; only independent, resident eye models overlap.
+		if (a_args.size() == 2 && a_args[0].parallelEyes && !interop_.IsParallelDisabled() && !colorConfiguration_.experiments.transportBypass &&
+			Runtime::Instance().HasCompatibleFeature(a_args[0].featureSlot, resources[0].nativeLayout, a_args[0].providerBlending) &&
+			Runtime::Instance().HasCompatibleFeature(a_args[1].featureSlot, resources[1].nativeLayout, a_args[1].providerBlending))
+			parallelCommands = interop_.ParallelList();
+
 		std::array<FeatureResourceTransition, kMaximumTransitionResourceCount>
 			sharedResources{};
+		std::array<std::size_t, kEyeCount + 1> resourceOffsets{};
 		std::size_t sharedResourceCount = 0;
 		std::uint64_t pixelCount = 0;
 		std::uint32_t featureSlotMask = 0;
@@ -3654,12 +3669,22 @@ namespace NeuralRendering
 				return FailLocked(RendererStage::CommandBegin, E_INVALIDARG,
 					"shared resources require conflicting states or exceed the batch capacity", a_args[index].featureSlot, true, !aborted);
 			}
+			resourceOffsets[index + 1] = sharedResourceCount;
 			Add(pixelCount, resources[index].roi.inferenceContext.Area());
 			featureSlotMask |= 1u << a_args[index].featureSlot;
 		}
 		const auto resourceSpan =
 			std::span(sharedResources.data(), sharedResourceCount);
-		TransitionResources(commandList, resourceSpan, true);
+		const auto transitionEyes = [&](bool enter) {
+			if (!parallelCommands) {
+				TransitionResources(commandList, resourceSpan, enter);
+				return;
+			}
+			for (std::size_t index = 0; index < a_args.size(); ++index)
+				TransitionResources(index == 1 && parallelCommands ? parallelCommands : commandList,
+					resourceSpan.subspan(resourceOffsets[index], resourceOffsets[index + 1] - resourceOffsets[index]), enter);
+		};
+		transitionEyes(true);
 		const D3D12InteropSubmissionTiming timing{
 			.frameId = a_args.front().frameId,
 			.pixelCount = pixelCount,
@@ -3793,7 +3818,7 @@ namespace NeuralRendering
 			if (execution)
 				execution->Update([&](auto& evidence) { evidence.regions[index].effectiveReset = effectiveReset; });
 			const bool nativeEvaluated = Runtime::Instance().Execute(
-				commandList,
+				index == 1 && parallelCommands ? parallelCommands : commandList,
 				args.featureSlot,
 				slot.color.resource12.Get(),
 				slot.depth.resource12.Get(),
@@ -3816,6 +3841,8 @@ namespace NeuralRendering
 				a_outcome.evaluationAttemptedFeatureSlotMask |= 1u << args.featureSlot;
 			}
 			if (!nativeEvaluated) {
+				if (parallelCommands)
+					interop_.DisableParallel("native evaluation failed with parallel eyes");
 				const std::string runtimeDetail = Runtime::Instance().Detail();
 				const bool aborted = recordingGuard.Abort();
 				return FailLocked(
@@ -3862,7 +3889,7 @@ namespace NeuralRendering
 				true,
 				!aborted);
 		}
-		TransitionResources(commandList, resourceSpan, false);
+		transitionEyes(false);
 		activeStage_ = RendererStage::CommandEnd;
 		if (!interop_.EndD3D12()) {
 			recordingGuard.active = interop_.IsRecording();
@@ -4588,7 +4615,12 @@ namespace NeuralRendering
 	RendererSnapshot Renderer::GetSnapshot() const
 	{
 		std::scoped_lock lock(state_->mutex_);
-		return state_->SnapshotLocked();
+		auto result = state_->SnapshotLocked();
+		const auto parallel = state_->interop_.GetParallelStatus();
+		result.parallelEyesAvailable = parallel.available;
+		result.parallelEyesDisabled = parallel.disabled;
+		result.parallelEyesLastSubmission = parallel.lastSubmission;
+		return result;
 	}
 
 	bool Renderer::NotifyDlssMemoryPressure()

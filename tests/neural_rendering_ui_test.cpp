@@ -98,6 +98,7 @@ namespace globals
 				unsigned neuralRenderingModelResolutionPercent = 100;
 				bool neuralRenderingPressureResolutionEnabled = true;
 				bool neuralRenderingPrewarmEnabled = false;
+				bool neuralRenderingParallelEyes = false;
 				unsigned neuralRenderingCentralAreaPercent = 100, neuralRenderingCentralFeatherPixels = 64;
 				unsigned neuralRenderingPreset = 1, neuralRenderingStyle = 0;
 				float neuralRenderingIntensity = 1.0f, neuralRenderingLocalTone = 1.0f;
@@ -525,7 +526,7 @@ namespace NeuralRendering
 	{
 		struct Snapshot
 		{
-			bool quarantined = false, failureLatched = false;
+			bool quarantined = false, failureLatched = false, parallelEyesDisabled = false;
 			bool pressureResolutionEnabled = false;
 			unsigned effectiveModelResolutionPercent = 100;
 			std::string detail;
@@ -684,6 +685,8 @@ int main()
 		Upscaling::Settings settings{};
 		ImGui::Clear();
 		DrawNeuralModelResolutionSettings(settings);
+		require(ImGui::Seen("Evaluate NR eyes in parallel") == vr && !settings.neuralRenderingParallelEyes,
+			"parallel NR control must be VR-only and default off");
 		require(ImGui::Seen("Prewarm NR while loading") == vr && !settings.neuralRenderingPrewarmEnabled,
 			"Optional prewarm is default-off and only exposed for VR");
 	}

@@ -20,6 +20,7 @@ namespace NeuralRendering
 		std::optional<RenderingMode> renderingMode;
 		uint32_t modelResolutionPercent = 100;
 		bool pressureResolutionEnabled = false;
+		bool parallelEyes = false;
 		uint32_t featureSlot = 0;
 		CentralArea centralArea{};
 	};
@@ -30,6 +31,7 @@ struct Upscaling
 	{
 		uint32_t neuralRenderingModelResolutionPercent = 100;
 		bool neuralRenderingPressureResolutionEnabled = false;
+		bool neuralRenderingParallelEyes = false, neuralRenderingBatchedStereo = true;
 		uint32_t neuralRenderingCentralAreaPercent = 100, neuralRenderingCentralFeatherPixels = 64;
 		float foveatedCenterHorizontalScale = 1.0f;
 	} settings;
@@ -66,6 +68,19 @@ int main()
 				throw std::runtime_error("Renderer lost the selected NR mode or model resolution");
 		}
 	}
+	for (const auto mode : { RenderingMode::ReducedResolution, RenderingMode::FullResolution, RenderingMode::Foveated })
+		for (const bool vr : { false, true })
+			for (const bool requested : { false, true })
+				for (const bool batched : { false, true }) {
+					upscaling.mode = mode;
+					globals::game::isVR = vr;
+					upscaling.settings.neuralRenderingParallelEyes = requested;
+					upscaling.settings.neuralRenderingBatchedStereo = batched;
+					upscaling.SetNeuralExecutionContext(args, {}, {}, {});
+					++calls;
+					if (args.parallelEyes != (vr && requested && batched))
+						throw std::runtime_error("Parallel NR routing lost runtime, mode or serial-submission policy");
+				}
 	for (bool vr : { false, true }) {
 		globals::game::isVR = vr;
 		upscaling.settings.neuralRenderingCentralAreaPercent = 50;

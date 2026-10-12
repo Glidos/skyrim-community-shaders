@@ -10,6 +10,7 @@ namespace NeuralRendering
 	{
 		std::uint64_t device = 0, queue = 0, fence = 0, device11 = 0, context11 = 0;
 		std::uint64_t issued = 0, completed = 0;
+		std::uint64_t parallelQueue = 0, parallelFence = 0, parallelIssued = 0, parallelCompleted = 0;
 		std::array<std::uint64_t, 3> contexts{};
 		bool initialized = false, recording = false, completedKnown = false, deviceRemoved = false;
 	};
