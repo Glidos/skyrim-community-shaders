@@ -3470,6 +3470,8 @@ namespace
 								{ "unresolvedPhysicalMutationEpoch", a_upscaling.vrRenderScaleUnresolvedPhysicalMutationEpoch.load(std::memory_order_acquire) },
 								{ "unresolvedPhysicalMutationStartTickMs", a_upscaling.vrRenderScaleUnresolvedPhysicalMutationStartTickMs.load(std::memory_order_acquire) },
 								{ "postMutationEmergencyAttemptConsumed", a_upscaling.vrRenderScalePostMutationEmergencyAttemptConsumed.load(std::memory_order_acquire) },
+								{ "presentationRecoveryStage", magic_enum::enum_name(a_upscaling.vrRenderScalePresentationRecoveryStage.load(std::memory_order_acquire)) },
+								{ "nativeFallbackAttemptConsumed", a_upscaling.vrRenderScaleNativeFallbackAttemptConsumed.load(std::memory_order_acquire) },
 								{ "emergencyRecoveryRequested", a_upscaling.vrRenderScaleEmergencyRecoveryRequested.load(std::memory_order_acquire) },
 								{ "terminalFailureSignaled", a_upscaling.vrRenderScaleTerminalFailureSignaled.load(std::memory_order_acquire) },
 								{ "terminalDeviceLossSignaled", a_upscaling.vrRenderScaleTerminalFailureSignaled.load(std::memory_order_acquire) && a_upscaling.submitStageDeviceLost.load(std::memory_order_acquire) },
@@ -12092,7 +12094,10 @@ namespace VRRenderScaleDevBenchBridge
 			const std::string dlssResultDescription =
 				" DLSS trace evaluateFailures and pinned evaluation failures exclude "
 				"eWarnOutOfVRAM because evaluation completed successfully; raw records "
-				"retain that warning result code. Constants failures remain unchanged.";
+				"retain that warning result code. Constants failures remain unchanged. "
+				"Controller status includes presentationRecoveryStage (None, ResumePending, "
+				"NativeFallback, Quarantined) and nativeFallbackAttemptConsumed. "
+				"These are queried on demand; healthy rendering adds no sampling.";
 			descriptor["description"] =
 				descriptor["description"].get<std::string>() + submitFreshnessDescription + readinessRetryDescription + ownedDrainDescription + ordinarySaveDescription + textureLifetimeDescription + stressAcceptanceDescription + dlssResultDescription;
 			descriptor["inputSchema"]["properties"]["action"]["description"] =

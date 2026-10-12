@@ -8,6 +8,39 @@
 
 namespace VRVendorRelatchPolicy
 {
+	enum class PresentationRecoveryStage : std::uint8_t
+	{
+		None,
+		ResumePending,
+		NativeFallback,
+		Quarantined
+	};
+
+	[[nodiscard]] constexpr bool ShouldDeferPresentationSuccessor(
+		std::uint64_t a_serializationEpoch,
+		std::uint64_t a_physicalEpoch,
+		bool a_nativeFallbackAdmission,
+		PresentationRecoveryStage a_stage = PresentationRecoveryStage::None) noexcept
+	{
+		return a_serializationEpoch != 0 && !a_nativeFallbackAdmission &&
+		       (a_physicalEpoch == 0 || a_stage == PresentationRecoveryStage::NativeFallback ||
+				   a_stage == PresentationRecoveryStage::Quarantined);
+	}
+
+	[[nodiscard]] constexpr bool IsPostMutationAttemptConsumed(
+		PresentationRecoveryStage a_stage,
+		std::uint64_t a_candidateEpoch,
+		std::uint64_t a_nativeFallbackEpoch,
+		bool a_emergencyConsumed,
+		bool a_nativeFallbackConsumed) noexcept
+	{
+		if (a_stage == PresentationRecoveryStage::Quarantined)
+			return true;
+		if (a_stage == PresentationRecoveryStage::NativeFallback)
+			return a_candidateEpoch == 0 || a_candidateEpoch != a_nativeFallbackEpoch || a_nativeFallbackConsumed;
+		return a_emergencyConsumed;
+	}
+
 	using WorkGateMask = std::uint32_t;
 	using WorkGateState = std::uint64_t;
 

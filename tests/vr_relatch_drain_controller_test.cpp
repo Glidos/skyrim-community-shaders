@@ -262,6 +262,7 @@ struct Upscaling
 	uint64_t vrRenderScaleRelatchDrainDisabledEpoch = 0;
 	uint64_t vrRenderScaleOwnedReleaseRejectedEpoch = 0;
 	uint32_t vrRenderScaleRelatchBoundaryFrame = 0;
+	std::atomic<VRVendorRelatchPolicy::PresentationRecoveryStage> vrRenderScalePresentationRecoveryStage{ VRVendorRelatchPolicy::PresentationRecoveryStage::None };
 	bool deviceLost = false, deviceRemoved = false;
 	uint32_t fsrFailureHandlers = 0, deviceRemovalProbes = 0, applyCalls = 0;
 	uint64_t applyCommitEpoch = 0;
@@ -692,6 +693,19 @@ namespace
 			"Downstream failure leaked native boundary admission");
 		Require(controller.perfModeRenderTargetRecreateQueueMutex.depth == 0, "Downstream failure leaked queue ownership");
 	}
+
+	void QuarantinePreservesDrainOwnership()
+	{
+		auto& controller = Reset();
+		controller.vrRenderScalePresentationRecoveryStage = VRVendorRelatchPolicy::PresentationRecoveryStage::Quarantined;
+		for (uint32_t frame = 101; frame < 110; ++frame) {
+			globals::state->frameCount = frame;
+			controller.ServiceVRRenderScaleRelatchAtFrameBoundary();
+		}
+		Require(controller.fidelityFX.polls == 0 && controller.streamline.polls == 0 && controller.applyCalls == 0 &&
+					controller.vrRenderScaleRelatchDrain.epoch == 7,
+			"Quarantine must retain unresolved drain ownership without polling or retrying mutation");
+	}
 }
 
 int main()
@@ -707,4 +721,5 @@ int main()
 	CancelledTicketsCannotAliasReissuedProofs();
 	ConsumptionRequiresExactLiveProviderTicketsAndOwner();
 	DownstreamFailureRestoresBoundaryScope();
+	QuarantinePreservesDrainOwnership();
 }

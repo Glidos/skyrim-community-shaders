@@ -3351,8 +3351,9 @@ public:
 	[[nodiscard]] bool CanDispatchExistingVRVendorEvaluation(
 		UpscaleMethod a_upscaleMethod,
 		const VRExistingVendorProviderSnapshot& a_provider) const;
+	/// Check the exact resources; recovery may defer presentation permission until stereo proof.
 	[[nodiscard]] bool HasTruthfulStableVRVendorResources(
-		const VRRenderScaleProfileSnapshot& a_stable) const;
+		const VRRenderScaleProfileSnapshot& a_stable, bool a_requirePresentationAllowed = true) const;
 
 	// D3D11 textures
 	struct CommonVendorTextureContract
@@ -3689,6 +3690,14 @@ public:
 	std::atomic_bool vrRenderScaleEmergencyClaimCommitRejectionLogged{ false };
 	std::atomic_bool vrRenderScaleExtendedRecoveryDeadlineLogged{ false };
 	std::atomic_bool vrRenderScaleTerminalDeadlineFailOpenLogged{ false };
+	std::atomic<VRVendorRelatchPolicy::PresentationRecoveryStage> vrRenderScalePresentationRecoveryStage{ VRVendorRelatchPolicy::PresentationRecoveryStage::None };
+	std::atomic_bool vrRenderScaleNativeFallbackAttemptConsumed{ false };
+	// Queue ownership protects admission, deadlines, and deferred notifications.
+	std::atomic_bool vrRenderScalePresentationFallbackAdmissionActive{ false };
+	uint64_t vrRenderScalePresentationRecoveryStartTickMs = 0;
+	bool vrRenderScalePresentationResumeAttempted = false;
+	bool deferredVRRenderScaleRelatchAfterPresentation = false;
+	bool deferredVRRenderScalePostLoadResetAfterPresentation = false;
 	// Exact internal native successor. It serializes ordinary requests while its
 	// matching physical worker is pending/in progress; stale markers alone are not
 	// treated as live work.
@@ -4843,6 +4852,12 @@ private:
 		uint64_t a_expectedMutationEpoch,
 		bool a_replaceResumeGrace = false);
 	void ServiceVRRenderScalePostMutationWatchdog(const char* a_context);
+	bool ShouldDeferVRRenderScalePresentationSuccessor() const;
+	bool IsVRRenderScalePostMutationAttemptConsumed(uint64_t a_candidateEpoch) const;
+	void DeferVRRenderScalePresentationRelatch(bool a_postLoadReset);
+	void ServiceVRRenderScalePresentationRecovery(uint64_t a_epoch, const char* a_context);
+	bool TryResumeVRRenderScalePresentation(uint64_t a_epoch);
+	void LogVRRenderScalePresentationStall(uint64_t a_epoch, const char* a_action, const char* a_context) const;
 	void ServiceDeferredVRRenderScaleRequestAfterPhysicalRecovery();
 	void SignalVRRenderScaleTerminalFailure(
 		HRESULT a_result,
