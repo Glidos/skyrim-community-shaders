@@ -3,12 +3,14 @@
 #include "Utils/FeatureProfiling.h"
 #include "Utils/NumericEntry.h"
 #include "Utils/UISmoothing.h"
+#include "Utils/VRFrameTiming.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fmt/format.h>
 #include <format>
 #include <functional>
 #include <future>
@@ -186,6 +188,8 @@ struct ProfilingRenderer
 	{
 		float frameMs = 15.84f, gameGpuMs = 12.32f, gameCpuMs = 5.87f, fps = 63;
 		bool hasGameGpu = true, hasGameCpu = true;
+		bool vrTiming = false;
+		Util::VRFrameTiming::Statistics vrDisplay;
 	};
 	static inline bool eligible = true;
 	static inline bool summaryRequestedCapture = false;
@@ -2173,7 +2177,7 @@ int main()
 				ImRect measure;
 				const auto draw = [&] {
 					ImGui::PushFont(ImGui::GetFont(), font);
-					ImGui::BeginChild("PerformanceNumbers", { 850, 400 });
+					ImGui::BeginChild("PerformanceNumbers", { 1100, 400 });
 					RenderTopPerformanceCounters({});
 					RenderMeasureButton(true);
 					measure = { ImGui::GetItemRectMin(), ImGui::GetItemRectMax() };
@@ -2190,7 +2194,7 @@ int main()
 					++count;
 					if (rowY < 0)
 						rowY = window->Pos.y;
-					require(std::abs(window->Pos.y - rowY) < .1f, "Game, GPU, CPU and FPS fit in one row at the requested panel proportions");
+					require(std::abs(window->Pos.y - rowY) < .1f, "Frame, GPU, CPU and FPS fit in one row at the requested panel proportions");
 					require(window->Pos.y + window->Size.y < measure.Min.y + .1f, "Measure follows the single row of timing numbers");
 				}
 				require(count == 4 && measure.Max.y < 400, "all four metrics and Measure are visible without scrolling");

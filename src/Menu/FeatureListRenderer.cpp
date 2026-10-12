@@ -262,11 +262,13 @@ namespace
 		ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, font * .3f);
 		ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1);
 		const SKSE::stl::scope_exit restoreStyle([] { ImGui::PopStyleVar(3); });
+		const float contrast = light ? -.04f : .05f;
+		const ImVec4 secondary{ std::clamp(footerColor.x + contrast, 0.0f, 1.0f), std::clamp(footerColor.y + contrast, 0.0f, 1.0f), std::clamp(footerColor.z + contrast, 0.0f, 1.0f), footerOpacity };
 		{
-			const auto primary = Util::StyledButtonWrapper(palette.InfoColor, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered), ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+			const auto primary = Util::StyledButtonWrapper(dirty ? palette.InfoColor : secondary, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered), ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
 			const auto accent = palette.InfoColor;
 			const float brightness = accent.x * .299f + accent.y * .587f + accent.z * .114f;
-			ImGui::PushStyleColor(ImGuiCol_Text, brightness > .55f ? ImVec4(.08f, .08f, .08f, 1) : ImVec4(1, 1, 1, 1));
+			ImGui::PushStyleColor(ImGuiCol_Text, dirty ? (brightness > .55f ? ImVec4(.08f, .08f, .08f, 1) : ImVec4(1, 1, 1, 1)) : ImGui::GetStyleColorVec4(ImGuiCol_Text));
 			const SKSE::stl::scope_exit restoreText([] { ImGui::PopStyleColor(); });
 			if (external)
 				DrawExternalAction(0, *external, layout.contentWidth);
@@ -277,8 +279,6 @@ namespace
 			addActionTooltip("Save all your CSX settings.");
 		ImGui::SetCursorScreenPos({ start.x + layout.actionsLeft + layout.actionOffsets[1].x, actionsY + layout.actionOffsets[1].y });
 		{
-			const float contrast = light ? -.04f : .05f;
-			const ImVec4 secondary{ std::clamp(footerColor.x + contrast, 0.0f, 1.0f), std::clamp(footerColor.y + contrast, 0.0f, 1.0f), std::clamp(footerColor.z + contrast, 0.0f, 1.0f), footerOpacity };
 			const auto secondaryStyle = Util::StyledButtonWrapper(secondary, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered), ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
 			if (external)
 				DrawExternalAction(1, *external, layout.contentWidth);

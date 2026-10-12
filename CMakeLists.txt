@@ -1856,9 +1856,10 @@ if(BUILD_CONTROLLER_TESTS)
             "${_settings_ui_dir}/settings_constraint_warning_under_test.h"
     )
     target_include_directories(settings_ui_test PRIVATE "${_settings_ui_dir}")
+    find_package(fmt CONFIG REQUIRED)
     target_link_libraries(
         settings_ui_test
-        PRIVATE imgui::imgui nlohmann_json::nlohmann_json
+        PRIVATE imgui::imgui nlohmann_json::nlohmann_json fmt::fmt
     )
     target_compile_definitions(settings_ui_test PRIVATE DEVBENCH_BRIDGE_ENABLED)
     set_tests_properties(SettingsUI PROPERTIES TIMEOUT 30)
