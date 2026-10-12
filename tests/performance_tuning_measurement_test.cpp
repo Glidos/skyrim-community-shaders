@@ -4,6 +4,7 @@
 #include "Utils/VRFrameTiming.h"
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -43,6 +44,7 @@ struct Feature
 
 double g_costMeasurementRestartAllowedTime = 0.0;
 #include "performance_tuning_measurement_under_test.h"
+#include "vr_live_sampler_under_test.h"
 
 namespace
 {
@@ -417,6 +419,48 @@ namespace
 		Near(upscaling.GetPerformanceCostMeasurementSettleSeconds(true), 2.0, "enabled settling must retain the base feature policy");
 		Near(GetFeatureCostComparisonWaitSeconds(nullptr), 3.0, "missing feature must use the ordinary wait");
 	}
+
+	void TestVRIndexedMeasurementProtocol(const char* name, double expectedSeconds, bool advanceGame = true, bool transientFault = false)
+	{
+		Feature ordinary;
+		Upscaling upscaling;
+		Feature& feature = std::string_view(name) == "Upscaling" ? upscaling : ordinary;
+		feature.shortName = name;
+		auto state = Begin(feature);
+		TestRuntime::varyGpu = false;
+		double completedAt = 0.0;
+		for (std::uint32_t tick = 1; tick <= 2500; ++tick) {
+			TestRuntime::mode = transientFault && tick == 300 ? TestRuntime::Mode::ReadFault : TestRuntime::Mode::Live;
+			++TestRuntime::ticks;
+			++TestRuntime::compositorFrame;
+			if (advanceGame)
+				++TestRuntime::gameFrame;
+			const bool enabled = feature.settings["enabled"].get<bool>();
+			TestRuntime::gpuOffset = enabled ? 2.0f : 0.0f;
+			TestRuntime::cpuOffset = enabled ? 1.0f : 0.0f;
+			ProfilingRenderer::PerformanceTimingSummary summary;
+			summary.frameCount = TestRuntime::gameFrame;
+			const auto now = std::chrono::steady_clock::time_point(std::chrono::milliseconds(10000 + TestRuntime::ticks * 10));
+			CaptureOpenVRGameTiming(summary, now);
+			NormalizeGameFrameTiming(summary);
+			if (!transientFault || tick < 300 || tick > 330)
+				Require(summary.fps > 0 && summary.hasGameGpu && summary.hasGameCpu,
+					"production live sampler must supply all counters throughout the comparison");
+			UpdateFeatureCostMeasurement(&feature, state, summary, tick * 0.01);
+			if (state.phase == Phase::Complete) {
+				completedAt = tick * 0.01;
+				break;
+			}
+		}
+		Require(completedAt >= expectedSeconds && completedAt < expectedSeconds + (transientFault ? 2.0 : 0.2),
+			"indexed VR timing must complete every measurement phase instead of stalling at ten seconds");
+		Require(state.failureMessage.empty() && feature.settings == state.originalState,
+			"indexed VR comparison must restore the original settings before reporting results");
+		Require(state.delta.frame.available && state.delta.fps.available && state.delta.gameGpu.available && state.delta.gameCpu.available,
+			"indexed VR comparison must produce all four metric rows");
+		Near(state.delta.gameGpu.value, 2.0, "VR comparison must retain the measured GPU cost");
+		Near(state.delta.gameCpu.value, 1.0, "VR comparison must retain the measured CPU cost");
+	}
 }
 
 int main()
@@ -433,6 +477,10 @@ int main()
 		TestDiagnosticStatus();
 		TestVRMeasurementOwnership();
 		TestIndependentCadence();
+		TestVRIndexedMeasurementProtocol("NeuralRendering", 12.0);
+		TestVRIndexedMeasurementProtocol("Upscaling", 19.0);
+		TestVRIndexedMeasurementProtocol("NeuralRendering", 12.0, false);
+		TestVRIndexedMeasurementProtocol("NeuralRendering", 12.0, true, true);
 	} catch (const std::exception& error) {
 		std::cerr << error.what() << '\n';
 		return 1;

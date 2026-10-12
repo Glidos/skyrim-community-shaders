@@ -136,6 +136,53 @@ namespace
 			Near(1000.0f / stats.frame.Average(), rate, "FPS must follow application cadence");
 		}
 	}
+
+	void IndexedHistory()
+	{
+		std::array<Timing, kMaxCatchUpFrames + kCompletionLagFrames> history;
+		std::uint32_t latest = 80;
+		std::vector<std::uint32_t> requests;
+		const auto read = [&](Timing& timing, std::uint32_t ago) {
+			requests.push_back(ago);
+			timing.m_nFrameIndex = latest - ago;
+			timing.m_flSystemTimeInSeconds = 1.0 + (latest - ago) * 0.02;
+			return true;
+		};
+		auto count = ReadRecentHistory(std::span<Timing>(history), 0, read);
+		Check(count == 4 && requests.size() == 4 && history[0].m_nFrameIndex == 77,
+			"initial single-frame reads must retain the two-frame completion lag");
+		requests.clear();
+		count = ReadRecentHistory(std::span<Timing>(history), 74, read);
+		Check(count == 7 && requests.size() == 7 && history[0].m_nFrameIndex == 74 && history[count - 1].m_nFrameIndex == 80,
+			"indexed catch-up must return pending frames and one overlap in ascending order");
+		requests.clear();
+		count = ReadRecentHistory(std::span<Timing>(history), 1, read);
+		Check(count == history.size() && requests.size() == history.size(), "catch-up must remain bounded after a long gap");
+		const auto failed = ReadRecentHistory(std::span<Timing>(history), 0, [&](Timing& timing, std::uint32_t ago) {
+			return ago != 1 && read(timing, ago);
+		});
+		Check(failed == 0, "a partial failed history must not enter a comparison");
+		latest = 3;
+		count = ReadRecentHistory(std::span<Timing>(history), 80, read);
+		Check(count == 4 && history[0].m_nFrameIndex == 0, "a compositor restart must establish fresh history");
+
+		Cursor cursor;
+		std::vector<std::uint32_t> accepted;
+		for (const auto frame : { 80u, 83u }) {
+			latest = frame;
+			count = ReadRecentHistory(std::span<Timing>(history), cursor.lastFrameIndex, [&](Timing& timing, std::uint32_t ago) {
+				read(timing, ago);
+				if (ago != 0) {
+					++timing.m_nFrameIndex;
+					timing.m_flSystemTimeInSeconds += 0.02;
+				}
+				return true;
+			});
+			cursor.Consume(std::span<const Timing>(history.data(), count), [&](const auto& timing) { accepted.push_back(timing.m_nFrameIndex); });
+		}
+		Check(accepted == std::vector<std::uint32_t>{ 78, 79, 80, 81 },
+			"runtime advance during indexed reads must keep live data without admitting in-flight or duplicate frames");
+	}
 }
 
 int main()
@@ -144,6 +191,7 @@ int main()
 		Definitions();
 		CompletedFrames();
 		FixedWindow();
+		IndexedHistory();
 	} catch (const std::exception& error) {
 		std::cerr << error.what() << '\n';
 		return 1;

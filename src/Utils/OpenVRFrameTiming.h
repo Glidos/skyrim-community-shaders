@@ -28,7 +28,8 @@ namespace Util::OpenVRFrameTiming
 	}
 
 	/** @brief Reads a compositor frame without trusting a pointer after an access fault. */
-	inline bool TryGetFrameTiming(vr::IVRCompositor* a_compositor, vr::Compositor_FrameTiming* a_timing, bool* a_faulted)
+	inline bool TryGetFrameTiming(vr::IVRCompositor* a_compositor, vr::Compositor_FrameTiming* a_timing,
+		bool* a_faulted, std::uint32_t a_framesAgo = 0)
 	{
 		if (a_faulted)
 			*a_faulted = false;
@@ -36,8 +37,9 @@ namespace Util::OpenVRFrameTiming
 			return false;
 
 		bool result = false;
+		a_timing->m_nSize = static_cast<std::uint32_t>(sizeof(*a_timing));
 		__try {
-			result = a_compositor->GetFrameTiming(a_timing, 0);
+			result = a_compositor->GetFrameTiming(a_timing, a_framesAgo);
 		} __except (EXCEPTION_EXECUTE_HANDLER) {
 			if (a_faulted)
 				*a_faulted = true;

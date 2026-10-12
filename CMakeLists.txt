@@ -4417,6 +4417,47 @@ if(BUILD_CONTROLLER_TESTS)
         VRFrameTiming
         tests/vr_frame_timing_test.cpp
     )
+    set(_vr_live_timing_dir "${CMAKE_CURRENT_BINARY_DIR}/vr_live_timing_test")
+    set(_vr_live_timing_header
+        "${_vr_live_timing_dir}/vr_live_timing_under_test.h"
+    )
+    add_custom_command(
+        OUTPUT "${_vr_live_timing_header}"
+        BYPRODUCTS
+            "${_vr_live_timing_dir}/vr_live_sampler_under_test.h"
+            "${_vr_live_timing_dir}/vr_live_constants.h"
+            "${_vr_live_timing_dir}/vr_live_cache.h"
+            "${_vr_live_timing_dir}/vr_live_capture.h"
+        COMMAND
+            "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
+            "-DOUTPUT_DIRECTORY=${_vr_live_timing_dir}" -P
+            "${PROJECT_SOURCE_DIR}/tests/extract_vr_live_timing.cmake"
+        DEPENDS
+            src/Menu/ProfilingRenderer.cpp
+            src/Menu/ProfilingRenderer.h
+            tests/extract_vr_live_timing.cmake
+            tests/extract_source_region.cmake
+        VERBATIM
+    )
+    add_controller_test(vr_live_timing_test VRLiveTiming tests/vr_live_timing_test.cpp)
+    foreach(
+        _target
+        IN
+        ITEMS
+            vr_live_timing_test
+            performance_tuning_measurement_test
+            performance_tuning_measurement_devbench_test
+    )
+        target_sources(${_target} PRIVATE "${_vr_live_timing_header}")
+        target_include_directories(
+            ${_target}
+            PRIVATE
+                "${_vr_live_timing_dir}"
+                "${PROJECT_SOURCE_DIR}/tests"
+                "${PROJECT_SOURCE_DIR}/extern/CommonLibSSE-NG/extern/openvr/headers"
+        )
+        target_compile_definitions(${_target} PRIVATE ENABLE_SKYRIM_VR)
+    endforeach()
     add_controller_test(
         profiler_timing_test
         ProfilerTiming

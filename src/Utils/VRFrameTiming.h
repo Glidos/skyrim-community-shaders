@@ -17,6 +17,29 @@ namespace Util::VRFrameTiming
 	inline constexpr std::size_t kMaxWindowSamples = 512;
 	inline constexpr std::uint32_t kDefinitionVersion = 2;
 
+	/** Read bounded, oldest-first history through the single-frame API used by Skyrim's compositor. */
+	template <class Timing, class Reader>
+	std::size_t ReadRecentHistory(std::span<Timing> history, std::uint32_t lastCompletedFrame, Reader&& read)
+	{
+		if (history.size() <= kCompletionLagFrames)
+			return 0;
+		Timing latest{};
+		if (!read(latest, 0))
+			return 0;
+		const auto available = std::min<std::size_t>(history.size(), kMaxCatchUpFrames + kCompletionLagFrames);
+		// One extra older record keeps a completed sample available if the runtime advances during reads.
+		const auto pending = lastCompletedFrame != 0 && latest.m_nFrameIndex > lastCompletedFrame ?
+		                         static_cast<std::uint64_t>(latest.m_nFrameIndex) - lastCompletedFrame + 1 :
+		                         kCompletionLagFrames + 2;
+		const auto count = std::clamp<std::size_t>(pending, kCompletionLagFrames + 1, available);
+		history[count - 1] = latest;
+		for (std::uint32_t ago = 1; ago < count; ++ago) {
+			if (!read(history[count - 1 - ago], ago))
+				return 0;
+		}
+		return count;
+	}
+
 	struct Sample
 	{
 		std::uint32_t frameIndex = 0;
@@ -91,14 +114,21 @@ namespace Util::VRFrameTiming
 			if (history.size() <= kCompletionLagFrames)
 				return;
 			const auto completed = history.size() - kCompletionLagFrames;
+			const auto isCompleted = [&](const auto& timing) {
+				return timing.m_nFrameIndex <= latestFrameIndex &&
+				       latestFrameIndex - timing.m_nFrameIndex >= kCompletionLagFrames &&
+				       std::isfinite(timing.m_flSystemTimeInSeconds) && timing.m_flSystemTimeInSeconds > 0.0 &&
+				       timing.m_flSystemTimeInSeconds <= latestSystemTime;
+			};
 			// The first observation establishes ownership; older frames predate the observer.
-			const auto first = lastSystemTime == 0.0 ? completed - 1 : 0;
+			auto first = lastSystemTime == 0.0 ? completed - 1 : 0;
+			while (first > 0 && !isCompleted(history[first]))
+				--first;
 			for (auto i = first; i < completed; ++i) {
 				const auto& timing = history[i];
-				if (timing.m_nFrameIndex > latestFrameIndex ||
+				if (!isCompleted(timing) ||
 					(lastSystemTime > 0.0 && timing.m_nFrameIndex <= lastFrameIndex) ||
-					!std::isfinite(timing.m_flSystemTimeInSeconds) || timing.m_flSystemTimeInSeconds <= lastSystemTime ||
-					timing.m_flSystemTimeInSeconds > latestSystemTime)
+					timing.m_flSystemTimeInSeconds <= lastSystemTime)
 					continue;
 				consume(timing);
 				lastFrameIndex = timing.m_nFrameIndex;

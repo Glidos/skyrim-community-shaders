@@ -31,7 +31,8 @@ static constexpr float kStatsRefreshSeconds = 1.0f;
 static constexpr uint32_t kDisplayedRollingFrameCount = 60;
 static constexpr float kMaxDisplayTimingSampleMs = 1000.0f;
 #ifdef ENABLE_SKYRIM_VR
-static constexpr uint32_t kOpenVRTimingRetryFrames = 120;
+static constexpr auto kOpenVRTimingRetryDelay = std::chrono::milliseconds(250);
+static constexpr auto kOpenVRTimingPollDelay = std::chrono::milliseconds(10);
 #endif
 
 static bool IsPositiveFinite(float value)
@@ -95,10 +96,10 @@ struct OpenVRGameTimingCache
 	Util::VRFrameTiming::Window window;
 	std::vector<Util::VRFrameTiming::Sample> samples;
 	std::chrono::steady_clock::time_point lastObservation{};
+	std::chrono::steady_clock::time_point lastPoll{};
+	std::chrono::steady_clock::time_point nextPoll{};
 	double observedSystemTime = 0.0;
 	uint32_t lastSampleFrame = 0;
-	uint32_t nextRetryFrame = 0;
-	bool disabled = false;
 };
 #endif
 
@@ -155,7 +156,8 @@ static float GetAverageGameFrameMs(float& sampleMs, bool& hasSample)
 	return frameMsAverage.Get();
 }
 
-static void CaptureOpenVRGameTiming(ProfilingRenderer::PerformanceTimingSummary& summary)
+static void CaptureOpenVRGameTiming(ProfilingRenderer::PerformanceTimingSummary& summary,
+	std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now())
 {
 #ifdef ENABLE_SKYRIM_VR
 	static OpenVRGameTimingCache cache;
@@ -163,27 +165,29 @@ static void CaptureOpenVRGameTiming(ProfilingRenderer::PerformanceTimingSummary&
 	const uint32_t frameCount = summary.frameCount;
 	if (frameCount == 0)
 		return;
-	const auto now = std::chrono::steady_clock::now();
 	if (cache.lastSampleFrame != 0 && frameCount != cache.lastSampleFrame && frameCount != cache.lastSampleFrame + 1) {
 		cache.cursor.Reset();
 		cache.window = {};
 		cache.samples.clear();
-		cache.nextRetryFrame = 0;
-		cache.disabled = false;
 	}
 	const bool newGameFrame = cache.lastSampleFrame != frameCount;
 	cache.lastSampleFrame = frameCount;
 	if (newGameFrame)
 		cache.samples.clear();
-	if (newGameFrame && !cache.disabled && frameCount >= cache.nextRetryFrame) {
+	if (now >= cache.nextPoll && (newGameFrame || now - cache.lastPoll >= kOpenVRTimingPollDelay)) {
+		cache.samples.clear();
+		cache.lastPoll = now;
+		cache.nextPoll = now + kOpenVRTimingRetryDelay;
 		bool faulted = false;
 		auto* compositor = Util::OpenVRFrameTiming::TryResolveCompositor(&faulted);
 		if (compositor && !faulted) {
 			std::array<vr::Compositor_FrameTiming,
 				Util::VRFrameTiming::kMaxCatchUpFrames + Util::VRFrameTiming::kCompletionLagFrames>
 				history{};
-			const auto count = Util::OpenVRFrameTiming::TryGetFrameTimings(
-				compositor, history.data(), static_cast<uint32_t>(history.size()), &faulted);
+			const auto count = Util::VRFrameTiming::ReadRecentHistory(
+				std::span<vr::Compositor_FrameTiming>(history), cache.cursor.lastFrameIndex, [&](auto& timing, uint32_t framesAgo) {
+					return Util::OpenVRFrameTiming::TryGetFrameTiming(compositor, &timing, &faulted, framesAgo);
+				});
 			const auto epoch = cache.cursor.epoch;
 			cache.cursor.Consume(std::span<const vr::Compositor_FrameTiming>(history.data(), count), [&](const auto& timing) {
 				cache.samples.push_back(Util::VRFrameTiming::Decode(timing));
@@ -196,16 +200,18 @@ static void CaptureOpenVRGameTiming(ProfilingRenderer::PerformanceTimingSummary&
 				cache.lastObservation = now;
 				cache.observedSystemTime = cache.cursor.latestSystemTime;
 			}
-			cache.nextRetryFrame = frameCount + 1;
-		} else {
-			cache.nextRetryFrame = frameCount + kOpenVRTimingRetryFrames;
+			if (count != 0 && !faulted)
+				cache.nextPoll = {};
 		}
-		cache.disabled = faulted;
+		if (faulted) {
+			// A failed read invalidates measurement ownership, not future live polling.
+			cache.cursor.Reset();
+			cache.window = {};
+			cache.samples.clear();
+		}
 	}
 	summary.vrTimingEpoch = cache.cursor.epoch;
 	summary.vrLatestFrameIndex = cache.cursor.latestFrameIndex;
-	if (cache.disabled)
-		return;
 	const double age = std::chrono::duration<double>(now - cache.lastObservation).count();
 	summary.vrDisplay = cache.window.Get(cache.cursor.latestSystemTime + age);
 	summary.frameMs = summary.vrDisplay.frame.Average();
@@ -228,6 +234,7 @@ static void CaptureOpenVRGameTiming(ProfilingRenderer::PerformanceTimingSummary&
 	}
 #else
 	(void)summary;
+	(void)now;
 #endif
 }
 
