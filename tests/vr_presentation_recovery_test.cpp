@@ -57,7 +57,7 @@ namespace globals
 	State storage;
 	State* state = &storage;
 }
-std::recursive_mutex g_vrLoadingMenuGateReconciliationMutex, g_vrLoadingTransitionSerialMutex;
+#include "vr_presentation_mutexes_under_test.h"
 std::atomic<bool> g_vrLoadingTransitionSerialOpen{ false };
 bool loadMenu = false, worldReady = true, exactContract = true, vendorReset = false;
 bool IsLoadingMenuContextActive() { return loadMenu; }
@@ -101,13 +101,12 @@ struct Mutation
 	bool emergencyRecoveryRequested = true;
 	Phase progressPhase = Phase::PresentationStabilizing;
 };
-struct Upscaling
+struct Upscaling : PresentationRecoveryMutexes
 {
 	std::atomic<uint64_t> vrRenderScalePostMutationSerializationEpoch{ 7 }, vrRenderScaleUnresolvedPhysicalMutationEpoch{ 0 };
 	std::atomic<bool> vrRenderScaleExtendedRecoveryDeadlineLogged{ false };
 	std::atomic<unsigned> vrRenderScalePostMutationEmergencyAttemptFrame{ 10 };
 	std::atomic<uint64_t> vrRenderScalePostMutationEmergencyAttemptGraceDeadlineTickMs{ 1000 };
-	std::recursive_mutex perfModeRenderTargetRecreateQueueMutex, vrRenderScalePhysicalMutationMutex, vrPostLoadCompositorHoldMutex;
 	std::atomic<bool> vrRenderScaleTerminalFailureSignaled{ false }, pendingPerfModeRenderTargetRecreate{ false };
 	std::atomic<bool> vrRenderScalePostMutationEmergencyAttemptConsumed{ true }, vrRenderScaleEmergencyRecoveryRequested{ true };
 	std::atomic<uint64_t> pendingPostLoadRuntimeResetEpoch{ 12 }, pendingPerfModeRenderTargetRecreateRecoveryEpoch{ 12 };
@@ -126,9 +125,10 @@ struct Upscaling
 	Mutation mutationState;
 	bool hold = false, removed = false, removeOnProbe = false, resourcesReady = true, physicalExact = true, lifecycleBlocked = false;
 	bool pendingSettings = false, nativeAdmission = true;
+	unsigned vrPostLoadCompositorInFlightSubmitCount = 0, quarantinedCycles = 0;
+	uint64_t vrPostLoadCompositorInFlightCycleToken = 2;
 	bool probeConcurrentRetirement = false, concurrentRetirementEntered = false;
 	unsigned resumes = 0, recreations = 0, nativeFallbacks = 0, snapshots = 0, diagnostics = 0;
-	std::recursive_mutex pendingVRRenderScaleRequestMutex;
 	std::atomic<uint64_t> pendingPerfModeRenderTargetRecreateEpoch{ 0 };
 	std::atomic<VRUpscalingTransitionOrigin> pendingPerfModeRenderTargetRecreateOrigin{ VRUpscalingTransitionOrigin::RecoveryRelatch };
 	std::atomic<bool> pendingPerfModeRenderTargetRecreateForcePhysical{ false };
@@ -170,7 +170,10 @@ struct Upscaling
 	bool IsSubmitStageDeviceLost() const { return removed; }
 	bool MarkSubmitStageDeviceLostIfDeviceRemoved(const char*)
 	{
-		removed |= removeOnProbe;
+		if (removeOnProbe) {
+			const std::scoped_lock lock(vrPostLoadCompositorHoldMutex);
+			removed = true;
+		}
 		return removed;
 	}
 	bool HasPendingVRUpscalingTransition() const { return pendingSettings; }
@@ -178,13 +181,22 @@ struct Upscaling
 	bool IsVRRenderScalePhysicalContractConverged(unsigned, unsigned) const { return physicalExact; }
 	bool ShouldDeferVRVendorLifecycleMutation() const { return lifecycleBlocked; }
 	void ArmSubmitStageVendorResumeCooldown(unsigned) { ++resumes; }
-	void ResetVRPostLoadCompositorHold()
+	void ResetVRPostLoadCompositorHold();
+	void ResetVRPostLoadPresentationProtectionLocked();
+	void QuarantineVRPostLoadCompositorCycleLocked(uint64_t) { ++quarantinedCycles; }
+	void FinishVRInitialLoadPresentationProtectionLocked(bool)
 	{
+		const std::scoped_lock lock(vrRenderScalePhysicalMutationMutex);
 		hold = false;
-		TryRetireVRRenderScalePostMutationSerialization(vrRenderScalePostMutationSerializationEpoch);
+		TryRetireVRRenderScalePostMutationSerializationLocked(vrRenderScalePostMutationSerializationEpoch);
 	}
 	void SetVRRenderScaleTransitionState(VRRenderScaleTransitionState value, const char*) { controller.state = value; }
 	bool TryRetireVRRenderScalePostMutationSerialization(uint64_t epoch)
+	{
+		const std::scoped_lock lock(vrPostLoadCompositorHoldMutex, vrRenderScalePhysicalMutationMutex);
+		return TryRetireVRRenderScalePostMutationSerializationLocked(epoch);
+	}
+	bool TryRetireVRRenderScalePostMutationSerializationLocked(uint64_t epoch)
 	{
 		if (epoch == vrRenderScalePostMutationSerializationEpoch && !hold && controller.state == VRRenderScaleTransitionState::Active) {
 			vrRenderScalePostMutationSerializationEpoch = 0;
@@ -208,6 +220,7 @@ struct Upscaling
 		return { nativeAdmission };
 	}
 	bool EnsureVRRenderScaleProviderNeutralNativeRecovery(const char*, bool);
+	bool EnsureVRRenderScaleProviderNeutralNativeRecoveryLocked(const char*, bool);
 	uint64_t BeginVRRenderScalePostLoadRecovery() { return 12; }
 	void RequestPerfModeRenderTargetRecreate(const char*, VRUpscalingTransitionOrigin, const Boot*, unsigned = 0, bool native = false)
 	{
@@ -238,9 +251,10 @@ struct Upscaling
 	bool ShouldDeferVRRenderScalePresentationSuccessor() const;
 	bool IsVRRenderScalePostMutationAttemptConsumed(uint64_t) const;
 	void DeferVRRenderScalePresentationRelatch(bool);
-	bool TryResumeVRRenderScalePresentation(uint64_t);
+	bool TryResumeVRRenderScalePresentationLocked(uint64_t);
 	void ServiceVRRenderScalePresentationRecovery(uint64_t, const char*);
 };
+#include "vr_presentation_hold_reset_under_test.h"
 #include "vr_presentation_native_recovery_under_test.h"
 #include "vr_presentation_owner_under_test.h"
 #include "vr_presentation_recovery_under_test.h"
@@ -432,6 +446,23 @@ int main()
 		u.perfModeRenderTargetRecreateInProgress = false;
 		Require(!u.EnsureVRRenderScaleProviderNeutralNativeRecovery("reject another successor", true) && u.nativeFallbacks == 1,
 			"An exhausted native worker cannot admit another successor");
+	}
+	{
+		Upscaling u;
+		u.hold = true;
+		u.vrPostLoadCompositorInFlightSubmitCount = 1;
+		u.ServiceVRRenderScalePostMutationWatchdog("in-flight stereo during resume");
+		Require(u.quarantinedCycles == 1 && u.resumes == 1 && !u.hold &&
+					u.vrRenderScalePostMutationSerializationEpoch == 7,
+			"Owned reset must quarantine an in-flight submit without recursive locking or early retirement");
+	}
+	{
+		Upscaling u;
+		u.hold = true;
+		u.controller.state = VRRenderScaleTransitionState::Active;
+		u.ResetVRPostLoadCompositorHold();
+		Require(!u.hold && u.vrRenderScalePostMutationSerializationEpoch == 0,
+			"Unowned reset must acquire the hold lock and retire completed presentation");
 	}
 	{
 		Upscaling u;

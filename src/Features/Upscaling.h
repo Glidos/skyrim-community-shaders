@@ -571,6 +571,7 @@ public:
 		float foveatedRightEyeMaskOffsetX = 0.0f;
 		float foveatedRightEyeMaskOffsetY = 0.0f;
 		float periphery_taa_center_area = 0.3f;
+		// Setup preview is session-only and must never resume from saved settings.
 		bool foveatedPeripheryMaskVisualization = false;
 		FoveatedMaskCalibration::Reference foveatedCalibrationReference;
 		FoveatedMaskCalibration::SetupConfirmation foveatedMaskSetup;
@@ -4785,6 +4786,8 @@ private:
 	void ResetVRLoadingFadeClockLocked();
 	void ReleaseVRLoadingFadeInHoldLocked(const char* a_reason);
 	void ResetVRPostLoadCompositorHold();
+	/// Reset presentation protection while the compositor-hold mutex is owned.
+	void ResetVRPostLoadPresentationProtectionLocked();
 	void ResetVRPostLoadCompositorHoldLocked(
 		VRPostLoadCompositorHoldState a_finalState =
 			VRPostLoadCompositorHoldState::Idle);
@@ -4856,7 +4859,8 @@ private:
 	bool IsVRRenderScalePostMutationAttemptConsumed(uint64_t a_candidateEpoch) const;
 	void DeferVRRenderScalePresentationRelatch(bool a_postLoadReset);
 	void ServiceVRRenderScalePresentationRecovery(uint64_t a_epoch, const char* a_context);
-	bool TryResumeVRRenderScalePresentation(uint64_t a_epoch);
+	/// Resume under the recreation-queue and compositor-hold mutexes.
+	bool TryResumeVRRenderScalePresentationLocked(uint64_t a_epoch);
 	void LogVRRenderScalePresentationStall(uint64_t a_epoch, const char* a_action, const char* a_context) const;
 	void ServiceDeferredVRRenderScaleRequestAfterPhysicalRecovery();
 	void SignalVRRenderScaleTerminalFailure(
@@ -5122,6 +5126,10 @@ private:
 	OpenCompositeUpscalingBlocker GetOpenCompositeUpscalingBlocker(bool a_forceRefresh = false) const;
 	bool ApplyOpenCompositeUpscalingBlocker(bool a_forceRefresh = false);
 	bool EnsureVRRenderScaleProviderNeutralNativeRecovery(
+		const char* a_reason,
+		bool a_allowSuccessor);
+	/// Admit recovery while the recreation-queue and compositor-hold mutexes are owned.
+	bool EnsureVRRenderScaleProviderNeutralNativeRecoveryLocked(
 		const char* a_reason,
 		bool a_allowSuccessor);
 	[[nodiscard]] bool HasLiveVRRenderScaleProviderNeutralRecoveryWorker() const;

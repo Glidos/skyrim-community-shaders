@@ -396,7 +396,6 @@ namespace FSRTemporalTuningPolicy
 	OP(foveatedRightEyeMaskOffsetX)              \
 	OP(foveatedRightEyeMaskOffsetY)              \
 	OP(periphery_taa_center_area)                \
-	OP(foveatedPeripheryMaskVisualization)       \
 	OP(foveatedMaskSetup)                        \
 	OP(foveatedCalibrationReference)             \
 	OP(foveatedAutomaticMaskScaling)             \
@@ -444,8 +443,12 @@ void from_json(const json& a_json, Upscaling::Settings& a_settings)
 		throw std::invalid_argument("FOV outer feather is outside the supported range");
 	if ((parsed.foveatedCalibrationReference.version != 0 && !FoveatedMaskCalibration::IsValid(parsed.foveatedCalibrationReference)) ||
 		!std::isfinite(parsed.foveatedAutomaticMaskScaling) || parsed.foveatedAutomaticMaskScaling < FoveatedMaskCalibration::kMinimumPercent ||
-		parsed.foveatedAutomaticMaskScaling > FoveatedMaskCalibration::kMaximumPercent)
+		parsed.foveatedAutomaticMaskScaling > FoveatedMaskCalibration::kMaximumReferencePercent)
 		throw std::invalid_argument("Invalid FOV calibration reference or automatic scaling percentage");
+	if (parsed.foveatedAutomaticMaskScaling > FoveatedMaskCalibration::kMaximumPercent) {
+		parsed.foveatedCalibrationReference = {};
+		parsed.foveatedAutomaticMaskScaling = FoveatedMaskCalibration::kMaximumPercent;
+	}
 	a_settings = parsed;
 }
 
@@ -1978,12 +1981,16 @@ namespace
 	};
 
 	constexpr const char* kFoveatedUpscalingMethodAvailabilityText = "VR FOV mask setup is available only with DLSS or FSR.";
-	constexpr const char* kFoveatedUpscalingSetupInstructions = R"(1) In a loaded game, select FOV only, then press Automatic Headset Setup.
+	constexpr const char* kFoveatedUpscalingSetupInstructions = R"(1) Select FOV only, then press Automatic Headset Setup. 100% Outer Coverage fits the view supplied by your headset.
 2) Turn FOV Mask Visualization on. Yellow-and-black stripes show areas outside the mask.
-3) Lower Outer Coverage in small steps, releasing the slider after each change. When stripes just enter your view, increase it slightly until they disappear.
-4) Check the outer edges and corners with each eye separately, then both eyes open. If the views differ, fine-tune each eye's X/Y sliders. Press Calibrate Masks and check again.
-5) Turn FOV Mask Visualization off and check for flicker at the outer edges. If needed, increase Outer Coverage slightly, press Calibrate Masks and check again.
-6) When both eyes look clear, click Mask setup finished, then Save settings.
+3) Lower Outer Coverage until stripes just enter your view, then increase slightly until they disappear. Release after each change; the masks and centre refit automatically.
+4) Check each eye separately, then both eyes open, including edges and corners. If needed, fine-tune each eye's X/Y sliders, then press Calibrate Masks and check again.
+5) Turn visualization off and check for flicker. Increase coverage slightly if needed. When both eyes look clear, click Mask setup finished, then Save settings.
+
+Manual setup (skip Automatic Headset Setup):
+1) Select FOV only and turn visualization on. Use FOV Only Visible Scale for size, R/L expansion for width, and each eye's X/Y sliders for position. Fit each eye so stripes sit just outside your visible edges and corners, then check both eyes open.
+2) Optional: press Calibrate Masks to refit the centre and cover shared-view gaps. Check both eyes again.
+3) Turn visualization off and check for flicker. Click Mask setup finished, then Save settings.
 
 Optional: select FOV + TAA for further performance savings (not compatible with NR). Adjust centre size; your outer borders stay fixed.)";
 
@@ -18369,6 +18376,7 @@ bool Upscaling::ApplyNeuralRenderingConfiguration(const json& a_configuration, s
 		}
 		auto candidate = merged.get<Settings>();
 
+		candidate.foveatedPeripheryMaskVisualization = settings.foveatedPeripheryMaskVisualization;
 		candidate.neuralCharacterDebugView = settings.neuralCharacterDebugView;
 		candidate.neuralCharacterMaskTestMode = settings.neuralCharacterMaskTestMode;
 #ifdef DEVBENCH_BRIDGE_ENABLED
@@ -19692,14 +19700,14 @@ void Upscaling::DrawFoveatedCalibration()
 	using FoveatedMaskCalibration::CaptureMode;
 	const bool headsetSetup = ImGui::Button("Automatic Headset Setup");
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::TextWrapped("Creates a starting fit from your headset and resets Outer Coverage to 100%%. This usually covers more than you can see. Follow the setup instructions to reduce it to fit your view; each eye may need X/Y fine-tuning.");
+		ImGui::TextWrapped("Fits each eye's view supplied by OpenVR and sets Outer Coverage to 100%%. Lower coverage to find your visible boundary. The masks and centre refit automatically; individual eye views may need X/Y fine-tuning. Without a visible-area mesh, the starting fit covers the full eye texture.");
 	bool capture = false;
 	{
 		auto guard = Util::DisableGuard(settings.periphery_taa_enable);
 		capture = ImGui::Button("Calibrate Masks");
 	}
 	if (auto _tt = Util::HoverTooltipWrapper())
-		ImGui::TextWrapped("Press after adjusting Outer Coverage or each eye's X/Y sliders in FOV only. Uses each eye's outer edges to refit the masks and cover the centre, keeping your chosen Outer Coverage percentage. Check each eye separately, then both eyes open; repeat after manual changes.");
+		ImGui::TextWrapped("Refits a manual FOV-only setup using each eye's outer edges and fills the centre. Press after manual size, R/L expansion or X/Y changes. Outer Coverage already refits automatically, so pressing this again may leave the values unchanged. Keeps your chosen coverage percentage; check both eyes after calibration.");
 	float percent = headsetSetup ? 100.0f : capture ? settings.foveatedAutomaticMaskScaling :
 	                                                  pendingFoveatedMaskScaling.value_or(settings.foveatedAutomaticMaskScaling);
 	bool scaleChanged = false;
@@ -19717,9 +19725,8 @@ void Upscaling::DrawFoveatedCalibration()
 	}
 	if (auto _tt = Util::HoverTooltipWrapper())
 		ImGui::TextWrapped(
-			"Controls how far the FOV masks extend toward the outer edges of your view. Lower values cover less; higher values cover more.\n\n"
-			"Automatic Headset Setup starts at a conservative 100%%, often covering more than you can actually see. Decrease until you just see flicker at the outer edges (or yellow-and-black stripes with FOV Mask Visualization on). Then increase slightly until the flicker or stripes disappear. Press Calibrate Masks and check each eye separately, then both eyes open.\n\n"
-			"Release the slider after each adjustment to apply it and refit the centre. Calibrate Masks keeps your chosen percentage.");
+			"Scales your saved outer view from 25%% to 100%%. After Automatic Headset Setup, 100%% is the maximum view supplied by OpenVR; your eyes may see less. This is a size control, not the percentage of area saved.\n\n"
+			"Decrease until you just see flicker at the outside (or yellow-and-black stripes with visualization on), then increase slightly until it disappears. Release after each adjustment: the masks and centre refit automatically. Check each eye, then both eyes open. Use Calibrate Masks after manual slider changes.");
 	if (headsetSetup || capture || scaleChanged) {
 		pendingFoveatedMaskScaling.reset();
 		const auto previous = settings;
@@ -19737,7 +19744,7 @@ void Upscaling::DrawFoveatedCalibration()
 				foveatedCalibrationMessage = "NR could not switch FOV coverage; previous calibration retained. Check NR status.";
 			} else
 				foveatedCalibrationMessage = settings.foveatedCenterArea >= FoveatedCommon::kFullCoverageThreshold && !settings.periphery_taa_enable ?
-				                                 "Full-eye starting coverage. Lower Outer Coverage to find your visible boundary." :
+				                                 "Headset view fitted. This needs full-eye coverage (0% area saved). Turn on visualization and lower Outer Coverage to find your visible boundary." :
 				                                 "Coverage fitted. Check outer edges for flicker; increase Outer Coverage if needed.";
 		}
 	}
@@ -19862,7 +19869,7 @@ void Upscaling::DrawFoveatedSettings()
 
 	Util::Widgets::Checkbox("FOV Mask Visualization", &settings.foveatedPeripheryMaskVisualization);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextUnformatted("Use this while tuning FOV masks.");
+		ImGui::TextUnformatted("Temporary setup preview; it is not saved with your settings.");
 		ImGui::TextUnformatted("Works at full coverage and with an in-game menu open. Pauses during loading; turns off when you close CSX.");
 		ImGui::TextUnformatted("Each eye shows its own mask: magenta = left FOV, green = right FOV, charcoal = TAA.");
 		ImGui::TextUnformatted("Amber stripes (80% opaque) begin outside this eye's outline, including uncovered areas toward the centre.");
@@ -19885,7 +19892,7 @@ void Upscaling::DrawFoveatedSettings()
 	}
 	const auto coverage = GetFoveatedMaskCoverage();
 	ImGui::Text("FOV area saved (approx.): L %.1f%% / R %.1f%%", coverage[0].savedPercent, coverage[1].savedPercent);
-	ImGui::TextWrapped("Area saved includes mask feathering; full CSX FOV saves 0%%. This estimates coverage, not performance.");
+	ImGui::TextWrapped("Area saved estimates eye-texture pixels outside the mask, including pixels hidden by headset lenses. It includes feathering and is not a performance estimate.");
 
 	ImGui::Dummy(ImVec2(0.0f, 6.0f));
 	ImGui::Separator();
@@ -19994,12 +20001,19 @@ bool Upscaling::EnsureVRRenderScaleProviderNeutralNativeRecovery(
 	const char* a_reason,
 	bool a_allowSuccessor)
 {
-	// Apply owns this recursive mutex across transfer and physical creation.
-	// Snapshot and create the provider-neutral tuple in that same transaction so
-	// a completed A -> B handoff cannot be mistaken for an orphaned A.
+	// Keep queue and hold ownership through native admission so retirement
+	// cannot invalidate the source before its successor is reserved.
 	const std::scoped_lock recoveryOwnershipLock(
 		perfModeRenderTargetRecreateQueueMutex,
 		vrPostLoadCompositorHoldMutex);
+	return EnsureVRRenderScaleProviderNeutralNativeRecoveryLocked(
+		a_reason, a_allowSuccessor);
+}
+
+bool Upscaling::EnsureVRRenderScaleProviderNeutralNativeRecoveryLocked(
+	const char* a_reason,
+	bool a_allowSuccessor)
+{
 	const uint64_t serializationEpoch =
 		vrRenderScalePostMutationSerializationEpoch.load(
 			std::memory_order_acquire);
@@ -52639,6 +52653,11 @@ bool Upscaling::PrepareVRNativeRestoreCompositorKeepalive(
 void Upscaling::ResetVRPostLoadCompositorHold()
 {
 	const std::scoped_lock lock(vrPostLoadCompositorHoldMutex);
+	ResetVRPostLoadPresentationProtectionLocked();
+}
+
+void Upscaling::ResetVRPostLoadPresentationProtectionLocked()
+{
 	const bool protectedSubmitInFlight =
 		vrPostLoadCompositorInFlightSubmitCount != 0;
 	if (protectedSubmitInFlight) {
@@ -55748,10 +55767,9 @@ void Upscaling::LogVRRenderScalePresentationStall(
 		stableEyeMask);
 }
 
-bool Upscaling::TryResumeVRRenderScalePresentation(uint64_t a_epoch)
+bool Upscaling::TryResumeVRRenderScalePresentationLocked(uint64_t a_epoch)
 {
 	const std::scoped_lock ownerLock(
-		vrPostLoadCompositorHoldMutex,
 		g_vrLoadingMenuGateReconciliationMutex,
 		g_vrLoadingTransitionSerialMutex);
 	const auto transition = GetVRRenderScaleTransitionSnapshot();
@@ -55770,7 +55788,7 @@ bool Upscaling::TryResumeVRRenderScalePresentation(uint64_t a_epoch)
 		pendingPerfModeRenderTargetRecreate.load(std::memory_order_acquire) ||
 		HasPendingVRUpscalingTransition() ||
 		postLoadRuntimeResetPending.load(std::memory_order_acquire) ||
-		MarkSubmitStageDeviceLostIfDeviceRemoved("presentation recovery") ||
+		IsSubmitStageDeviceLost() ||
 		applied.transitionEpoch != a_epoch ||
 		!IsVRRenderScalePhysicalVendorContractExact(transition, boot, applied.method) ||
 		!HasTruthfulStableVRVendorResources(applied, false) ||
@@ -55791,7 +55809,7 @@ bool Upscaling::TryResumeVRRenderScalePresentation(uint64_t a_epoch)
 	if (transition.state == VRRenderScaleTransitionState::Active)
 		SetVRRenderScaleTransitionState(VRRenderScaleTransitionState::Stabilizing, "presentation proof retry");
 	ArmSubmitStageVendorResumeCooldown(std::max(state->frameCount, 1u));
-	ResetVRPostLoadCompositorHold();
+	ResetVRPostLoadPresentationProtectionLocked();
 	return true;
 }
 
@@ -55799,6 +55817,11 @@ void Upscaling::ServiceVRRenderScalePresentationRecovery(
 	uint64_t a_epoch, const char* a_context)
 {
 	using Stage = VRVendorRelatchPolicy::PresentationRecoveryStage;
+	if (vrRenderScalePostMutationSerializationEpoch.load(std::memory_order_acquire) != a_epoch ||
+		vrRenderScaleTerminalFailureSignaled.load(std::memory_order_acquire))
+		return;
+	// Device-loss cleanup owns the hold mutex itself and must run before admission.
+	(void)MarkSubmitStageDeviceLostIfDeviceRemoved("presentation recovery");
 	// Stereo retirement and fallback admission must not split the same owner.
 	const std::scoped_lock ownerLock(perfModeRenderTargetRecreateQueueMutex, vrPostLoadCompositorHoldMutex);
 	if (vrRenderScalePostMutationSerializationEpoch.load(std::memory_order_acquire) != a_epoch ||
@@ -55813,7 +55836,8 @@ void Upscaling::ServiceVRRenderScalePresentationRecovery(
 		transition.applied.valid && transition.applied.transitionEpoch == a_epoch &&
 		transition.stable.valid && transition.stable.transitionEpoch == a_epoch &&
 		transition.stable.contractGeneration == transition.applied.contractGeneration) {
-		if (TryRetireVRRenderScalePostMutationSerialization(a_epoch))
+		const std::scoped_lock physicalLock(vrRenderScalePhysicalMutationMutex);
+		if (TryRetireVRRenderScalePostMutationSerializationLocked(a_epoch))
 			return;
 	}
 	const auto mutation = GetVRRenderScalePhysicalMutationSnapshot();
@@ -55858,7 +55882,7 @@ void Upscaling::ServiceVRRenderScalePresentationRecovery(
 		vrRenderScalePresentationRecoveryStage.store(Stage::ResumePending, std::memory_order_release);
 		LogVRRenderScalePresentationStall(a_epoch, "resume pending", a_context);
 	}
-	if (!vrRenderScalePresentationResumeAttempted && TryResumeVRRenderScalePresentation(a_epoch)) {
+	if (!vrRenderScalePresentationResumeAttempted && TryResumeVRRenderScalePresentationLocked(a_epoch)) {
 		// Notifications cannot rearm the one admitted presentation attempt.
 		vrRenderScalePresentationResumeAttempted = true;
 		vrRenderScalePresentationRecoveryStartTickMs = now;
@@ -55882,7 +55906,7 @@ void Upscaling::ServiceVRRenderScalePresentationRecovery(
 	const SKSE::stl::scope_exit finishAdmission([&] {
 		vrRenderScalePresentationFallbackAdmissionActive.store(false, std::memory_order_release);
 	});
-	if (!EnsureVRRenderScaleProviderNeutralNativeRecovery("presentation recovery exhausted", true)) {
+	if (!EnsureVRRenderScaleProviderNeutralNativeRecoveryLocked("presentation recovery exhausted", true)) {
 		vrRenderScalePresentationRecoveryStage.store(Stage::Quarantined, std::memory_order_release);
 		LogVRRenderScalePresentationStall(a_epoch, "native admission quarantined", a_context);
 		return;

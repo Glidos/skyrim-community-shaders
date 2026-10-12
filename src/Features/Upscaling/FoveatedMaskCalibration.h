@@ -12,13 +12,15 @@
 
 namespace FoveatedMaskCalibration
 {
-	constexpr uint32_t kReferenceVersion = 4;
+	constexpr uint32_t kReferenceVersion = 5;
 	constexpr float kMinimumOffset = FoveatedCommon::kMaskOffsetMin;
 	constexpr float kMaximumOffset = FoveatedCommon::kMaskOffsetMax;
 	constexpr double kCoverageMargin = 1e-5;
 	constexpr float kManualContourTolerance = 0.005f;
-	constexpr float kMinimumPercent = 50.0f;
-	constexpr float kMaximumPercent = 130.0f;
+	constexpr float kMinimumPercent = 25.0f;
+	constexpr float kMaximumPercent = 100.0f;
+	// Manual references may retain an older baseline without changing their saved geometry.
+	constexpr float kMaximumReferencePercent = 130.0f;
 	constexpr size_t kMaximumHeadsetOutlineVertices = 256;
 	enum class CaptureMode
 	{
@@ -122,7 +124,15 @@ namespace FoveatedMaskCalibration
 				return false;
 			area += point.x * next.y - next.x * point.y;
 		}
-		return std::isfinite(area) && std::abs(area) > 1e-6;
+		if (!std::isfinite(area) || std::abs(area) <= 1e-6)
+			return false;
+		for (size_t i = 0; i < outline.size(); ++i) {
+			const auto a = outline[i], b = outline[(i + 1) % outline.size()];
+			for (auto point : outline)
+				if (((b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x)) * area < -1e-12)
+					return false;
+		}
+		return true;
 	}
 
 	[[nodiscard]] inline bool IsValid(const Reference& reference)
@@ -134,12 +144,12 @@ namespace FoveatedMaskCalibration
 			!finiteRange(reference.outer.scale, 0.25f, 1.2f) ||
 			!finiteRange(reference.outer.horizontalScale, 1.0f, 2.0f) ||
 			!finiteRange(reference.centerScale, 0.25f, 1.0f) || !finiteRange(reference.feather, 0.0f, 0.1f) ||
-			!finiteRange(reference.coveragePercent, kMinimumPercent, kMaximumPercent))
+			!finiteRange(reference.coveragePercent, kMinimumPercent, kMaximumReferencePercent))
 			return false;
 		if (reference.headsetOutlines[0].empty() != reference.headsetOutlines[1].empty())
 			return false;
 		if (UsesHeadsetOutline(reference)) {
-			if (reference.fullImage)
+			if (reference.fullImage || reference.coveragePercent != 100.0f)
 				return false;
 			for (const auto& outline : reference.headsetOutlines)
 				if (!IsValidHeadsetOutline(outline))
@@ -395,23 +405,57 @@ namespace FoveatedMaskCalibration
 		return scaled;
 	}
 
-	/** Move temporal and vertical boundaries while retaining each headset's nasal outline. */
+	/** Use each valid contour's bounding centre, independent of the texture midpoint. */
+	[[nodiscard]] inline Point OutlineCenter(const Polygon& outline)
+	{
+		Point minimum{ 1, 1 }, maximum{};
+		for (auto point : outline) {
+			minimum.x = std::min(minimum.x, point.x);
+			minimum.y = std::min(minimum.y, point.y);
+			maximum.x = std::max(maximum.x, point.x);
+			maximum.y = std::max(maximum.y, point.y);
+		}
+		return { (minimum.x + maximum.x) * 0.5, (minimum.y + maximum.y) * 0.5 };
+	}
+
+	/** Preserve each eye's contour and centre while reducing its complete footprint uniformly. */
 	[[nodiscard]] inline std::array<Polygon, 2> ScaleHeadsetOutlines(const Reference& reference, float percent)
 	{
 		std::array<Polygon, 2> targets;
 		const double scale = static_cast<double>(percent) / reference.coveragePercent;
 		for (unsigned eye = 0; eye < 2; ++eye) {
-			Polygon points;
-			for (bool temporal : { true, false }) {
-				auto half = Clip(reference.headsetOutlines[eye], 0, 0.5, temporal == (eye != 0));
-				for (auto point : half) {
-					if (temporal)
-						point.x = 0.5 + (point.x - 0.5) * scale;
-					point.y = 0.5 + (point.y - 0.5) * scale;
-					points.push_back(point);
-				}
+			const auto center = OutlineCenter(reference.headsetOutlines[eye]);
+			for (auto point : reference.headsetOutlines[eye])
+				targets[eye].push_back({ center.x + (point.x - center.x) * scale, center.y + (point.y - center.y) * scale });
+		}
+		return targets;
+	}
+
+	/** Complete a validated reference's nasal bridge while retaining its scaled temporal targets. */
+	[[nodiscard]] inline std::array<Polygon, 2> CompleteHeadsetTargets(const Reference& reference, const std::array<Polygon, 2>& outlines)
+	{
+		const auto inverse = *Inverse(reference.leftToRight);
+		auto targets = outlines;
+		for (unsigned eye = 0; eye < 2; ++eye) {
+			const auto& mapping = eye == 0 ? inverse : reference.leftToRight;
+			auto points = outlines[eye];
+			for (auto point : ClipProjectedEye(outlines[1 - eye], mapping))
+				if (auto projected = Project(mapping, point))
+					points.push_back(*projected);
+			auto bridge = ConvexHull(std::move(points));
+			const auto& bounds = reference.headsetOutlines[eye];
+			double winding = 0;
+			for (size_t i = 0; i < bounds.size(); ++i)
+				winding += bounds[i].x * bounds[(i + 1) % bounds.size()].y - bounds[(i + 1) % bounds.size()].x * bounds[i].y;
+			const double direction = winding > 0 ? 1.0 : -1.0;
+			for (size_t i = 0; i < bounds.size(); ++i) {
+				const auto a = bounds[i], b = bounds[(i + 1) % bounds.size()];
+				const double nx = (a.y - b.y) * direction, ny = (b.x - a.x) * direction;
+				bridge = ClipHalfPlane(std::move(bridge), nx, ny, -nx * a.x - ny * a.y);
 			}
-			targets[eye] = ConvexHull(ClipEye(ConvexHull(std::move(points))));
+			bridge = Clip(std::move(bridge), 0, OutlineCenter(bounds).x, eye == 0);
+			targets[eye].insert(targets[eye].end(), bridge.begin(), bridge.end());
+			targets[eye] = ClipEye(ConvexHull(std::move(targets[eye])));
 		}
 		return targets;
 	}
@@ -422,7 +466,7 @@ namespace FoveatedMaskCalibration
 		if (!IsValid(reference) || !std::isfinite(percent) || percent < kMinimumPercent || percent > kMaximumPercent)
 			return std::nullopt;
 		if (UsesHeadsetOutline(reference)) {
-			auto targets = ScaleHeadsetOutlines(reference, percent);
+			auto targets = CompleteHeadsetTargets(reference, ScaleHeadsetOutlines(reference, percent));
 			if (targets[0].size() < 3 || targets[1].size() < 3)
 				return std::nullopt;
 			return targets;

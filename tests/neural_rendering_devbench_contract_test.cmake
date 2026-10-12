@@ -986,8 +986,13 @@ if(NOT _finish_type STREQUAL "boolean" OR NOT _finish_true OR
 endif()
 string(JSON _scaling_min GET "${_descriptor_json}" inputSchema properties automaticMaskScaling minimum)
 string(JSON _scaling_max GET "${_descriptor_json}" inputSchema properties automaticMaskScaling maximum)
-if(NOT _calibrate_true OR NOT _scaling_min EQUAL 50 OR NOT _scaling_max EQUAL 130)
+if(NOT _calibrate_true OR NOT _scaling_min EQUAL 25 OR NOT _scaling_max EQUAL 100)
     message(FATAL_ERROR "FOV calibration controls must advertise their accepted values")
+endif()
+string(JSON _scaling_output_min GET "${_descriptor_json}" outputSchema properties foveation properties calibration properties automaticMaskScaling minimum)
+string(JSON _scaling_output_max GET "${_descriptor_json}" outputSchema properties foveation properties calibration properties automaticMaskScaling maximum)
+if(NOT _scaling_output_min EQUAL _scaling_min OR NOT _scaling_output_max EQUAL _scaling_max)
+    message(FATAL_ERROR "FOV calibration input and status ranges must agree")
 endif()
 
 string(JSON

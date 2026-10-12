@@ -185,7 +185,12 @@ namespace
 		versionThree["version"] = 3;
 		versionThree.erase("coveragePercent");
 		Require(versionThree.get<Reference>() == reference, "Version-three references retain their original 100-percent baseline");
-		for (float percent : { 50.0f, 80.0f, 130.0f }) {
+		auto versionFour = saved;
+		versionFour["version"] = 4;
+		Require(versionFour.get<Reference>() == reference, "Version-four manual references must retain their captured boundary");
+		versionFour["coveragePercent"] = 130;
+		Require(versionFour.get<Reference>().coveragePercent == 130, "Legacy manual baselines must load without rejecting the profile");
+		for (float percent : { 25.0f, 80.0f, 100.0f }) {
 			auto captured = reference;
 			captured.coveragePercent = percent;
 			const auto reloaded = nlohmann::json::parse(nlohmann::json(captured).dump()).get<Reference>();
@@ -233,7 +238,7 @@ namespace
 			changed["innerLimits"] = limits;
 			corrupt.push_back(changed);
 		}
-		for (const auto percent : { nlohmann::json(0), nlohmann::json(49), nlohmann::json(131), nlohmann::json(true), nlohmann::json("80"), nlohmann::json(nullptr) }) {
+		for (const auto percent : { nlohmann::json(0), nlohmann::json(24), nlohmann::json(131), nlohmann::json(true), nlohmann::json("80"), nlohmann::json(nullptr) }) {
 			changed = saved;
 			changed["coveragePercent"] = percent;
 			corrupt.push_back(changed);
@@ -377,7 +382,7 @@ int main()
 	CheckClipProjection();
 	CheckReferenceCompatibility();
 	Require(!Solve(Reference{}, 100), "An absent reference must not be interpreted as calibration");
-	for (float percent : { 0.0f, 49.0f, 131.0f, std::numeric_limits<float>::quiet_NaN() })
+	for (float percent : { 0.0f, 24.0f, 100.01f, std::numeric_limits<float>::quiet_NaN() })
 		Require(!Solve(reference, percent), "Invalid scaling must fail closed");
 	auto invalid = reference;
 	invalid.leftToRight = {};
@@ -388,8 +393,8 @@ int main()
 
 	const auto baseline = CheckFit(reference, 100);
 	const auto smaller = CheckFit(reference, 85);
-	const auto larger = CheckFit(reference, 115);
-	Require(smaller.areaPercent < baseline.areaPercent && baseline.areaPercent < larger.areaPercent,
+	const auto smallest = CheckFit(reference, 50);
+	Require(smallest.areaPercent < smaller.areaPercent && smaller.areaPercent < baseline.areaPercent,
 		"Scaling must change processed area in the requested direction");
 	Require(CheckFit(reference, 100).geometry == baseline.geometry, "Returning to 100 percent must restore the exact deterministic fit");
 
@@ -432,7 +437,7 @@ int main()
 			 Projection{ .93, .04, .12, -.02, 1.03, .015, .08, .01, 1 } }) {
 		reference.leftToRight = projection;
 		reference.outer = { .scale = .58f, .horizontalScale = 1.3f, .centers = { .43f, .47f, .57f, .53f } };
-		for (float percent : { 70.0f, 100.0f, 130.0f })
+		for (float percent : { 25.0f, 70.0f, 100.0f })
 			CheckFit(reference, percent);
 		reference.peripheryTaa = true;
 		reference.centerScale = .3f;
@@ -446,7 +451,7 @@ int main()
 	Require(!Project(canted, { 0, 0 }), "Canted fixture must include a monocular corner behind the peer view");
 	Require(MatchesProjection(canted, canted), "Unchanged canted projections must remain usable");
 	reference = { .version = FoveatedMaskCalibration::kReferenceVersion, .outer = { .scale = .6f }, .leftToRight = canted };
-	for (float percent : { 70.0f, 100.0f, 130.0f })
+	for (float percent : { 25.0f, 70.0f, 100.0f })
 		CheckFit(reference, percent);
 	reference.fullImage = true;
 	Require(CheckFit(reference, 100).fullImage, "A canted full-view reference must preserve both full eye images");

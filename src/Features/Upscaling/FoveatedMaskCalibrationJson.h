@@ -29,10 +29,10 @@ namespace FoveatedMaskCalibration
 	{
 		Reference parsed;
 		const auto& version = json.at("version");
-		if (!version.is_number_integer() || (version != 0 && version != 1 && version != 2 && version != 3 && version != kReferenceVersion))
+		if (!version.is_number_integer() || (version != 0 && version != 1 && version != 2 && version != 3 && version != 4 && version != kReferenceVersion))
 			throw std::invalid_argument("Unsupported FOV calibration version");
 		// Legacy references use scene-camera projection and do not prove nasal coverage.
-		parsed.version = version == 2 || version == 3 || version == kReferenceVersion ? kReferenceVersion : 0;
+		parsed.version = version == 2 || version == 3 || version == 4 || version == kReferenceVersion ? kReferenceVersion : 0;
 		if (parsed.version != 0) {
 			const auto& centers = json.at("outer").at("centers");
 			const auto& projection = json.at("leftToRight");
@@ -52,11 +52,11 @@ namespace FoveatedMaskCalibration
 				requireNumber(number);
 			for (const auto& number : innerLimits)
 				requireNumber(number);
-			if (version == kReferenceVersion) {
+			if (version == 4 || version == kReferenceVersion) {
 				requireNumber(json.at("coveragePercent"));
 				json.at("coveragePercent").get_to(parsed.coveragePercent);
 			}
-			if (version == 3 || version == kReferenceVersion) {
+			if (version == 3 || version == 4 || version == kReferenceVersion) {
 				const auto& outlines = json.at("headsetOutlines");
 				if (!outlines.is_array() || outlines.size() != 2)
 					throw std::invalid_argument("Invalid headset outline dimensions");
@@ -82,6 +82,9 @@ namespace FoveatedMaskCalibration
 			json.at("feather").get_to(parsed.feather);
 			if (!IsValid(parsed))
 				throw std::invalid_argument("Invalid FOV calibration reference");
+			// Old headset fits distorted the contour; retain slider geometry but require a fresh reference.
+			if (version != kReferenceVersion && UsesHeadsetOutline(parsed))
+				parsed = {};
 		}
 		value = parsed;
 	}

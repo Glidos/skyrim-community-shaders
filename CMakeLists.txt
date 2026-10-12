@@ -2513,6 +2513,43 @@ if(BUILD_CONTROLLER_TESTS)
         PRIVATE nlohmann_json::nlohmann_json
     )
 
+    set(_upscaling_settings_serialization_dir
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/upscaling-settings-serialization"
+    )
+    set(_upscaling_settings_serialization_headers)
+    foreach(_name IN ITEMS members enums sharpener serialization_under_test)
+        list(
+            APPEND _upscaling_settings_serialization_headers
+            "${_upscaling_settings_serialization_dir}/upscaling_settings_${_name}.h"
+        )
+    endforeach()
+    add_custom_command(
+        OUTPUT ${_upscaling_settings_serialization_headers}
+        COMMAND
+            "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
+            "-DOUTPUT_DIRECTORY=${_upscaling_settings_serialization_dir}" -P
+            "${PROJECT_SOURCE_DIR}/tests/extract_upscaling_settings_serialization.cmake"
+        DEPENDS
+            src/Features/Upscaling.cpp
+            src/Features/Upscaling.h
+            tests/extract_upscaling_settings_serialization.cmake
+            tests/extract_source_region.cmake
+        VERBATIM
+    )
+    add_controller_test(upscaling_settings_serialization_test UpscalingSettingsSerialization tests/upscaling_settings_serialization_test.cpp)
+    target_sources(
+        upscaling_settings_serialization_test
+        PRIVATE ${_upscaling_settings_serialization_headers}
+    )
+    target_include_directories(
+        upscaling_settings_serialization_test
+        PRIVATE "${_upscaling_settings_serialization_dir}"
+    )
+    target_link_libraries(
+        upscaling_settings_serialization_test
+        PRIVATE nlohmann_json::nlohmann_json
+    )
+
     set(_foveated_mask_visualization_test_dir
         "${CMAKE_CURRENT_BINARY_DIR}/generated/foveated-mask-visualization-test"
     )
@@ -3092,6 +3129,8 @@ if(BUILD_CONTROLLER_TESTS)
     )
     set(_vr_presentation_recovery_test_headers
         "${_vr_presentation_recovery_test_dir}/vr_presentation_native_recovery_under_test.h"
+        "${_vr_presentation_recovery_test_dir}/vr_presentation_mutexes_under_test.h"
+        "${_vr_presentation_recovery_test_dir}/vr_presentation_hold_reset_under_test.h"
         "${_vr_presentation_recovery_test_dir}/vr_presentation_owner_under_test.h"
         "${_vr_presentation_recovery_test_dir}/vr_presentation_recovery_under_test.h"
     )
@@ -3104,6 +3143,7 @@ if(BUILD_CONTROLLER_TESTS)
         DEPENDS
             src/Features/Upscaling.cpp
             tests/extract_vr_presentation_recovery.cmake
+            src/Features/Upscaling.h
             tests/extract_source_region.cmake
         VERBATIM
     )

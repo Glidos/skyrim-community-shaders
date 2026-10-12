@@ -335,7 +335,7 @@ namespace
 				}
 			}
 			float previousArea = 0;
-			for (float percent : { 50.0f, 70.0f, 100.0f, 130.0f }) {
+			for (float percent : { 25.0f, 50.0f, 70.0f, 100.0f }) {
 				const auto scaled = Solve(reference, percent);
 				Require(scaled.has_value(), "Automatic outer scaling must remain feasible");
 				CheckContours(reference, *scaled, percent);
@@ -350,6 +350,75 @@ namespace
 					  << fit->geometry.centers[1] << ',' << fit->geometry.centers[2] << ',' << fit->geometry.centers[3] << '\n';
 		}
 	}
+	void CheckUniformHeadsetScaling()
+	{
+		Reference reference{ .version = kReferenceVersion, .leftToRight = { 1, 0, -.2, 0, 1, 0, 0, 0, 1 }, .centerScale = 1.0f };
+		reference.headsetOutlines[0] = { { .1, .2 }, { .6, .2 }, { .7, .5 }, { .6, .9 }, { .2, .9 }, { .1, .7 } };
+		for (auto point : reference.headsetOutlines[0])
+			reference.headsetOutlines[1].push_back({ 1 - point.x, point.y });
+		for (float percent : { 25.0f, 50.0f, 75.0f, 100.0f }) {
+			const auto scaled = ScaleHeadsetOutlines(reference, percent);
+			for (unsigned eye = 0; eye < 2; ++eye) {
+				const auto center = OutlineCenter(reference.headsetOutlines[eye]);
+				Require(std::abs(center.x - (eye == 0 ? .4 : .6)) < 1e-12 && std::abs(center.y - .55) < 1e-12,
+					"Asymmetric contours must use their own centre rather than the texture midpoint");
+				for (size_t i = 0; i < scaled[eye].size(); ++i) {
+					const auto a = reference.headsetOutlines[eye][i], b = scaled[eye][i];
+					Require(std::abs((b.x - center.x) - (a.x - center.x) * percent / 100) < 1e-12 &&
+								std::abs((b.y - center.y) - (a.y - center.y) * percent / 100) < 1e-12,
+						"Every edge must move by the same ratio without changing the contour's proportions");
+				}
+			}
+			const auto fit = Solve(reference, percent);
+			Require(fit && !fit->fullImage, "The compact headset contour must produce a partial fit");
+			Require(std::abs(fit->geometry.centers[0] + fit->geometry.centers[2] - 1) < 2e-5 &&
+						std::abs(fit->geometry.centers[1] - fit->geometry.centers[3]) < 2e-5,
+				"Mirrored headset contours must produce mirrored eye masks");
+			for (unsigned step = 0; step <= 100; ++step) {
+				// In common directions the bridge joins both shrunken views, including disjoint fits.
+				const Point left{ .5 + .2 * step / 100, .55 }, right{ left.x - .2, left.y };
+				Require(Distance(fit->geometry, 0, left) <= 1.00001 && Distance(fit->geometry, 1, right) <= 1.00001,
+					"The reconstructed centre must cover the shared bridge in both eyes at full strength");
+			}
+		}
+		Require(!BuildTargets(reference, 24.99f) && !BuildTargets(reference, 100.01f), "Outer Coverage must be bounded to 25 through 100 percent");
+		auto invalid = reference;
+		invalid.coveragePercent = 85;
+		Require(!IsValid(invalid), "A headset outline must always represent the maximum view at 100 percent");
+		invalid = reference;
+		std::swap(invalid.headsetOutlines[0][1], invalid.headsetOutlines[0][3]);
+		Require(!IsValid(invalid), "Nonconvex or crossing saved outlines must not become calibration constraints");
+		const auto before = Solve(reference, 50);
+		for (auto& outline : reference.headsetOutlines)
+			std::reverse(outline.begin(), outline.end());
+		const auto reversed = Solve(reference, 50);
+		Require(reversed && reversed->geometry == before->geometry, "Clockwise and counterclockwise driver contours must fit identically");
+		for (double angle : { -.2, .15 }) {
+			const double c = std::cos(angle), s = std::sin(angle);
+			reference.leftToRight = *FoveatedHeadsetGeometry::BuildProjection(optics, { Projection{ c, 0, s, 0, 1, 0, -s, 0, c }, identity });
+			for (auto& point : reference.headsetOutlines[1])
+				point.y = .05 + .9 * point.y;
+			for (float feather : { 0.0f, .05f }) {
+				reference.feather = feather;
+				for (float percent : { 25.0f, 50.0f, 100.0f }) {
+					const auto fit = Solve(reference, percent);
+					Require(fit.has_value(), "Unequal canted eyes must retain a conservative fit with or without outer feather");
+					const auto checked = CheckCoverage(reference, percent, fit->geometry, fit->geometry.scale, fit->fullImage, false);
+					Require(checked.available && !checked.hasGap, "Canted shared-direction completion must be covered at full strength");
+					const auto scaled = ScaleHeadsetOutlines(reference, percent);
+					for (unsigned eye = 0; eye < 2; ++eye)
+						for (size_t edge = 0; edge < scaled[eye].size(); ++edge)
+							for (unsigned step = 0; step <= 32; ++step) {
+								const auto a = scaled[eye][edge], b = scaled[eye][(edge + 1) % scaled[eye].size()];
+								const Point point{ a.x + (b.x - a.x) * step / 32, a.y + (b.y - a.y) * step / 32 };
+								Require(fit->fullImage || Distance(fit->geometry, eye, point) <= 1.00001,
+									"Each canted eye must preserve its own uniformly scaled outer contour");
+							}
+				}
+			}
+		}
+	}
+
 	void CheckAutomaticHeadsetFit()
 	{
 		struct Vertex
@@ -371,7 +440,10 @@ namespace
 		auto legacy = nlohmann::json(reference);
 		legacy["version"] = 3;
 		legacy.erase("coveragePercent");
-		Require(legacy.get<Reference>() == reference, "Existing headset outlines must migrate without changing their 100-percent reference");
+		Require(legacy.get<Reference>() == Reference{}, "Legacy distorted headset references must expire without changing manual slider geometry");
+		legacy["version"] = 4;
+		legacy["coveragePercent"] = 100;
+		Require(legacy.get<Reference>() == Reference{}, "Version-four headset fits must require fresh automatic setup");
 		const auto baseline = Solve(reference, 100);
 		Require(baseline && baseline->fullImage, "Full-height headset optics require conservative full-eye startup with current controls");
 		Require(nlohmann::json::parse(nlohmann::json(reference).dump()).get<Reference>() == reference,
@@ -379,7 +451,7 @@ namespace
 		for (float feather : { 0.0f, .05f, .1f }) {
 			reference.feather = feather;
 			float previousArea = 0;
-			for (float percent : { 50.0f, 65.0f, 80.0f, 100.0f, 130.0f }) {
+			for (float percent : { 25.0f, 50.0f, 65.0f, 80.0f, 100.0f }) {
 				const auto fit = Solve(reference, percent);
 				Require(fit.has_value(), "Headset outer scaling must always have a conservative result");
 				Require(fit->areaPercent >= previousArea - .02f, "Increasing headset outer coverage cannot reduce area");
@@ -395,9 +467,9 @@ namespace
 						for (unsigned sample = 0; sample <= 128; ++sample) {
 							const double t = sample / 128.0;
 							Point point{ a.x + t * (b.x - a.x), a.y + t * (b.y - a.y) };
-							if ((point.x < .5) == (eye == 0))
-								point.x = .5 + (point.x - .5) * percent / 100;
-							point.y = .5 + (point.y - .5) * percent / 100;
+							const auto center = OutlineCenter(reference.headsetOutlines[eye]);
+							point.x = center.x + (point.x - center.x) * percent / 100;
+							point.y = center.y + (point.y - center.y) * percent / 100;
 							if (point.x >= 0 && point.x <= 1 && point.y >= 0 && point.y <= 1)
 								Require(fit->fullImage || Distance(fit->geometry, eye, point) <= 1.00001,
 									"Every transformed mesh edge, including nasal edges and seam crossings, must retain full core coverage");
@@ -449,5 +521,6 @@ int main()
 	CheckRuntimeCapture();
 	CheckManualRegression();
 	CheckAutomaticHeadsetFit();
+	CheckUniformHeadsetScaling();
 	std::cout << "PASS: headset optics, preview projection, nasal limits, independent eyes, manual regression, outer scaling and hard edges\n";
 }
