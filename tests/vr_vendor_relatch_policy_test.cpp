@@ -7,6 +7,18 @@ namespace
 {
 	using namespace VRVendorRelatchPolicy;
 
+	static_assert(!ShouldDeferPresentationSuccessor(0, 0, false));
+	static_assert(ShouldDeferPresentationSuccessor(7, 0, false));
+	static_assert(!ShouldDeferPresentationSuccessor(7, 7, false));
+	static_assert(!ShouldDeferPresentationSuccessor(7, 0, true));
+	static_assert(ShouldDeferPresentationSuccessor(7, 7, false, PresentationRecoveryStage::NativeFallback));
+	static_assert(ShouldDeferPresentationSuccessor(7, 7, false, PresentationRecoveryStage::Quarantined));
+	static_assert(!IsPostMutationAttemptConsumed(PresentationRecoveryStage::NativeFallback, 8, 8, true, false));
+	static_assert(IsPostMutationAttemptConsumed(PresentationRecoveryStage::NativeFallback, 8, 8, false, true));
+	static_assert(IsPostMutationAttemptConsumed(PresentationRecoveryStage::NativeFallback, 7, 8, false, false));
+	static_assert(IsPostMutationAttemptConsumed(PresentationRecoveryStage::NativeFallback, 0, 0, false, false));
+	static_assert(IsPostMutationAttemptConsumed(PresentationRecoveryStage::Quarantined, 8, 8, false, false));
+
 	constexpr bool CoversPhysicalRelatchFrameAdmission()
 	{
 		if (CanAttemptPhysicalRelatchThisFrame(0, 0, 1) ||
