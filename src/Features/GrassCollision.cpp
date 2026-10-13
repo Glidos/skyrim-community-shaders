@@ -6,6 +6,7 @@
 #include "State.h"
 #include "Utils/ActorUtils.h"
 #include "Utils/D3D.h"
+#include "Utils/Finite.h"
 
 #include <cmath>
 
@@ -33,22 +34,51 @@ struct GrassCollisionActorCandidate
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	GrassCollision::Settings,
 	EnableGrassCollision,
-	TrackRagdolls)
+	TrackRagdolls,
+	CollisionStrength)
 
 void GrassCollision::DrawSettings()
 {
-	Feature::DrawSettings();
+	MenuUI::SettingsPage page(GetShortName().c_str(), { { "bending", "Bending", "Adjust how strongly nearby actors bend grass.", "Grass collision strength", true, true, "Adjust grass bending" } });
+	if (page.Is("bending")) {
+		auto guard = Util::DisableGuard(!settings.EnableGrassCollision);
+		DrawStrengthControl();
+	}
 }
 
 void GrassCollision::DrawPerformanceSettings(bool)
 {
 	Util::Widgets::Checkbox("Enabled", &settings.EnableGrassCollision);
+	auto guard = Util::DisableGuard(!settings.EnableGrassCollision);
+	DrawStrengthControl();
+}
+
+void GrassCollision::DrawStrengthControl()
+{
+	float strength = GetCollisionStrength();
+	if (Util::Widgets::SliderFloat("Bending strength", &strength, kMinCollisionStrength, kMaxCollisionStrength, "%.1fx", ImGuiSliderFlags_AlwaysClamp))
+		SetCollisionStrength(strength);
+	Util::AddTooltip("Scale grass bending around the player and other actors. 1x keeps the original strength, 0 removes bending, and higher values make it more visible. Try 2x or 3x near your feet. This changes strength, not the collision area.");
+}
+
+float GrassCollision::GetCollisionStrength() const
+{
+	return Util::ClampFinite(settings.CollisionStrength, kMinCollisionStrength, kMaxCollisionStrength, kDefaultCollisionStrength);
+}
+
+bool GrassCollision::SetCollisionStrength(float a_strength)
+{
+	if (!std::isfinite(a_strength) || a_strength < kMinCollisionStrength || a_strength > kMaxCollisionStrength)
+		return false;
+	settings.CollisionStrength = a_strength;
+	return true;
 }
 
 json GrassCollision::CapturePerformanceSettingsState() const
 {
 	return {
-		{ "EnableGrassCollision", settings.EnableGrassCollision }
+		{ "EnableGrassCollision", settings.EnableGrassCollision },
+		{ "CollisionStrength", GetCollisionStrength() }
 	};
 }
 
@@ -272,6 +302,9 @@ void GrassCollision::Update()
 		perFrameData.TimeDelta = *globals::game::deltaTime * !globals::game::ui->GameIsPaused();
 
 		perFrameData.CameraHeightDelta = prevEyePosNI.z - eyePosNI.z;
+		perFrameData.CollisionStrength = GetCollisionStrength();
+		perFrameData.PreviousCollisionStrength = previousCollisionStrength;
+		previousCollisionStrength = perFrameData.CollisionStrength;
 
 		if (!settings.EnableGrassCollision) {
 			queuedBoundingBoxes.clear();
@@ -311,7 +344,8 @@ void GrassCollision::Update()
 			std::scoped_lock lock(diagnosticsMutex);
 			updateDiagnostics = UpdateDiagnostics{ frame, perFrameData.BoundingBoxCount, collisionCount,
 				collisionUpdateCS.get() != nullptr, settings.EnableGrassCollision && collisionUpdateCS.get() != nullptr,
-				perFrameData.TimeDelta, perFrameData.PosOffset, perFrameData.ArrayOrigin, perFrameData.ValidMargin, perFrameData.CameraHeightDelta };
+				perFrameData.TimeDelta, perFrameData.PosOffset, perFrameData.ArrayOrigin, perFrameData.ValidMargin, perFrameData.CameraHeightDelta,
+				perFrameData.CollisionStrength, perFrameData.PreviousCollisionStrength };
 		}
 		ObserveCollisionTexture(frame, perFrameData);
 		PollVertexProbe(frame);
@@ -380,7 +414,8 @@ json GrassCollision::GetDiagnostics() const
 			{ "posOffset", { item.posOffset.x, item.posOffset.y } },
 			{ "arrayOrigin", { item.arrayOrigin.x, item.arrayOrigin.y } },
 			{ "validMargin", { item.validMargin.x, item.validMargin.y } },
-			{ "cameraHeightDelta", item.cameraHeightDelta }
+			{ "cameraHeightDelta", item.cameraHeightDelta },
+			{ "collisionStrength", item.collisionStrength }, { "previousCollisionStrength", item.previousCollisionStrength }
 		};
 	}
 	const auto& draw = drawDiagnostics;
@@ -618,11 +653,14 @@ void GrassCollision::PollCollisionTexture(uint32_t a_frame)
 void GrassCollision::LoadSettings(json& o_json)
 {
 	settings = o_json;
+	settings.CollisionStrength = GetCollisionStrength();
 }
 
 void GrassCollision::SaveSettings(json& o_json)
 {
-	o_json = settings;
+	auto saved = settings;
+	saved.CollisionStrength = GetCollisionStrength();
+	o_json = saved;
 }
 
 void GrassCollision::RestoreDefaultSettings()

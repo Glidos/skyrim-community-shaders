@@ -17,6 +17,10 @@ private:
 	static constexpr std::string_view MOD_ID = "87816";
 
 public:
+	static constexpr float kMinCollisionStrength = 0.0f;
+	static constexpr float kMaxCollisionStrength = 5.0f;
+	static constexpr float kDefaultCollisionStrength = 1.0f;
+
 	virtual inline std::string GetName() override { return "Grass Collision"; }
 	virtual inline std::string GetShortName() override { return "GrassCollision"; }
 	virtual inline std::string GetFeatureModLink() override { return MakeNexusModURL(MOD_ID); }
@@ -29,6 +33,7 @@ public:
 		return {
 			"Makes grass bend around nearby actors.",
 			{ "Real-time grass deformation from actor movement",
+				"Adjustable bending strength for the player and other actors",
 				"Collision detection for up to 256 simultaneous interactions",
 				"Dynamic tracking of actor positions for grass response",
 				"Performance-optimized collision calculation",
@@ -45,6 +50,7 @@ public:
 		bool EnableGrassCollision = 1;
 		bool TrackRagdolls = 1;
 		bool EnableBlur = 1;
+		float CollisionStrength = kDefaultCollisionStrength;
 	};
 
 	struct alignas(16) BoundingBoxPacked
@@ -67,9 +73,12 @@ public:
 		uint BoundingBoxCount;
 
 		float CameraHeightDelta;
-		float3 pad0;
+		float CollisionStrength;
+		float PreviousCollisionStrength;
+		float pad0;
 	};
 	STATIC_ASSERT_ALIGNAS_16(PerFrame);
+	static_assert(sizeof(PerFrame) == 48 && offsetof(PerFrame, CollisionStrength) == 36 && offsetof(PerFrame, PreviousCollisionStrength) == 40);
 
 	Settings settings;
 
@@ -99,6 +108,10 @@ public:
 	virtual void SetPerformanceCostMeasurementEnabled(bool a_enabled) override { settings.EnableGrassCollision = a_enabled; }
 	void QueueCollisions();
 	void Update();
+	/** @brief Read the bounded multiplier applied to actor-driven grass displacement. */
+	float GetCollisionStrength() const;
+	/** @brief Stage a finite multiplier in [0,5]; reject invalid input without changing settings. */
+	bool SetCollisionStrength(float a_strength);
 
 #ifdef DEVBENCH_BRIDGE_ENABLED
 	/** @brief Request three frames of collision observations and one asynchronous texture readback. */
@@ -143,8 +156,11 @@ public:
 		}
 	};
 
-#ifdef DEVBENCH_BRIDGE_ENABLED
 private:
+	void DrawStrengthControl();
+	float previousCollisionStrength = kDefaultCollisionStrength;
+
+#ifdef DEVBENCH_BRIDGE_ENABLED
 	static constexpr uint32_t kDiagnosticsWindowFrames = 3;
 	struct QueueDiagnostics
 	{
@@ -164,6 +180,8 @@ private:
 		DirectX::XMUINT2 arrayOrigin{};
 		DirectX::XMINT2 validMargin{};
 		float cameraHeightDelta = 0;
+		float collisionStrength = kDefaultCollisionStrength;
+		float previousCollisionStrength = kDefaultCollisionStrength;
 	};
 	struct DrawDiagnostics
 	{

@@ -2,6 +2,7 @@
 #include "Utils/DepthPyramidPolicy.h"
 #include "Utils/ShaderInclude.h"
 #include "d3d11_shader_test.h"
+#include <DirectXPackedVector.h>
 #include <bit>
 #include <cmath>
 
@@ -107,6 +108,7 @@ namespace
 	}
 
 #include "grass_bounds_gpu.h"
+#include "grass_collision_strength_gpu.h"
 #include "grass_culling_gpu.h"
 #include "grass_spd_gpu.h"
 
@@ -115,7 +117,14 @@ namespace
 int main()
 {
 	try {
-		ValidateGrassVariants();
+		const auto run = [](const char* name, const auto& action) {
+			try {
+				action();
+			} catch (const std::exception& error) {
+				throw std::runtime_error(std::string(name) + ": " + error.what());
+			}
+		};
+		run("Grass vertex variants", [] { ValidateGrassVariants(); });
 		for (bool vr : { false, true })
 			for (bool enhanced : { false, true })
 				for (bool depth : { false, true }) {
@@ -128,13 +137,14 @@ int main()
 						defines.push_back({ "RENDER_DEPTH", "1" });
 					Compile(L"package/Shaders/RunGrass.hlsl", "ps_5_0", defines);
 				}
-		RunCullingShader(false);
-		RunCullingShader(true);
+		run("Flat grass culling", [] { RunCullingShader(false); });
+		run("VR grass culling", [] { RunCullingShader(true); });
 		RunDepthReduction(false);
 		RunDepthReduction(true);
 		RunDepthReduction(false, 4);
 		RunDepthReduction(true, 4);
 		RunGrassBounds();
+		run("Grass collision strength", [] { RunGrassCollisionStrength(); });
 		RunSPDReduction(64, 64, 1);
 		RunSPDReduction(128, 128, 2);
 		RunSPDReduction(512, 512, 2, 7);
@@ -160,7 +170,7 @@ int main()
 			Check(reflection->GetResourceBindingDescByName("Counters", &binding));
 			Require(binding.BindPoint == 3, "Diagnostic counter UAV changed slot");
 		}
-		std::cout << "16 grass vertex and 8 pixel variants, production diagnostic isolation, flat/VR visibility, sparse offsets, shared frusta, native wind, collision bounds, and conservative SPD mip chains passed\n";
+		std::cout << "16 grass vertex and 8 pixel variants, production diagnostic isolation, flat/VR visibility, sparse offsets, shared frusta, native wind, collision strength/history, collision bounds, and conservative SPD mip chains passed\n";
 		return 0;
 	} catch (const std::exception& error) {
 		std::cerr << error.what() << '\n';

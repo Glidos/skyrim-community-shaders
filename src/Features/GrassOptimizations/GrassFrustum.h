@@ -99,10 +99,10 @@ namespace GrassFrustum
 
 	/** @brief Expand for collision only when some root can reach its activation distance. */
 	inline float DeformationPadding(const Matrix& world, const std::array<float, 3>& lo,
-		const std::array<float, 3>& hi, float reach, float wind, float collisionDistance)
+		const std::array<float, 3>& hi, float reach, float wind, float collisionDistance, float collisionStrength = 1.0f)
 	{
 		const bool collision = collisionDistance > 0 && WithinDistance(world, lo, hi, collisionDistance + reach);
-		return reach * (collision ? 3.0f : 1.0f) + wind;
+		return reach * (collision ? 1.0f + 2.0f * std::max(1.0f, collisionStrength) : 1.0f) + wind;
 	}
 
 }

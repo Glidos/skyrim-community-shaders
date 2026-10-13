@@ -115,10 +115,11 @@ namespace
 		float edgeFadeStart, simpleShadingPixelSize, qualityRadius, meshWeight;
 		uint32_t overrideDistance;
 		float collisionDistance;
-		uint32_t sliceOffset = 0, padding2 = 0;
+		uint32_t sliceOffset = 0;
+		float collisionStrength = GrassCollision::kDefaultCollisionStrength;
 		std::array<uint32_t, 4> indexCounts{};
 	};
-	static_assert(sizeof(Parameters) == 192 && offsetof(Parameters, indexCounts) == 176);
+	static_assert(sizeof(Parameters) == 192 && offsetof(Parameters, collisionStrength) == 172 && offsetof(Parameters, indexCounts) == 176);
 	struct DrawConstants
 	{
 		uint32_t enabled, eye, base;
@@ -592,6 +593,7 @@ struct GrassBucketRenderer::Impl
 	uint32_t currentPass = 0;
 	RE::NiPoint3 currentOrigin;
 	GrassPolicy::Settings frameSettings;
+	float frameCollisionStrength = GrassCollision::kDefaultCollisionStrength;
 #ifdef DEVBENCH_BRIDGE_ENABLED
 	std::atomic_bool diagnostics{ false };
 	GrassTelemetry::Channel telemetry;
@@ -1201,6 +1203,8 @@ void GrassBucketRenderer::Impl::PrepareFrame()
 	telemetryViewportCount = 0;
 #endif
 	frameSettings = globals::features::grassOptimizations.GetSettings();
+	const auto& collision = globals::features::grassCollision;
+	frameCollisionStrength = collision.settings.EnableGrassCollision ? collision.GetCollisionStrength() : GrassCollision::kDefaultCollisionStrength;
 	frameSettings.Enabled &= globals::features::grassOptimizations.loaded;
 	current = nullptr;
 	frame = now;
@@ -1676,7 +1680,8 @@ void GrassBucketRenderer::Impl::CullSlices(const Bucket& bucket, float radius, u
 			rootsHi[axis] = run.hi[axis] + origin[axis];
 		}
 		const float padding = GrassFrustum::DeformationPadding(world[0], rootsLo, rootsHi, reach, wind,
-			globals::features::grassCollision.loaded ? frameSettings.CollisionDistance : 0);
+			globals::features::grassCollision.loaded ? frameSettings.CollisionDistance : 0,
+			frameCollisionStrength);
 		const bool known = run.known && std::isfinite(padding) && padding >= 0;
 		bucketKnown &= known;
 		for (size_t axis = 0; axis < 3; ++axis) {
@@ -1949,6 +1954,7 @@ bool GrassBucketRenderer::Impl::PrepareBucket(Bucket& bucket)
 		frameSettings.EdgeFadeStart, frameSettings.SimpleShadingPixelSize, representative.bound.radius,
 		std::sqrt(std::max(1.0f, representative.triangles / 8.0f)), frameSettings.RenderDistanceOverride > 0 ? 1u : 0u, frameSettings.CollisionDistance };
 	params.indexCounts = { meshes[0].indexCount, meshes[1].indexCount, meshes[2].indexCount, 0 };
+	params.collisionStrength = frameCollisionStrength;
 	if (cullingSlices.size() > GrassPolicy::kMaxFrameSlices - frameSlices.size())
 		return GRASS_DRAW_REJECT(Capacity);
 	params.sliceOffset = uint32_t(frameSlices.size());

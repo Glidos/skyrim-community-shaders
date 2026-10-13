@@ -21,7 +21,8 @@ cbuffer Parameters : register(b0)
 	float EdgeFadeStart, SimpleShadingPixelSize, QualityRadius, MeshWeight;
 	uint OverrideDistance;
 	float CollisionDistance;
-	uint SliceOffset, Padding2;
+	uint SliceOffset;
+	float CollisionStrength;
 	uint4 IndexCounts;
 };
 
@@ -209,7 +210,7 @@ bool Hidden(float2 lo, float2 hi, float nearest, uint eye, out uint reason, out 
 	float reach = (length(ModelBound.xyz) + ModelBound.w) * max(abs(scale.x), max(abs(scale.y), abs(scale.z))) * norm;
 	float deformation = .4 * abs(WindVector.z) * length(WindVector.xy);
 	if (CollisionEnabled && CollisionDistance > 0 && (!isfinite(rootDistance) || rootDistance <= CollisionDistance + reach))
-		deformation += 2 * reach;
+		deformation += 2 * reach * max(1, CollisionStrength);
 	radius += deformation;
 	valid = valid && isfinite(radius);
 	float pixels = 1e20;

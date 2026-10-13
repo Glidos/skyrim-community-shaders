@@ -160,6 +160,10 @@ int main()
 		rotated[15] = 0;
 		require(GrassFrustum::WithinDistance(rotated, { 1000, 0, 0 }, { 1010, 10, 10 }, 100));
 		require(GrassFrustum::DeformationPadding(identity, { 0, 0, 0 }, { 10, 10, 10 }, 20, 5, 100) == 65);
+		require(GrassFrustum::DeformationPadding(identity, { 0, 0, 0 }, { 10, 10, 10 }, 20, 5, 100, 0) == 65);
+		require(GrassFrustum::DeformationPadding(identity, { 0, 0, 0 }, { 10, 10, 10 }, 20, 5, 100, 3) == 145);
+		require(GrassFrustum::DeformationPadding(identity, { 0, 0, 0 }, { 10, 10, 10 }, 20, 5, 100, 5) == 225);
+		require(GrassFrustum::DeformationPadding(identity, { 1000, 0, 0 }, { 1010, 10, 10 }, 20, 5, 100, 5) == 25);
 		require(GrassFrustum::DeformationPadding(identity, { 1000, 0, 0 }, { 1010, 10, 10 }, 20, 5, 100) == 25);
 		require(GrassFrustum::DeformationPadding(identity, { 0, 0, 0 }, { 10, 10, 10 }, 20, 5, 0) == 25);
 		require(GrassFrustum::DeformationPadding(identity, { NAN, 0, 0 }, { 1, 1, 1 }, 20, 5, 100) == 65);

@@ -351,6 +351,7 @@ foreach(
         set_wand_settings
         set_depth_culling_settings
         set_depth_culling_legacy_mode
+        set_grass_collision_strength
         set_grass_optimizations_enabled
         set_grass_optimizations_settings
         set_grass_hiz_enabled
@@ -678,3 +679,15 @@ foreach(field IN ITEMS scale distanceMetres)
         message(FATAL_ERROR "Menu placement schema must match safe UI bounds")
     endif()
 endforeach()
+
+string(JSON _grass_collision_strength_type GET "${_descriptor}" inputSchema properties collisionStrength type)
+string(JSON _grass_collision_strength_min GET "${_descriptor}" inputSchema properties collisionStrength minimum)
+string(JSON _grass_collision_strength_max GET "${_descriptor}" inputSchema properties collisionStrength maximum)
+if(NOT _grass_collision_strength_type STREQUAL "number" OR
+   NOT _grass_collision_strength_min EQUAL 0 OR NOT _grass_collision_strength_max EQUAL 5)
+    message(FATAL_ERROR "Grass collision strength schema must accept [0,5]")
+endif()
+string(JSON _grass_collision_status_type GET "${_descriptor}" outputSchema properties status properties grassCollision properties collisionStrength type)
+if(NOT _grass_collision_status_type STREQUAL "number")
+    message(FATAL_ERROR "Grass collision strength is missing from menu status")
+endif()

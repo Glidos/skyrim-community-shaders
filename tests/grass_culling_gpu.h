@@ -16,10 +16,12 @@ void RunCullingShader(bool vr)
 	Check(device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, shader.GetAddressOf()));
 	Util::SetResourceName(shader.Get(), "GrassTest::CullCS");
 	D3D11_SHADER_BUFFER_DESC parameterLayout{};
-	D3D11_SHADER_VARIABLE_DESC indexCountLayout{};
+	D3D11_SHADER_VARIABLE_DESC indexCountLayout{}, strengthLayout{};
 	const auto parameterReflection = reflection->GetConstantBufferByName("Parameters");
 	Check(parameterReflection->GetDesc(&parameterLayout));
 	Check(parameterReflection->GetVariableByName("IndexCounts")->GetDesc(&indexCountLayout));
+	Check(parameterReflection->GetVariableByName("CollisionStrength")->GetDesc(&strengthLayout));
+	Require(strengthLayout.StartOffset == 172 && strengthLayout.Size == sizeof(float), "Collision strength changed the CPU culling layout");
 	Require(parameterLayout.Size == 192 && indexCountLayout.StartOffset == 176 && indexCountLayout.Size == 16, "Indirect index counts changed the CPU parameter layout");
 	const UINT eyes = vr ? 2 : 1, capacity = 128;
 	using Record = std::array<uint32_t, 8>;
@@ -229,12 +231,29 @@ void RunCullingShader(bool vr)
 	for (UINT eye = 0; eye < eyes; ++eye) Require(values[(2 * eyes + eye) * 8 + 4] == 2 && values[eye * 8 + 4] == 0, "Far LOD selection lost or duplicated instances");
 	params.SetVariable("ModelBound", std::array<float, 4>{ 0, 0, 0, 1.1f });
 	params.SetVariable("CollisionEnabled", 1u);
+	params.SetVariable("CollisionStrength", 1.0f);
 	for (float distance : { 0.0f, 1.0f, 2048.0f }) {
 		params.SetVariable("CollisionDistance", distance);
 		values = dispatch(true, false, false, false);
 		for (UINT eye = 0; eye < eyes; ++eye)
 			Require(values[eye * 8 + 4] == (distance == 2048 ? 3u : 2u), "Collision distance did not tighten only unreachable collision bounds");
 	}
+	params.SetVariable("CollisionDistance", 2048.0f);
+	params.SetVariable("ModelBound", std::array<float, 4>{ 0, 0, 0, .5f });
+	for (float strength : { 0.0f, 1.0f, 3.0f, 5.0f }) {
+		params.SetVariable("CollisionStrength", strength);
+		for (UINT enabled : { 0u, 1u }) {
+			params.SetVariable("CollisionEnabled", enabled);
+			for (float distance : { 0.0f, 1.0f, 2048.0f }) {
+				params.SetVariable("CollisionDistance", distance);
+				values = dispatch(true, false, false, false);
+				for (UINT eye = 0; eye < eyes; ++eye)
+					Require(values[eye * 8 + 4] == (enabled && distance == 2048 && strength > 1 ? 3u : 2u),
+						"Collision strength expanded bounds outside its enabled, reachable area");
+			}
+		}
+	}
+	params.SetVariable("CollisionStrength", 1.0f);
 	params.SetVariable("CollisionEnabled", 0u);
 	params.SetVariable("ModelBound", std::array<float, 4>{ 0, 0, 0, .05f });
 	params.SetVariable("MinPixels", 64.0f);

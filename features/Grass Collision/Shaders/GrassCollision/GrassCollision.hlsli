@@ -12,6 +12,8 @@ namespace GrassCollision
 		uint BoundingBoxCount;
 
 		float CameraHeightDelta;
+		float CollisionStrength;
+		float PreviousCollisionStrength;
 	}
 
 	const static uint TEXTURE_SIZE = 512;
@@ -163,8 +165,8 @@ namespace GrassCollision
 			// Scale grass by wind amount (detect rocks and bottom of some grass)
 			float alpha = saturate(input.Color.w * 10.0);
 
-			displacement = collision * alpha * nearFactor * 0.75;
-			previousDisplacement = previousCollision * alpha * nearFactor * 0.75;
+			displacement = collision * alpha * nearFactor * 0.75 * CollisionStrength;
+			previousDisplacement = previousCollision * alpha * nearFactor * 0.75 * PreviousCollisionStrength;
 		} else {
 			displacement = 0.0;
 			previousDisplacement = 0.0;
