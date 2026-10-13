@@ -50162,6 +50162,12 @@ bool Upscaling::StretchSubmitStageEyeOutput(
 	return true;
 }
 
+void Upscaling::ResetHMDMaskClearResources()
+{
+	vrClearHMDMaskCS.Reset();
+	vrClearHMDMaskCB = nullptr;
+}
+
 bool Upscaling::EnsureHMDMaskClearResources()
 {
 	if (!globals::game::isVR)
@@ -50175,12 +50181,12 @@ bool Upscaling::EnsureHMDMaskClearResources()
 
 	static bool loggedHMDMaskClearFailure = false;
 	try {
-		if (!vrClearHMDMaskCS) {
-			vrClearHMDMaskCS.attach(static_cast<ID3D11ComputeShader*>(
-				Util::CompileShader(
-					L"Data/Shaders/Upscaling/ClearHMDMaskCS.hlsl",
-					{},
-					"cs_5_0")));
+		auto* shader = vrClearHMDMaskCS.Get(
+			L"Data/Shaders/Upscaling/ClearHMDMaskCS.hlsl",
+			{}, "cs_5_0", "main", "Upscaling::ClearHMDMaskCS");
+		if (!shader) {
+			MarkSubmitStageDeviceLostIfDeviceRemoved("HMD mask clear shader creation");
+			return false;
 		}
 
 		if (!vrClearHMDMaskCB) {
@@ -50199,16 +50205,14 @@ bool Upscaling::EnsureHMDMaskClearResources()
 			"[Upscaling][HAM] Tiled exact HMD mask resources unavailable; hidden-area clear will be skipped",
 			e);
 		MarkSubmitStageDeviceLostIfNeeded(e, "HMD mask clear resource creation");
-		vrClearHMDMaskCS = nullptr;
-		vrClearHMDMaskCB = nullptr;
+		ResetHMDMaskClearResources();
 		return false;
 	} catch (...) {
 		LogWarnOnce(
 			loggedHMDMaskClearFailure,
 			"[Upscaling][HAM] Tiled exact HMD mask resources unavailable; hidden-area clear will be skipped");
 		MarkSubmitStageDeviceLostIfDeviceRemoved("HMD mask clear resource creation");
-		vrClearHMDMaskCS = nullptr;
-		vrClearHMDMaskCB = nullptr;
+		ResetHMDMaskClearResources();
 		return false;
 	}
 
@@ -51267,6 +51271,7 @@ void Upscaling::SetupResources()
 	static ID3D11Device* shaderDevice = nullptr;
 	if (shaderDevice != device) {
 		ClearShaderCache();
+		ResetHMDMaskClearResources();
 		ResetVRMenuFinalCompositeLayer();
 		shaderDevice = device;
 	}
@@ -51513,8 +51518,7 @@ void Upscaling::ClearShaderCache()
 	vrDesktopMirrorBlitRTV = nullptr;  // com_ptr automatically releases
 	vrDesktopMirrorBlitTarget = nullptr;
 	vrMenuLayerCompositePS.Reset();
-	vrClearHMDMaskCS = nullptr;  // com_ptr automatically releases
-	vrClearHMDMaskCB = nullptr;  // com_ptr automatically releases
+	vrClearHMDMaskCS.Reset();
 #ifdef DEVBENCH_BRIDGE_ENABLED
 	ResetVRLoadPresentationHAMProbeShaderResources();
 #endif

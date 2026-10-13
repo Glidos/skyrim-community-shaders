@@ -2885,7 +2885,7 @@ public:
 	winrt::com_ptr<ID3D11RasterizerState> upscaleRasterizerState;
 
 	// Shared VR HMD mask clearing
-	winrt::com_ptr<ID3D11ComputeShader> vrClearHMDMaskCS;
+	Util::LazyShader<ID3D11ComputeShader> vrClearHMDMaskCS;
 	winrt::com_ptr<ID3D11Buffer> vrClearHMDMaskCB;
 #ifdef DEVBENCH_BRIDGE_ENABLED
 	std::atomic<uint64_t> vrHMDMaskInputDispatches{ 0 };
@@ -4959,6 +4959,9 @@ private:
 	};
 	/** Preserves lifecycle deferral without publishing incomplete vendor output. */
 	[[nodiscard]] FidelityFX::UpscaleResult DispatchVendorEyeRegion(UpscaleMethod a_upscaleMethod, const VendorEyeDispatchParams& params);
+	/** @brief Releases device-bound HMD-mask resources after device or resource failures. */
+	void ResetHMDMaskClearResources();
+	/** @brief Prepares HMD-mask resources, caching shader failures until shader invalidation. */
 	bool EnsureHMDMaskClearResources();
 	bool EnsureFoveatedDispatchShaders(bool usePeripheryTAA, bool visualizeMask, const char* context, const char* fallbackAction);
 	void BeginVRMenuFinalCompositeFrame(uint32_t a_frame);
