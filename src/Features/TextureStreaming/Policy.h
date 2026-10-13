@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Utils/TextureMemoryPolicy.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -10,8 +11,12 @@ namespace TextureStreamingPolicy
 {
 	constexpr std::uint64_t MiB = 1024ull * 1024;
 	constexpr std::uint64_t MaximumPayloadBytes = 64 * MiB;
+	constexpr std::uint64_t RestorationCacheBytes = 512 * MiB;
+	constexpr std::uint64_t SystemMemoryReserveBytes = 512 * MiB;
 	constexpr std::uint32_t MinimumEdge = 256;
 	constexpr std::uint32_t MaximumDrop = 3;
+	constexpr std::uint32_t MinimumResidentEdge = MinimumEdge >> MaximumDrop;
+	constexpr double MovementHorizon = 512.0;
 	constexpr std::uint64_t StableDemandMs = 3000;
 	constexpr std::uint64_t HealthyWindowMs = 5000;
 	constexpr std::uint64_t MaximumSampleAgeMs = 500;
@@ -24,11 +29,11 @@ namespace TextureStreamingPolicy
 		double distanceToBound = 0;
 	};
 
-	/** Conservative pixels per UV unit; no model-resolution input belongs here. */
-	inline double RequiredEdge(const std::array<Eye, 2>& eyes, unsigned eyeCount, double worldUnitsPerUV, double mipBias)
+	/** Projected-bound texture demand; model-resolution input is independent. */
+	inline double RequiredEdge(const std::array<Eye, 2>& eyes, unsigned eyeCount, double worldDiameter, double mipBias)
 	{
 		const auto invalid = std::numeric_limits<double>::infinity();
-		if (!eyeCount || eyeCount > eyes.size() || !std::isfinite(worldUnitsPerUV) || worldUnitsPerUV <= 0 ||
+		if (!eyeCount || eyeCount > eyes.size() || !std::isfinite(worldDiameter) || worldDiameter <= 0 ||
 			!std::isfinite(mipBias) || std::abs(mipBias) > 16)
 			return invalid;
 		double demand = 0;
@@ -41,18 +46,32 @@ namespace TextureStreamingPolicy
 			const double width = std::max(e.outputWidth, e.renderWidth * scale);
 			const double height = std::max(e.outputHeight, e.renderHeight * scale);
 			// One extra mip covers camera motion, trilinear filtering and rounding.
-			demand = std::max(demand, std::max(width * e.projectionX, height * e.projectionY) * worldUnitsPerUV / e.distanceToBound);
+			demand = std::max(demand, std::max(width * e.projectionX, height * e.projectionY) * worldDiameter / e.distanceToBound);
 		}
 		return demand;
 	}
 
-	inline std::uint32_t DesiredDrop(std::uint32_t edge, std::uint32_t mips, double demand, std::uint32_t maximum)
+	inline std::uint32_t DesiredDrop(std::uint32_t edge, std::uint32_t mips, double demand, std::uint32_t maximum, std::uint32_t shortestEdge = 0)
 	{
+		if (!shortestEdge)
+			shortestEdge = edge;
 		if (!std::isfinite(demand) || demand <= 0 || !edge || !mips)
 			return 0;
 		std::uint32_t drop = 0;
 		while (drop < std::min(maximum, MaximumDrop) && drop + 1 < mips &&
-			   (edge >> (drop + 1)) >= MinimumEdge && (edge >> (drop + 1)) >= demand)
+			   (shortestEdge >> (drop + 1)) >= MinimumEdge && (edge >> (drop + 1)) >= demand)
+			++drop;
+		return drop;
+	}
+
+	/** A cap applies to eligible textures even nearby, preserving minimum mip dimensions. */
+	inline std::uint32_t CappedDrop(std::uint32_t width, std::uint32_t height, std::uint32_t mips, std::uint32_t cap)
+	{
+		if (!cap)
+			return 0;
+		std::uint32_t drop = 0;
+		while (drop < MaximumDrop && drop + 1 < mips && (std::max(width, height) >> drop) > cap &&
+			   (std::min(width, height) >> (drop + 1)) >= MinimumResidentEdge)
 			++drop;
 		return drop;
 	}
@@ -70,7 +89,8 @@ namespace TextureStreamingPolicy
 		std::uint64_t healthySince = 0;
 		std::uint64_t lastSampleMs = 0;
 		/** Invalid or interrupted observations cannot authorize automatic refill. */
-		PressureChange Update(std::uint64_t now, std::uint64_t sampledAt, bool valid, std::uint64_t budget, std::uint64_t usage)
+		PressureChange Update(std::uint64_t now, std::uint64_t sampledAt, bool valid, std::uint64_t budget, std::uint64_t usage,
+			std::uint64_t reserve = Util::TextureMemoryPolicy::DefaultReserveMiB * MiB)
 		{
 			if (!valid || !budget || now < sampledAt || now - sampledAt > MaximumSampleAgeMs) {
 				healthySince = 0;
@@ -80,12 +100,12 @@ namespace TextureStreamingPolicy
 				healthySince = 0;
 			lastSampleMs = sampledAt;
 			const auto free = budget > usage ? budget - usage : 0;
-			if (usage >= budget / 100 * 80 || free <= 1024 * MiB) {
+			if (free <= reserve) {
 				const bool entered = !conserving;
 				conserving = true;
 				healthySince = 0;
 				return entered ? PressureChange::Entered : PressureChange::None;
-			} else if (usage <= budget / 100 * 70 && free >= 1536 * MiB) {
+			} else if (free >= reserve && free - reserve >= Util::TextureMemoryPolicy::RefillGapBytes) {
 				if (!healthySince)
 					healthySince = sampledAt;
 				if (conserving && sampledAt >= healthySince && sampledAt - healthySince >= HealthyWindowMs) {

@@ -1,12 +1,12 @@
 #pragma once
 
 #include "Feature.h"
-#include "TextureStreaming/Categories.h"
+#include "TextureStreaming/Settings.h"
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 
-/** Pressure-driven residency for validated static DDS material textures. */
+/** Configurable residency and load-time sizing for validated static DDS material textures. */
 struct TextureStreaming : Feature
 {
 	static TextureStreaming& Instance();
@@ -23,13 +23,18 @@ struct TextureStreaming : Feature
 	/** Capture world camera and material sampling before later UI passes overwrite renderer state. */
 	void CaptureWorldDemand(float mipBias);
 	void DrawSettings() override;
-	void DrawSettingsEnabledControl() override;
+	void DrawSettingsEnabledControl() override {}
 	void LoadSettings(nlohmann::json&) override;
 	void SaveSettings(nlohmann::json&) override;
 	void RestoreDefaultSettings() override;
-	/** Thread-safe settings update; omitted categories retain the current selection.
+	/** Thread-safe settings update; omitted categories and modes retain the current selection.
 	 * GPU work remains owned by the completed-frame service. */
-	void Configure(bool enabled, std::uint32_t maximumDrop, std::optional<StreamingTextures::Categories> categories = std::nullopt);
+	void Configure(bool enabled, std::uint32_t maximumDrop, std::optional<StreamingTextures::Categories> categories = std::nullopt,
+		std::optional<StreamingTextures::Modes> modes = std::nullopt, std::optional<StreamingTextures::Options> options = std::nullopt);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	/** Legacy developer API alias for the persistent continuous trigger; requires enabled streaming. */
+	void SetDebugForceStreaming(bool enabled);
+#endif
 	/** Explicit diagnostic snapshot; counters and logical capacities do not measure physical VRAM relief. */
 	nlohmann::json GetStatus() const;
 

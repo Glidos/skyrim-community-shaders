@@ -35,6 +35,31 @@ namespace Util
 		return SampleLocked(source, maxAgeMs, force);
 	}
 
+	GpuMemoryBudget::Snapshot GpuMemoryBudget::SampleStreaming(ID3D11Device* source, std::uint64_t maxAgeMs, bool force)
+	{
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		std::scoped_lock lock(mutex);
+		return streamingPressure.Apply(SampleLocked(source, maxAgeMs, force), GetTickCount64());
+#else
+		return Sample(source, maxAgeMs, force);
+#endif
+	}
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	bool GpuMemoryBudget::ConfigureStreamingPressure(ID3D11Device* source, std::uint32_t durationMilliseconds, std::uint32_t freeMiB)
+	{
+		if (durationMilliseconds > StreamingPressureSimulation::MaximumDurationMilliseconds ||
+			freeMiB > StreamingPressureSimulation::MaximumHeadroomMiB || (!durationMilliseconds && freeMiB))
+			return false;
+		std::scoped_lock lock(mutex);
+		const auto physical = durationMilliseconds ? SampleLocked(source, 0, true) : snapshot;
+		return streamingPressure.Configure(physical, GetTickCount64(), durationMilliseconds, freeMiB);
+	}
+	GpuMemoryBudget::StreamingPressureSimulation GpuMemoryBudget::GetStreamingPressure() const
+	{
+		std::scoped_lock lock(mutex);
+		return streamingPressure;
+	}
+#endif
 	GpuMemoryBudget::Snapshot GpuMemoryBudget::SampleLocked(ID3D11Device* source, std::uint64_t maxAgeMs, bool force)
 	{
 		const auto now = GetTickCount64();
@@ -47,6 +72,9 @@ namespace Util
 			pending.fill(0);
 			priority.fill(false);
 			recoveryDemand.fill(0);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			streamingPressure = {};
+#endif
 		}
 		if (force || !snapshot.sequence || now < snapshot.sampledAtMs || now - snapshot.sampledAtMs >= maxAgeMs) {
 			snapshot.local = {};
@@ -103,12 +131,15 @@ namespace Util
 		return ReserveLocked(owner, bytes);
 	}
 
-	GpuMemoryBudget::Reservation GpuMemoryBudget::TryReserveStreaming(ID3D11Device* source, std::uint64_t bytes, bool refill, bool required)
+	GpuMemoryBudget::Reservation GpuMemoryBudget::TryReserveStreaming(ID3D11Device* source, std::uint64_t bytes, bool refill, bool required, std::uint64_t reserveBytes)
 	{
 		std::scoped_lock lock(mutex);
-		const auto observation = SampleLocked(source, 0, true);
+		auto observation = SampleLocked(source, 0, true);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		observation = streamingPressure.Apply(observation, GetTickCount64());
+#endif
 		if (!observation.Fresh(GetTickCount64()) || !StreamingFits(observation.local.Budget,
-														observation.local.CurrentUsage, observation.pendingBytes, bytes, refill, required, observation.priorityWork, observation.recoveryDemandBytes))
+														observation.local.CurrentUsage, observation.pendingBytes, bytes, refill, required, observation.priorityWork, observation.recoveryDemandBytes, reserveBytes))
 			return {};
 		return ReserveLocked(Owner::Streaming, bytes);
 	}

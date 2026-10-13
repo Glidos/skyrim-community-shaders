@@ -2,11 +2,13 @@
 #include "Features/TextureStreaming/TextureData.h"
 #include "Utils/GpuMemoryBudget.h"
 #include "d3d11_shader_test.h"
+#include <bit>
 #include <chrono>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 using D3D11ShaderTest::Check;
 using Microsoft::WRL::ComPtr;
@@ -16,23 +18,49 @@ void Require(bool condition, const char* message)
 		throw std::runtime_error(message);
 }
 
-void CheckMipChain(ID3D11Device* device, ID3D11DeviceContext* context, DXGI_FORMAT format, UINT drop)
+void CheckMipChain(ID3D11Device* device, ID3D11DeviceContext* context, DXGI_FORMAT format, UINT drop, UINT width = 1024, UINT height = 1024, UINT mipLevels = 11, bool gpuCopy = false, UINT sourceDrop = 0)
 {
 	DirectX::ScratchImage source;
-	Check(source.Initialize2D(format, 1024, 1024, 1, 11));
+	Check(source.Initialize2D(format, width, height, 1, mipLevels));
 	for (size_t mip = 0; mip < source.GetImageCount(); ++mip) {
 		const auto& image = source.GetImages()[mip];
 		for (size_t byte = 0; byte < image.slicePitch; ++byte)
 			image.pixels[byte] = static_cast<std::uint8_t>(mip * 17 + byte * 3);
 	}
-	D3D11_TEXTURE2D_DESC full{ 1024, 1024, 11, 1, format, { 1, 0 }, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, 0, 0 };
+	D3D11_TEXTURE2D_DESC full{ width, height, mipLevels, 1, format, { 1, 0 }, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, 0, 0 };
 	D3D11_SHADER_RESOURCE_VIEW_DESC view{};
 	view.Format = format;
 	view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
 	view.Texture2D.MipLevels = full.MipLevels;
 	Require(StreamingTextures::MatchesDDS(source, full), "DDS metadata rejected an exact original chain");
 	StreamingTextures::Upload upload;
-	Check(upload.Begin(device, full, view, drop));
+	ComPtr<ID3D11Texture2D> resident;
+	ComPtr<ID3D11ShaderResourceView> residentView;
+	if (gpuCopy) {
+		auto residentDesc = full;
+		residentDesc.Width >>= sourceDrop;
+		residentDesc.Height >>= sourceDrop;
+		residentDesc.MipLevels -= sourceDrop;
+		residentDesc.Usage = D3D11_USAGE_IMMUTABLE;
+		std::vector<D3D11_SUBRESOURCE_DATA> initial;
+		for (UINT i = sourceDrop; i < mipLevels; ++i) {
+			const auto& image = *source.GetImage(i, 0, 0);
+			initial.push_back({ image.pixels, static_cast<UINT>(image.rowPitch), static_cast<UINT>(image.slicePitch) });
+		}
+		Check(device->CreateTexture2D(&residentDesc, initial.data(), &resident));
+		Util::SetResourceName(resident.Get(), "TextureStreamingTest::Resident");
+		auto residentSrv = view;
+		residentSrv.Texture2D.MipLevels = residentDesc.MipLevels;
+		Check(device->CreateShaderResourceView(resident.Get(), &residentSrv, &residentView));
+		Util::SetResourceName(residentView.Get(), "TextureStreamingTest::Resident.SRV");
+		auto* bound = residentView.Get();
+		context->PSSetShaderResources(7, 1, &bound);
+		Check(upload.BeginCopy(device, full, view, drop, resident.Get(), sourceDrop));
+		Require(upload.AdvanceCopy(context, 1) == S_FALSE && upload.mip == 0 && upload.row == 0 && !upload.submitted,
+			"GPU copy exceeded a budget smaller than one compressed row");
+	} else {
+		Check(upload.Begin(device, full, view, drop));
+	}
 	const StreamingTextures::Origin origin{ 42, true, StreamingTextures::LandscapeStatics };
 	Check(StreamingTextures::WriteOrigin(upload.texture.Get(), origin));
 	StreamingTextures::Origin observed;
@@ -46,17 +74,29 @@ void CheckMipChain(ID3D11Device* device, ID3D11DeviceContext* context, DXGI_FORM
 	unsigned steps = 0;
 	HRESULT status = S_FALSE;
 	while (status == S_FALSE && std::chrono::steady_clock::now() < deadline) {
-		status = upload.Advance(context, source, 16 * 1024);
+		status = gpuCopy ? upload.AdvanceCopy(context, 16 * 1024) : upload.Advance(context, source, 16 * 1024);
 		++steps;
 		context->Flush();
 		if (upload.submitted)
 			std::this_thread::yield();
 	}
 	Check(status);
-	Require(status == S_OK && steps > 1, "Bounded upload did not complete asynchronously");
+	Require(status == S_OK && steps > 1, "Bounded transfer did not complete asynchronously");
+	if (gpuCopy) {
+		ComPtr<ID3D11ShaderResourceView> bound;
+		context->PSGetShaderResources(7, 1, &bound);
+		Require(bound.Get() == residentView.Get(), "GPU copy changed a live shader binding");
+		StreamingTextures::Upload invalid;
+		Require(invalid.BeginCopy(device, full, view, drop, resident.Get(), drop) == E_INVALIDARG && !invalid.texture,
+			"GPU copy attempted to refill discarded source mips");
+		auto wrong = full;
+		wrong.Format = format == DXGI_FORMAT_BC1_UNORM ? DXGI_FORMAT_BC3_UNORM : DXGI_FORMAT_BC1_UNORM;
+		Require(invalid.BeginCopy(device, wrong, view, drop, resident.Get(), sourceDrop) == E_INVALIDARG && !invalid.texture,
+			"GPU copy accepted incompatible resident pixels");
+	}
 	D3D11_SHADER_RESOURCE_VIEW_DESC actual{};
 	upload.view->GetDesc(&actual);
-	Require(actual.Format == format && actual.Texture2D.MipLevels == 11 - drop && actual.Texture2D.MostDetailedMip == 0, "Typed SRV contract changed");
+	Require(actual.Format == format && actual.Texture2D.MipLevels == mipLevels - drop && actual.Texture2D.MostDetailedMip == 0, "Typed SRV contract changed");
 	auto stagingDesc = upload.desc;
 	stagingDesc.Usage = D3D11_USAGE_STAGING;
 	stagingDesc.BindFlags = 0;
@@ -78,22 +118,91 @@ void CheckMipChain(ID3D11Device* device, ID3D11DeviceContext* context, DXGI_FORM
 			throw std::runtime_error("DDS bytes changed: format=" + std::to_string(format) + " drop=" + std::to_string(drop) + " mip=" + std::to_string(mip));
 	}
 	StreamingTextures::Upload tooSmall;
-	Require(tooSmall.Begin(device, full, view, 3) == E_INVALIDARG && !tooSmall.texture, "Allocation bypassed the minimum resident edge");
+	Require(tooSmall.Begin(device, full, view, std::bit_width(std::min(width, height)) - std::bit_width(TextureStreamingPolicy::MinimumResidentEdge) + 1) == E_INVALIDARG && !tooSmall.texture, "Allocation bypassed the minimum resident edge");
 	full.BindFlags |= D3D11_BIND_RENDER_TARGET;
 	Require(!StreamingTextures::Suitable(full, view), "Render-target material entered static streaming");
 }
 
+#include "texture_streaming_inventory_checks.h"
 #include "texture_streaming_publication_checks.h"
+#include "texture_streaming_reader_checks.h"
+
+void CheckTextureContracts()
+{
+	using namespace StreamingTextures;
+	D3D11_TEXTURE2D_DESC texture{ 4096, 4096, 13, 1, DXGI_FORMAT_BC7_UNORM_SRGB, { 1, 0 }, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, 0, 0 };
+	D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+	view.Format = texture.Format;
+	view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+	view.Texture2D.MipLevels = UINT_MAX;
+	Require(Suitable(texture, view) && ClassifyTexture(texture, view) == TextureRejection::None, "An all-mips typed DDS view was rejected");
+	for (unsigned fields = 0; fields < 8; ++fields)
+		Require(ClassifyTexture(texture, view, fields & 1 ? 4096 : 0, fields & 2 ? 4096 : 0, fields & 4 ? 13 : 0) == TextureRejection::None,
+			"Valid DDS metadata was rejected when engine fields were unset");
+	Require(ClassifyTexture(texture, view, 2048, 0, 0) == TextureRejection::EngineDimensions &&
+				ClassifyTexture(texture, view, 0, 2048, 0) == TextureRejection::EngineDimensions,
+		"Populated inconsistent dimensions escaped validation");
+	Require(ClassifyTexture(texture, view, 0, 0, 12) == TextureRejection::EngineMipCount,
+		"Populated inconsistent mip metadata escaped validation");
+	texture.MipLevels = 12;
+	Require(Suitable(texture, view), "A valid shorter DDS mip chain was rejected");
+	texture.MipLevels = 14;
+	Require(ClassifyTexture(texture, view) == TextureRejection::MipChain, "An impossible mip count escaped validation");
+	texture.MipLevels = 1;
+	Require(ClassifyTexture(texture, view) == TextureRejection::MipChain, "A texture without reducible mips entered streaming");
+	texture.MipLevels = 13;
+	texture.Height = 2048;
+	Require(Suitable(texture, view), "A rectangular DDS texture was rejected");
+	Require(TextureStreamingPolicy::DesiredDrop(4096, 13, 128, 3, 1024) == 2, "A rectangular reduction crossed the minimum short edge");
+	texture.Height = 4096;
+	view.Texture2D.MostDetailedMip = 1;
+	Require(ClassifyTexture(texture, view) == TextureRejection::ViewFirstMip, "A partial SRV entered whole-chain replacement");
+	view.Texture2D.MostDetailedMip = 0;
+	view.Format = DXGI_FORMAT_BC7_UNORM;
+	Require(ClassifyTexture(texture, view) == TextureRejection::ViewFormat, "A different SRGB sampling contract entered replacement");
+	view.Format = texture.Format;
+	texture.Format = DXGI_FORMAT_BC7_TYPELESS;
+	Require(ClassifyTexture(texture, view) == TextureRejection::TypelessFormat, "A typeless resource lost its conservative rejection");
+	texture.Format = view.Format;
+	texture.MiscFlags = D3D11_RESOURCE_MISC_RESOURCE_CLAMP;
+	Require(ClassifyTexture(texture, view) == TextureRejection::MiscFlags, "Resource clamp semantics were silently discarded");
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	TextureInspection inspection;
+	inspection.reason = TextureRejection::MiscFlags;
+	inspection.descriptorAvailable = true;
+	inspection.texture = texture;
+	TextureDiagnostics diagnostics;
+	diagnostics.Observe(inspection, std::string(512, 't'));
+	diagnostics.Observe(inspection, "later texture");
+	const auto reason = static_cast<std::size_t>(inspection.reason);
+	Require(diagnostics.reasons[reason] == 2 && diagnostics.texturePaths[reason] == std::string(256, 't') &&
+				diagnostics.samples[reason].texture.MiscFlags == D3D11_RESOURCE_MISC_RESOURCE_CLAMP,
+		"Texture diagnostics lost their cumulative count, bounded first sample or raw contract");
+#endif
+}
 
 int main()
 {
 	try {
+		CheckTextureContracts();
 		ComPtr<ID3D11Device> device;
 		ComPtr<ID3D11DeviceContext> context;
 		Check(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &device, nullptr, &context));
 		for (auto format : { DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC3_UNORM_SRGB, DXGI_FORMAT_BC5_UNORM, DXGI_FORMAT_BC7_UNORM_SRGB })
 			for (UINT drop : { 0u, 1u, 2u })
 				CheckMipChain(device.Get(), context.Get(), format, drop);
+		for (UINT drop : { 0u, 1u, 2u })
+			CheckMipChain(device.Get(), context.Get(), DXGI_FORMAT_BC3_UNORM_SRGB, drop, 4096, 2048, 12);
+		for (auto format : { DXGI_FORMAT_BC1_UNORM, DXGI_FORMAT_BC3_UNORM_SRGB, DXGI_FORMAT_BC5_UNORM, DXGI_FORMAT_BC7_UNORM_SRGB }) {
+			for (UINT drop : { 1u, 2u })
+				CheckMipChain(device.Get(), context.Get(), format, drop, 1024, 1024, 11, true);
+			CheckMipChain(device.Get(), context.Get(), format, 2, 1024, 1024, 11, true, 1);
+		}
+		for (UINT drop : { 1u, 2u, 3u })
+			CheckMipChain(device.Get(), context.Get(), DXGI_FORMAT_BC3_UNORM_SRGB, drop, 4096, 2048, 12, true, drop - 1);
+		CheckMipChain(device.Get(), context.Get(), DXGI_FORMAT_BC1_UNORM, 3, 8192, 256, 14, true);
+		CheckStreamingReader();
+		CheckStreamingInventory(device.Get());
 		CheckStreamingPublication(device.Get(), context.Get());
 		using Memory = Util::GpuMemoryBudget;
 		auto& memory = Memory::Get();
@@ -140,7 +249,7 @@ int main()
 			Require(memory.PendingBytes(Memory::Owner::NeuralRendering) == 7, "Old-generation ticket corrupted a new device reservation");
 		}
 		Require(memory.PendingBytes(Memory::Owner::RenderScale) == 0, "A ticket leaked after cancellation");
-		std::cout << "PASS: WARP exact BC mip shrink/refill, bounded uploads, resource provenance, atomic publication and shared ticket lifetime\n";
+		std::cout << "PASS: WARP exact BC GPU-copy shrink/refill, bounded transfers, immutable restoration cache, source validation, atomic publication and shared ticket lifetime\n";
 	} catch (const std::exception& error) {
 		std::cerr << error.what() << '\n';
 		return 1;

@@ -4,8 +4,11 @@
 #include "Menu/SettingsPage.h"
 #include "State.h"
 #include "TextureStreaming/ConsumerInventory.h"
+#include "TextureStreaming/DemandDiagnostics.h"
 #include "TextureStreaming/Diagnostics.h"
 #include "TextureStreaming/GeometryDemand.h"
+#include "TextureStreaming/LoadHooks.h"
+#include "TextureStreaming/RestorationCache.h"
 #include "TextureStreaming/Settings.h"
 #include "TextureStreaming/TextureData.h"
 #include "Utils/Game.h"
@@ -15,9 +18,11 @@
 #include "Utils/UI.h"
 #include "Utils/VirtualFunctionHook.h"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <memory>
 #include <optional>
 #include <thread>
 #include <unordered_map>
@@ -36,6 +41,7 @@ namespace
 	using Diagnostics = StreamingTextures::Diagnostics;
 	using Block = Diagnostics::Block;
 	using Exclusion = Diagnostics::Exclusion;
+	constexpr auto streamingConflictWarning = "CSX texture streaming is disabled because Skyrim Performance Solution (SPS.dll) is loaded. Both plugins replace texture resources and must not stream them together. Disable the SPS mod and restart the game to use CSX native texture streaming.";
 	constexpr std::size_t maximumRecords = 16384, maximumConsumers = 256, maximumFrontier = 16384;
 	constexpr std::size_t maximumReducedTextures = 512;
 	constexpr std::uint64_t uploadBytesPerFrame = 4 * Policy::MiB;
@@ -46,23 +52,26 @@ namespace
 
 	std::int32_t LoadDDS(void* device, void* stream, RE::BSGraphics::Texture** output, void* header, std::uint64_t maximum, std::uint64_t flags)
 	{
-		const auto result = originalDDSLoader(device, stream, output, header, maximum, flags);
+		auto remembered = StreamingTextures::LoadHooks::Prepare(static_cast<ID3D11Device*>(device), maximum);
+		const auto limit = remembered ? (std::max(remembered->size.full.Width, remembered->size.full.Height) >> remembered->size.drop) : maximum;
+		const auto result = originalDDSLoader(device, stream, output, header, limit, flags);
 		if (result >= 0 && output && *output && (*output)->texture) {
 			const StreamingTextures::Origin origin{ ++originSerial, false };
 			const auto status = StreamingTextures::WriteOrigin((*output)->texture, origin);
 			if (FAILED(status))
 				logger::warn("[TextureStreaming] DDS provenance unavailable: 0x{:08X}", static_cast<std::uint32_t>(status));
 		}
+		if (remembered)
+			StreamingTextures::LoadHooks::Complete(std::move(*remembered), result >= 0 && output && *output ? (*output)->texture : nullptr, result >= 0);
 		return result;
 	}
 
-	std::optional<std::string> TexturePath(RE::NiSourceTexture* texture, std::uint32_t& categories)
+	std::optional<std::string> TexturePath(RE::NiSourceTexture* texture, std::uint32_t& categories, std::uint32_t materialCategories)
 	{
-		std::string path = texture->name.c_str();
-		std::ranges::transform(path, path.begin(), [](unsigned char c) { return c == '/' ? '\\' : static_cast<char>(std::tolower(c)); });
-		if (!path.starts_with("textures\\"))
-			path = "textures\\" + path;
-		const auto required = StreamingTextures::PathCategories(path);
+		if (!texture || !texture->name.c_str() || !*texture->name.c_str())
+			return std::nullopt;
+		std::string path = StreamingTextures::NormalizeTexturePath(texture->name.c_str());
+		const auto required = StreamingTextures::PathCategories(path, materialCategories);
 		if (!required)
 			return std::nullopt;
 		categories = *required;
@@ -98,49 +107,191 @@ namespace
 			{ "excludedObservations", std::move(excluded) }, { "blockedChecks", std::move(blocked) }, { "lastBlock", hasBlockedChecks ? value.LastBlock() : "none" } };
 	}
 
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	template <std::size_t Count>
+	nlohmann::json DiagnosticSampleStatus(const StreamingTextures::DiagnosticSamples<Count>& value, const std::array<std::string_view, Count>& names)
+	{
+		auto result = nlohmann::json::object();
+		for (std::size_t i = 0; i < Count; ++i)
+			if (value.observed[i])
+				result[std::string(names[i])] = { { "texturePath", value.texturePaths[i] }, { "geometryName", value.geometryNames[i] } };
+		return result;
+	}
+
+	nlohmann::json MaterialDiagnosticStatus(const StreamingTextures::MaterialDiagnostics& value)
+	{
+		nlohmann::json reasons = nlohmann::json::object(), types = nlohmann::json::object();
+		nlohmann::json flags = nlohmann::json::object(), samples = nlohmann::json::object();
+		for (std::size_t i = 0; i < value.reasons.size(); ++i) {
+			const auto name = std::string(value.names[i]);
+			reasons[name] = value.reasons[i];
+			if (value.reasons[i]) {
+				const auto& sample = value.samples[i];
+				samples[name] = { { "geometryName", value.geometryNames[i] }, { "geometryType", sample.geometryType },
+					{ "shaderFlags", sample.flags }, { "disallowedFlags", sample.disallowedFlags },
+					{ "materialType", sample.materialType == UINT32_MAX ? nlohmann::json(nullptr) : nlohmann::json(sample.materialType) },
+					{ "materialFeature", sample.materialFeature == UINT32_MAX ? nlohmann::json(nullptr) : nlohmann::json(sample.materialFeature) } };
+			}
+		}
+		for (std::size_t i = 0; i < value.geometryTypes.size(); ++i)
+			if (value.geometryTypes[i])
+				types[std::to_string(i)] = value.geometryTypes[i];
+		for (std::size_t i = 0; i < value.disallowedFlagBits.size(); ++i)
+			if (value.disallowedFlagBits[i])
+				flags[std::to_string(i)] = value.disallowedFlagBits[i];
+		return { { "reasons", std::move(reasons) }, { "geometryTypes", std::move(types) },
+			{ "disallowedFlagBits", std::move(flags) }, { "samples", std::move(samples) } };
+	}
+
+	nlohmann::json DemandDiagnosticStatus(const StreamingTextures::DemandDiagnostics& value)
+	{
+		nlohmann::json reasons = nlohmann::json::object(), samples = nlohmann::json::object();
+		for (std::size_t i = 0; i < value.reasons.size(); ++i) {
+			const auto name = std::string(value.names[i]);
+			reasons[name] = value.reasons[i];
+			if (!value.reasons[i])
+				continue;
+			const auto& s = value.samples[i];
+			nlohmann::json eyes = nlohmann::json::array();
+			for (unsigned eye = 0; eye < std::min<unsigned>(s.context.eyeCount, static_cast<unsigned>(s.context.eyes.size())); ++eye) {
+				const auto& e = s.context.eyes[eye];
+				eyes.push_back({ { "position", s.context.positions[eye] }, { "renderWidth", e.renderWidth }, { "renderHeight", e.renderHeight },
+					{ "outputWidth", e.outputWidth }, { "outputHeight", e.outputHeight }, { "projectionX", e.projectionX }, { "projectionY", e.projectionY } });
+			}
+			samples[name] = { { "texturePath", value.texturePaths[i] }, { "geometryName", value.geometryNames[i] },
+				{ "requiredEdge", std::isfinite(s.requiredEdge) ? nlohmann::json(s.requiredEdge) : nlohmann::json(nullptr) },
+				{ "fullWidth", s.fullWidth }, { "fullHeight", s.fullHeight }, { "mipLevels", s.mipLevels }, { "desiredDrop", s.desiredDrop },
+				{ "consumers", s.consumers }, { "boundCenter", s.boundCenter }, { "boundRadius", s.boundRadius },
+				{ "currentFrame", s.currentFrame }, { "sourceFrame", s.context.frame }, { "sampledAtMs", s.context.sampledAtMs },
+				{ "mipBias", s.context.mipBias }, { "eyeCount", s.context.eyeCount }, { "eyes", std::move(eyes) } };
+		}
+		return { { "reasons", std::move(reasons) }, { "samples", std::move(samples) } };
+	}
+
+	nlohmann::json TextureDiagnosticStatus(const StreamingTextures::TextureDiagnostics& value)
+	{
+		nlohmann::json reasons = nlohmann::json::object(), samples = nlohmann::json::object();
+		for (std::size_t i = 0; i < value.reasons.size(); ++i) {
+			const auto name = std::string(value.names[i]);
+			reasons[name] = value.reasons[i];
+			if (!value.reasons[i])
+				continue;
+			const auto& s = value.samples[i];
+			const auto& d = s.texture;
+			const auto& v = s.view;
+			samples[name] = { { "texturePath", value.texturePaths[i] },
+				{ "unorderedAccess", s.unorderedAccess }, { "viewAvailable", s.viewAvailable },
+				{ "engineWidth", s.engineWidth }, { "engineHeight", s.engineHeight }, { "engineMips", s.engineMips },
+				{ "texture", s.descriptorAvailable ? nlohmann::json{
+														 { "width", d.Width }, { "height", d.Height }, { "mipLevels", d.MipLevels }, { "arraySize", d.ArraySize },
+														 { "format", d.Format }, { "sampleCount", d.SampleDesc.Count }, { "sampleQuality", d.SampleDesc.Quality },
+														 { "usage", d.Usage }, { "bindFlags", d.BindFlags }, { "cpuAccessFlags", d.CPUAccessFlags }, { "miscFlags", d.MiscFlags } } :
+													 nlohmann::json(nullptr) },
+				{ "view", s.descriptorAvailable ? nlohmann::json{ { "format", v.Format }, { "dimension", v.ViewDimension }, { "firstMip", v.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2D ? nlohmann::json(v.Texture2D.MostDetailedMip) : nlohmann::json(nullptr) }, { "mipLevels", v.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2D ? nlohmann::json(v.Texture2D.MipLevels) : nlohmann::json(nullptr) } } : nlohmann::json(nullptr) } };
+		}
+		return { { "reasons", std::move(reasons) }, { "samples", std::move(samples) } };
+	}
+
+#endif
+
+	enum class ReadKind
+	{
+		ValidateSource,
+		Restore
+	};
 	struct ReadRequest
 	{
 		std::uint64_t serial = 0, epoch = 0;
 		std::string path;
 		D3D11_TEXTURE2D_DESC full{};
 		std::uint32_t drop = 0;
+		ReadKind kind = ReadKind::Restore;
+		std::uint64_t cacheGeneration = 0;
 	};
 	struct ReadResult
 	{
 		ReadRequest request;
-		DirectX::ScratchImage image;
+		StreamingTextures::TexturePixels image;
+		std::uint64_t headerHash = 0, fileBytes = 0;
 		std::string error;
+
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		bool cacheHit = false;
+		std::uint64_t sourceBytesRead = 0;
+#endif
 	};
 
-	ReadResult ReadDDS(ReadRequest request)
+	struct ReaderMemory
+	{
+		std::uint64_t availableCommit = 0;
+		bool cacheHealthy = false;
+	};
+	ReaderMemory CheckReaderMemory(StreamingTextures::RestorationCache& cache)
+	{
+		MEMORYSTATUSEX memory{ sizeof(memory) };
+		if (!GlobalMemoryStatusEx(&memory))
+			memory = { sizeof(memory) };
+		const bool healthy = memory.ullAvailPhys >= Policy::SystemMemoryReserveBytes &&
+		                     memory.ullAvailPageFile >= Policy::SystemMemoryReserveBytes + 2 * Policy::MaximumPayloadBytes;
+		if (!healthy)
+			cache.Clear(true);
+		return { memory.ullAvailPageFile, healthy };
+	}
+
+	ReadResult ReadDDS(ReadRequest request, StreamingTextures::RestorationCache& cache)
 	{
 		ReadResult result;
 		result.request = std::move(request);
 		try {
+			const auto memory = CheckReaderMemory(cache);
+			if (result.request.kind == ReadKind::Restore && memory.cacheHealthy) {
+				result.image = cache.Find(result.request.serial, result.request.path, result.request.full, result.request.cacheGeneration);
+				if (result.image) {
+#ifdef DEVBENCH_BRIDGE_ENABLED
+					result.cacheHit = true;
+#endif
+					return result;
+				}
+			}
 			RE::BSResourceNiBinaryStream stream(result.request.path);
 			if (!stream.good() || !stream.stream)
 				throw std::runtime_error("DDS source is unavailable in the game resource namespace");
 			const auto size = stream.stream->totalSize;
 			if (size < 128 || size > Policy::MaximumPayloadBytes)
 				throw std::runtime_error("DDS payload exceeds the bounded reader contract");
-			MEMORYSTATUSEX memory{ sizeof(memory) };
-			if (!GlobalMemoryStatusEx(&memory) || memory.ullAvailPageFile < 512 * Policy::MiB + 2 * size)
+			if (result.request.kind == ReadKind::ValidateSource) {
+				std::array<std::uint8_t, 148> header{};
+				const auto count = std::min<std::size_t>(size, header.size());
+				if (!stream.read(header.data(), static_cast<std::uint32_t>(count)))
+					throw std::runtime_error("DDS source header read was incomplete");
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				result.sourceBytesRead = count;
+#endif
+				result.headerHash = StreamingTextures::HeaderHash(std::span(header.data(), count));
+				result.fileBytes = size;
+				if (!StreamingTextures::MatchesDDSHeader(std::span(header.data(), count), size, result.request.full))
+					throw std::runtime_error("DDS source header no longer matches the original texture contract");
+				return result;
+			}
+			if (memory.availableCommit < Policy::SystemMemoryReserveBytes + 2 * size)
 				throw std::runtime_error("Insufficient system commit headroom for DDS restoration");
 			std::vector<std::uint8_t> bytes(size);
 			if (!stream.read(bytes.data(), size))
 				throw std::runtime_error("DDS source read was incomplete");
-			DirectX::TexMetadata metadata{};
-			auto hr = DirectX::GetMetadataFromDDSMemory(bytes.data(), bytes.size(), DirectX::DDS_FLAGS_NONE, metadata);
-			const auto& full = result.request.full;
-			if (FAILED(hr) || metadata.width != full.Width || metadata.height != full.Height || metadata.depth != 1 ||
-				metadata.arraySize != 1 || metadata.mipLevels != full.MipLevels || metadata.format != full.Format ||
-				metadata.dimension != DirectX::TEX_DIMENSION_TEXTURE2D || metadata.IsCubemap())
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			result.sourceBytesRead = size;
+#endif
+			if (!StreamingTextures::MatchesDDSHeader(bytes, size, result.request.full))
 				throw std::runtime_error("DDS source no longer matches the original texture contract");
-			hr = DirectX::LoadFromDDSMemory(bytes.data(), bytes.size(), DirectX::DDS_FLAGS_NONE, nullptr, result.image);
-			if (FAILED(hr) || !StreamingTextures::MatchesDDS(result.image, full))
+			auto image = std::make_shared<DirectX::ScratchImage>();
+			const auto hr = DirectX::LoadFromDDSMemory(bytes.data(), bytes.size(), DirectX::DDS_FLAGS_NONE, nullptr, *image);
+			if (FAILED(hr) || !StreamingTextures::MatchesDDS(*image, result.request.full))
 				throw std::runtime_error("DDS mip chain is invalid or incomplete");
+			result.image = std::move(image);
+			if (memory.cacheHealthy)
+				cache.Store(result.request.serial, result.request.path, result.request.full, result.image, result.request.cacheGeneration);
 		} catch (const std::exception& error) {
-			result.image.Release();
+			result.image.reset();
 			result.error = error.what();
 		}
 		return result;
@@ -157,19 +308,28 @@ namespace
 		}
 		void Start(ReadRequest request)
 		{
+			request.cacheGeneration = cache.GetStatus().generation;
 			std::scoped_lock lock(mutex);
 			input = std::move(request);
 			if (!worker.joinable()) {
 				worker = std::jthread([this](std::stop_token stop) {
 					while (!stop.stop_requested()) {
 						std::unique_lock lock(mutex);
-						wake.wait(lock, stop, [&] { return input.has_value(); });
+						if (cache.GetStatus().entries)
+							wake.wait_for(lock, stop, std::chrono::seconds(1), [&] { return input.has_value(); });
+						else
+							wake.wait(lock, stop, [&] { return input.has_value(); });
 						if (stop.stop_requested())
 							return;
+						if (!input) {
+							lock.unlock();
+							CheckReaderMemory(cache);
+							continue;
+						}
 						auto request = std::move(*input);
 						input.reset();
 						lock.unlock();
-						auto value = ReadDDS(std::move(request));
+						auto value = ReadDDS(std::move(request), cache);
 						lock.lock();
 						output = std::move(value);
 					}
@@ -182,8 +342,11 @@ namespace
 			std::scoped_lock lock(mutex);
 			return std::exchange(output, std::nullopt);
 		}
+		StreamingTextures::RestorationCache::Snapshot CacheStatus() const { return cache.GetStatus(); }
+		void ClearCache(bool onlyIfPopulated = false) { cache.Clear(onlyIfPopulated); }
 
 	private:
+		StreamingTextures::RestorationCache cache;
 		std::mutex mutex;
 		std::condition_variable_any wake;
 		std::optional<ReadRequest> input;
@@ -232,8 +395,6 @@ struct TextureStreaming::State
 	struct Consumer
 	{
 		RE::NiPointer<RE::BSGeometry> geometry;
-		double unitsPerUV = 0;
-		RE::NiPoint2 uvScale{};
 	};
 	struct Record
 	{
@@ -248,7 +409,13 @@ struct TextureStreaming::State
 		StreamingTextures::ConsumerInventory<Consumer> consumers;
 		std::uint64_t stableSince = 0, retryAfter = 0;
 		std::uint32_t drop = 0, desired = 0;
-		bool protectedConsumer = false;
+		bool protectedConsumer = false, sourceValidated = false;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		bool terrainConsumer = false;
+#endif
+		std::uint64_t headerHash = 0, fileBytes = 0;
+		std::uint32_t rememberedDrop = UINT32_MAX, distanceDrop = 0;
+		std::shared_ptr<void> loadLifetime;
 	};
 	struct Node
 	{
@@ -266,10 +433,23 @@ struct TextureStreaming::State
 		ComPtr<ID3D11Query> retirement;
 		bool published = false, replacementCommitted = false;
 		std::uint64_t logicalReductionBytes = 0;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		bool terrainConsumer = false;
+#endif
 	};
 
 	mutable std::mutex mutex;
-	bool enabled = false;
+	bool enabled = true, externalStreamingConflict = false;
+	StreamingTextures::Modes modes;
+	StreamingTextures::Options options;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	StreamingTextures::MaterialDiagnostics materialDiagnostics, terrainMaterialDiagnostics;
+	StreamingTextures::TextureDiagnostics textureDiagnostics, terrainTextureDiagnostics;
+	StreamingTextures::DemandDiagnostics demandDiagnostics, terrainDemandDiagnostics;
+	Diagnostics terrainInventoryDiagnostics;
+	StreamingTextures::DiagnosticSamples<Diagnostics::exclusionNames.size()> terrainExclusions;
+	StreamingTextures::DiagnosticSamples<Diagnostics::blockNames.size()> terrainBlocks;
+#endif
 	std::uint32_t maximumDrop = 2;
 	StreamingTextures::Categories categories;
 	std::uint64_t epoch = 1, scan = 0, completeScan = 0, nextScanMs = 0, deviceGeneration = 0;
@@ -288,13 +468,42 @@ struct TextureStreaming::State
 	StreamingTextures::PressureEpisode pressureEpisode;
 	StreamingTextures::DemandContext demand;
 	std::uint64_t shrinks = 0, restores = 0, failures = 0, admissionDeferrals = 0, cancelled = 0;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	std::uint64_t gpuCopyShrinks = 0, cachedRestores = 0, ddsRestores = 0, sourceHeaderReads = 0, sourcePayloadReads = 0, sourceBytesRead = 0;
+	std::uint64_t terrainShrinks = 0, terrainRestores = 0, terrainRetiredReductions = 0, terrainRetiredLogicalBytes = 0;
+	struct TerrainReduction
+	{
+		std::array<char, 257> path{};
+		std::uint64_t serial = 0;
+		std::uint32_t requiredCategories = 0, fullWidth = 0, fullHeight = 0, width = 0, height = 0, previousDrop = 0, drop = 0;
+	} terrainReduction;
+#endif
 	std::string detail = "Disabled";
 	Memory::Snapshot memory;
 
-	void ObserveTexture(RE::NiSourceTexture* source, RE::BSGeometry* geometry, double metric, bool eligible, std::uint32_t requiredCategories);
+	void ObserveTexture(RE::NiSourceTexture* source, RE::BSGeometry* geometry, bool eligible, std::uint32_t requiredCategories);
+	void Defer(Block reason, const Record& record)
+	{
+		diagnostics.Defer(reason);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		if (record.terrainConsumer) {
+			terrainInventoryDiagnostics.Defer(reason);
+			const auto* geometry = record.consumers.committed.empty() ? nullptr : record.consumers.committed.front().geometry.get();
+			terrainBlocks.Observe(static_cast<std::size_t>(reason), record.path, geometry && geometry->name.c_str() ? geometry->name.c_str() : "");
+		}
+#else
+		(void)record;
+#endif
+	}
 	void Scan();
 	void Prune();
+	void AdoptLoads();
 	std::uint32_t Demand(Record& record);
+	std::uint32_t Target(const Record& record, std::uint32_t demanded) const
+	{
+		return ReductionRequested() ? demanded : std::min(demanded, Policy::CappedDrop(record.full.Width, record.full.Height, record.full.MipLevels, options.maximumSize));
+	}
+	bool ReductionRequested() const noexcept;
 	void Select();
 	void ServiceTransaction();
 	void CancelTransaction();
@@ -310,69 +519,172 @@ struct TextureStreaming::State
 	}
 };
 
-void TextureStreaming::State::ObserveTexture(RE::NiSourceTexture* source, RE::BSGeometry* geometry, double metric, bool eligible, std::uint32_t requiredCategories)
+void TextureStreaming::State::AdoptLoads()
+{
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(400);
+	for (unsigned count = 0; count < 64 && std::chrono::steady_clock::now() < deadline; ++count) {
+		auto load = StreamingTextures::LoadHooks::Poll();
+		if (!load)
+			break;
+		auto* source = load->source;
+		auto* engine = source ? source->rendererTexture : nullptr;
+		StreamingTextures::Origin origin;
+		if (!engine || !engine->resourceView || !StreamingTextures::ReadOrigin(engine->texture, origin) || origin.serial != load->serial)
+			continue;
+		if (records.contains(origin.serial)) {
+			Fail("Reduced-load source was observed before ownership transfer");
+			continue;
+		}
+		Record record;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		record.terrainConsumer = ((origin.requiredCategories | load->size.categories) & StreamingTextures::Terrain) != 0;
+#endif
+		record.source.reset(source);
+		record.engine = engine;
+		record.current = engine->texture;
+		record.currentView = engine->resourceView;
+		record.path = std::move(load->path);
+		record.full = load->size.full;
+		engine->resourceView->GetDesc(&record.view);
+		record.view.Texture2D.MipLevels = record.full.MipLevels;
+		record.drop = record.desired = load->size.drop;
+		auto resident = record.full;
+		resident.Width >>= record.drop;
+		resident.Height >>= record.drop;
+		resident.MipLevels -= record.drop;
+		StreamingTextures::UpdateEngineMetadata(*engine, resident);
+		record.headerHash = load->size.headerHash;
+		record.fileBytes = load->size.fileBytes;
+		record.sourceValidated = true;
+		record.protectedConsumer = origin.protectedConsumer;
+		if (record.protectedConsumer)
+			StreamingTextures::LoadHooks::Forget(record.path);
+		record.loadLifetime = std::move(load->lifetime);
+		origin.requiredCategories |= load->size.categories;
+		if (FAILED(StreamingTextures::WriteOrigin(record.current, origin)))
+			record.protectedConsumer = true;
+		for (std::uint32_t drop = 0; drop < record.bytes.size(); ++drop)
+			record.bytes[drop] = StreamingTextures::LogicalBytes(record.full, drop);
+		records.emplace(origin.serial, std::move(record));
+		reducedRecords.insert(origin.serial);
+	}
+}
+
+void TextureStreaming::State::ObserveTexture(RE::NiSourceTexture* source, RE::BSGeometry* geometry, bool eligible, std::uint32_t requiredCategories)
 {
 	++diagnostics.textureObservations;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	const bool terrain = (requiredCategories & StreamingTextures::Terrain) != 0;
+	if (terrain)
+		++terrainInventoryDiagnostics.textureObservations;
+#endif
+	const auto exclude = [&](Exclusion reason) {
+		diagnostics.Exclude(reason);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		if (terrain) {
+			terrainInventoryDiagnostics.Exclude(reason);
+			terrainExclusions.Observe(static_cast<std::size_t>(reason), source && source->name.c_str() ? source->name.c_str() : "",
+				geometry && geometry->name.c_str() ? geometry->name.c_str() : "");
+		}
+#endif
+	};
 	if (!source || !source->rendererTexture || !source->rendererTexture->texture) {
-		diagnostics.Exclude(Exclusion::MissingTexture);
+		exclude(Exclusion::MissingTexture);
 		return;
 	}
 	auto* engine = source->rendererTexture;
 	StreamingTextures::Origin origin;
 	if (!StreamingTextures::ReadOrigin(engine->texture, origin)) {
-		diagnostics.Exclude(Exclusion::MissingProvenance);
+		exclude(Exclusion::MissingProvenance);
 		return;
 	}
+	std::uint32_t pathCategories = 0;
+	const auto path = TexturePath(source, pathCategories, requiredCategories);
+	eligible &= path.has_value();
+	requiredCategories |= pathCategories;
+	if (!eligible && path)
+		StreamingTextures::LoadHooks::Forget(*path);
 	if ((!eligible && !origin.protectedConsumer) || (requiredCategories & ~origin.requiredCategories)) {
 		origin.protectedConsumer |= !eligible;
 		origin.requiredCategories |= requiredCategories;
 		if (FAILED(StreamingTextures::WriteOrigin(engine->texture, origin))) {
 			Fail("Could not preserve texture consumer requirements");
 			enabled = false;
+			StreamingTextures::LoadHooks::Configure(false, modes, options, categories, maximumDrop);
 			return;
 		}
 	}
 	auto it = records.find(origin.serial);
 	if (it == records.end()) {
+		if (origin.preloaded)
+			return;
 		if (origin.protectedConsumer || !eligible) {
-			diagnostics.Exclude(Exclusion::ProtectedConsumer);
+			exclude(path ? Exclusion::ProtectedConsumer : Exclusion::ProtectedPath);
 			return;
 		}
 		if (records.size() >= maximumRecords) {
-			diagnostics.Exclude(Exclusion::InventoryLimit);
+			exclude(Exclusion::InventoryLimit);
 			return;
-		}
-		std::uint32_t pathCategories = 0;
-		const auto path = TexturePath(source, pathCategories);
-		if (!path) {
-			diagnostics.Exclude(Exclusion::ProtectedPath);
-			return;
-		}
-		if (pathCategories & ~origin.requiredCategories) {
-			origin.requiredCategories |= pathCategories;
-			if (FAILED(StreamingTextures::WriteOrigin(engine->texture, origin))) {
-				Fail("Could not preserve texture path requirements");
-				enabled = false;
-				return;
-			}
 		}
 		if (!categories.Allows(origin.requiredCategories)) {
-			diagnostics.Exclude(Exclusion::CategoryDisabled);
+			exclude(Exclusion::CategoryDisabled);
+			return;
+		}
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		StreamingTextures::TextureInspection inspection;
+		inspection.unorderedAccess = engine->UAV != nullptr;
+		inspection.viewAvailable = engine->resourceView != nullptr;
+		inspection.engineWidth = engine->width;
+		inspection.engineHeight = engine->height;
+		inspection.engineMips = engine->mips;
+#endif
+		const auto classify = [&]([[maybe_unused]] StreamingTextures::TextureRejection reason) {
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			inspection.reason = reason;
+			textureDiagnostics.Observe(inspection, *path);
+			if (terrain)
+				terrainTextureDiagnostics.Observe(inspection, *path);
+#endif
+			if (reason != StreamingTextures::TextureRejection::None)
+				exclude(Exclusion::TextureContract);
+		};
+		if (engine->UAV) {
+			classify(StreamingTextures::TextureRejection::UnorderedAccess);
+			return;
+		}
+		if (!engine->resourceView) {
+			classify(StreamingTextures::TextureRejection::MissingView);
 			return;
 		}
 		ComPtr<ID3D11Texture2D> texture;
-		if (engine->UAV || !engine->resourceView || FAILED(engine->texture->QueryInterface(IID_PPV_ARGS(&texture)))) {
-			diagnostics.Exclude(Exclusion::TextureContract);
+		if (FAILED(engine->texture->QueryInterface(IID_PPV_ARGS(&texture)))) {
+			classify(StreamingTextures::TextureRejection::NotTexture2D);
+			return;
+		}
+		ComPtr<ID3D11Resource> viewedResource;
+		engine->resourceView->GetResource(&viewedResource);
+		if (viewedResource.Get() != engine->texture) {
+			classify(StreamingTextures::TextureRejection::ViewResource);
 			return;
 		}
 		Record value;
 		texture->GetDesc(&value.full);
 		engine->resourceView->GetDesc(&value.view);
-		if (!StreamingTextures::Suitable(value.full, value.view) || !StreamingTextures::LogicalBytes(value.full, 0) ||
-			engine->width != value.full.Width || engine->height != value.full.Height || engine->mips != value.full.MipLevels) {
-			diagnostics.Exclude(Exclusion::TextureContract);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		inspection.descriptorAvailable = true;
+		inspection.texture = value.full;
+		inspection.view = value.view;
+#endif
+		const auto contract = StreamingTextures::ClassifyTexture(value.full, value.view, engine->width, engine->height, engine->mips);
+		if (contract != StreamingTextures::TextureRejection::None) {
+			classify(contract);
 			return;
 		}
+		if (!StreamingTextures::LogicalBytes(value.full, 0)) {
+			classify(StreamingTextures::TextureRejection::PayloadSize);
+			return;
+		}
+		classify(StreamingTextures::TextureRejection::None);
 		for (std::uint32_t drop = 0; drop < value.bytes.size(); ++drop)
 			value.bytes[drop] = StreamingTextures::LogicalBytes(value.full, drop);
 		value.source.reset(source);
@@ -384,10 +696,18 @@ void TextureStreaming::State::ObserveTexture(RE::NiSourceTexture* source, RE::BS
 		++diagnostics.candidateRegistrations;
 	}
 	auto& record = it->second;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	const bool terrainConsumer = (origin.requiredCategories & StreamingTextures::Terrain) != 0;
+	if (terrainConsumer && !record.terrainConsumer)
+		++terrainInventoryDiagnostics.candidateRegistrations;
+	record.terrainConsumer |= terrainConsumer;
+#endif
 	record.consumers.Observe(scan, completeScan);
 	record.protectedConsumer |= origin.protectedConsumer || !eligible || record.engine != engine;
+	if (record.protectedConsumer)
+		StreamingTextures::LoadHooks::Forget(record.path);
 	if (!record.protectedConsumer && record.consumers.scanning.size() < maximumConsumers)
-		record.consumers.scanning.push_back({ RE::NiPointer<RE::BSGeometry>(geometry), metric, geometry->GetGeometryRuntimeData().shaderProperty->material->texCoordScale[0] });
+		record.consumers.scanning.push_back({ RE::NiPointer<RE::BSGeometry>(geometry) });
 	else if (record.consumers.scanning.size() >= maximumConsumers)
 		record.protectedConsumer = true;
 }
@@ -414,19 +734,43 @@ void TextureStreaming::State::Scan()
 		++diagnostics.nodesVisited;
 		if (auto* reference = node.object->GetUserData()) {
 			auto* base = reference->GetBaseObject();
-			node.staticOwner = base && base->GetFormType() == RE::FormType::Static;
+			node.staticOwner = base && (base->GetFormType() == RE::FormType::Static || base->GetFormType() == RE::FormType::Land);
 			node.protectedHierarchy |= !node.staticOwner;
 		}
 		node.protectedHierarchy |= node.object->GetControllers() != nullptr;
 		if (auto* geometry = node.object->AsGeometry()) {
 			++diagnostics.geometryObservations;
 			std::uint32_t requiredCategories = 0;
-			auto* material = node.staticOwner && !node.protectedHierarchy ? StreamingTextures::StaticMaterial(geometry, &requiredCategories) : nullptr;
+			bool staticGeometry = !node.protectedHierarchy;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			StreamingTextures::MaterialInspection inspection;
+			auto* material = staticGeometry ? StreamingTextures::StaticMaterial(geometry, &requiredCategories, &inspection) : nullptr;
+			if (staticGeometry) {
+				const auto* name = geometry->name.c_str() ? geometry->name.c_str() : "";
+				materialDiagnostics.Observe(inspection, name);
+				if (inspection.materialFeature == static_cast<std::uint32_t>(RE::BSShaderMaterial::Feature::kMultiTexLandLODBlend))
+					terrainMaterialDiagnostics.Observe(inspection, name);
+			}
+#else
+			auto* material = staticGeometry ? StreamingTextures::StaticMaterial(geometry, &requiredCategories) : nullptr;
+#endif
+			staticGeometry &= node.staticOwner || (requiredCategories & StreamingTextures::Terrain);
+			if (!staticGeometry)
+				material = nullptr;
 			const bool categoryEnabled = categories.Allows(requiredCategories);
-			const double metric = material && categoryEnabled ? StreamingTextures::UnitsPerUV(geometry, material) : 0;
-			const bool measurable = material && std::isfinite(metric) && metric > 0;
+			const auto& bound = geometry->worldBound;
+			const bool measurable = material && std::isfinite(bound.radius) && bound.radius > 0 &&
+			                        std::isfinite(bound.center.x) && std::isfinite(bound.center.y) && std::isfinite(bound.center.z);
 			const bool eligible = material && (!categoryEnabled || measurable);
-			diagnostics.staticGeometryObservations += node.staticOwner && !node.protectedHierarchy;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			if (inspection.materialFeature == static_cast<std::uint32_t>(RE::BSShaderMaterial::Feature::kMultiTexLandLODBlend)) {
+				++terrainInventoryDiagnostics.geometryObservations;
+				terrainInventoryDiagnostics.staticGeometryObservations += staticGeometry;
+				terrainInventoryDiagnostics.supportedMaterialObservations += material != nullptr;
+				terrainInventoryDiagnostics.measurableGeometryObservations += measurable;
+			}
+#endif
+			diagnostics.staticGeometryObservations += staticGeometry;
 			diagnostics.supportedMaterialObservations += material != nullptr;
 			diagnostics.measurableGeometryObservations += measurable;
 			if (auto* property = geometry->GetGeometryRuntimeData().shaderProperty.get()) {
@@ -435,18 +779,17 @@ void TextureStreaming::State::Scan()
 					State& state;
 					RE::BSGeometry* geometry;
 					RE::BSLightingShaderMaterialBase* material;
-					double metric;
 					bool eligible;
 					std::uint32_t requiredCategories;
-					Visitor(State& s, RE::BSGeometry* g, RE::BSLightingShaderMaterialBase* m, double u, bool e, std::uint32_t c) :
-						state(s), geometry(g), material(m), metric(u), eligible(e), requiredCategories(c) {}
+					Visitor(State& s, RE::BSGeometry* g, RE::BSLightingShaderMaterialBase* m, bool e, std::uint32_t c) :
+						state(s), geometry(g), material(m), eligible(e), requiredCategories(c) {}
 					std::uint32_t Accept(RE::NiSourceTexture* texture) override
 					{
-						const bool ordinarySlot = material && (texture == material->diffuseTexture.get() || texture == material->normalTexture.get());
-						state.ObserveTexture(texture, geometry, metric, eligible && ordinarySlot, requiredCategories);
+						const bool ordinarySlot = StreamingTextures::IsStreamingSlot(material, texture);
+						state.ObserveTexture(texture, geometry, eligible && ordinarySlot, requiredCategories);
 						return 1;
 					}
-				} visitor(*this, geometry, material, metric, eligible, requiredCategories);
+				} visitor(*this, geometry, material, eligible, requiredCategories);
 				property->ForEachTexture(visitor);
 			}
 		}
@@ -465,6 +808,9 @@ void TextureStreaming::State::Scan()
 	if (frontier.empty()) {
 		completeScan = scan;
 		++diagnostics.scansCompleted;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		++terrainInventoryDiagnostics.scansCompleted;
+#endif
 		nextScanMs = GetTickCount64() + 250;
 	}
 }
@@ -472,42 +818,83 @@ void TextureStreaming::State::Scan()
 std::uint32_t TextureStreaming::State::Demand(Record& record)
 {
 	++diagnostics.demandChecks;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	if (record.terrainConsumer)
+		++terrainInventoryDiagnostics.demandChecks;
+#endif
+	record.distanceDrop = 0;
 	record.consumers.Promote(completeScan);
 	if (!enabled)
 		return 0;
 	if (!completeScan || record.consumers.verified != completeScan || record.consumers.committed.empty()) {
-		diagnostics.Defer(Block::InventoryIncomplete);
+		Defer(Block::InventoryIncomplete, record);
 		return 0;
 	}
 	if (record.protectedConsumer) {
-		diagnostics.Defer(Block::ProtectedConsumer);
+		Defer(Block::ProtectedConsumer, record);
 		return 0;
 	}
 	StreamingTextures::Origin origin;
 	if (record.source->rendererTexture != record.engine || record.engine->texture != record.current ||
 		!StreamingTextures::ReadOrigin(record.current, origin) || origin.protectedConsumer) {
-		diagnostics.Defer(Block::SourceChanged);
+		Defer(Block::SourceChanged, record);
 		return 0;
 	}
 	if (!categories.Allows(origin.requiredCategories)) {
-		diagnostics.Defer(Block::CategoryDisabled);
+		Defer(Block::CategoryDisabled, record);
 		return 0;
 	}
 	double required = 0;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	RE::BSGeometry* limitingGeometry = nullptr;
+#endif
 	for (auto& consumer : record.consumers.committed) {
 		std::uint32_t requiredCategories = 0;
 		const auto* material = StreamingTextures::StaticMaterial(consumer.geometry.get(), &requiredCategories);
-		if (!material || !categories.Allows(requiredCategories) || material->texCoordScale[0] != consumer.uvScale ||
-			(material->diffuseTexture.get() != record.source.get() && material->normalTexture.get() != record.source.get())) {
-			diagnostics.Defer(Block::ConsumerContract);
+		if (!material || !categories.Allows(requiredCategories) ||
+			!StreamingTextures::IsStreamingSlot(material, record.source.get())) {
+			Defer(Block::ConsumerContract, record);
 			return 0;
 		}
-		required = std::max(required, StreamingTextures::RequiredEdge(consumer.geometry.get(), consumer.unitsPerUV, this->demand));
+		const auto edge = StreamingTextures::RequiredEdge(consumer.geometry.get(), this->demand);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		if (!limitingGeometry || edge > required)
+			limitingGeometry = consumer.geometry.get();
+#endif
+		required = std::max(required, edge);
 	}
-	const auto drop = Policy::DesiredDrop(record.full.Width, record.full.MipLevels, required, maximumDrop);
-	if (!drop)
-		diagnostics.Defer(Block::FullDetailDemand);
-	return drop;
+	const auto drop = Policy::DesiredDrop(std::max(record.full.Width, record.full.Height), record.full.MipLevels, required, maximumDrop,
+		std::min(record.full.Width, record.full.Height));
+	const auto desired = std::max(drop, Policy::CappedDrop(record.full.Width, record.full.Height, record.full.MipLevels, options.maximumSize));
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	StreamingTextures::DemandDiagnostics::Sample sample;
+	sample.requiredEdge = required;
+	sample.fullWidth = record.full.Width;
+	sample.fullHeight = record.full.Height;
+	sample.mipLevels = record.full.MipLevels;
+	sample.desiredDrop = desired;
+	sample.consumers = record.consumers.committed.size();
+	sample.currentFrame = globals::state->frameCount;
+	sample.context = demand;
+	if (limitingGeometry) {
+		const auto& bound = limitingGeometry->worldBound;
+		sample.boundCenter = { bound.center.x, bound.center.y, bound.center.z };
+		sample.boundRadius = bound.radius;
+	}
+	const auto* geometryName = limitingGeometry && limitingGeometry->name.c_str() ? limitingGeometry->name.c_str() : "";
+	demandDiagnostics.Observe(sample, record.path, geometryName);
+	if (record.terrainConsumer)
+		terrainDemandDiagnostics.Observe(sample, record.path, geometryName);
+#endif
+	if (!desired)
+		Defer(Block::FullDetailDemand, record);
+	record.distanceDrop = drop;
+	return desired;
+}
+
+bool TextureStreaming::State::ReductionRequested() const noexcept
+{
+	return enabled && (modes.continuous || (modes.onPressure && pressure.conserving));
 }
 
 void TextureStreaming::State::Select()
@@ -522,11 +909,21 @@ void TextureStreaming::State::Select()
 	const auto now = GetTickCount64();
 	const auto consider = [&](std::uint64_t id, Record& record) {
 		if (record.source->rendererTexture != record.engine || record.engine->texture != record.current) {
-			diagnostics.Defer(Block::SourceChanged);
+			Defer(Block::SourceChanged, record);
 			return;
 		}
+		if (record.loadLifetime && !completeScan && enabled)
+			return;
 		const auto demanded = Demand(record);
-		const auto target = pressure.conserving && enabled ? demanded : 0u;
+		const auto target = Target(record, demanded);
+		if (record.sourceValidated && record.headerHash && record.rememberedDrop != record.distanceDrop && completeScan && record.consumers.verified == completeScan &&
+			!record.consumers.committed.empty() && !record.protectedConsumer) {
+			StreamingTextures::Origin origin;
+			if (StreamingTextures::ReadOrigin(record.current, origin) && !origin.protectedConsumer) {
+				StreamingTextures::LoadHooks::Remember(record.path, { record.full, record.distanceDrop, origin.requiredCategories, record.headerHash, record.fileBytes });
+				record.rememberedDrop = record.distanceDrop;
+			}
+		}
 		if (record.desired != target) {
 			record.desired = target;
 			record.stableSince = now;
@@ -534,7 +931,7 @@ void TextureStreaming::State::Select()
 		if (record.drop == target)
 			return;
 		if (now < record.retryAfter) {
-			diagnostics.Defer(Block::RetryBackoff);
+			Defer(Block::RetryBackoff, record);
 			return;
 		}
 		const bool refill = target < record.drop;
@@ -543,23 +940,29 @@ void TextureStreaming::State::Select()
 			++diagnostics.shrinkCandidates;
 		else if (required)
 			++diagnostics.requiredRestoreCandidates;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		if (record.terrainConsumer) {
+			terrainInventoryDiagnostics.shrinkCandidates += !refill;
+			terrainInventoryDiagnostics.requiredRestoreCandidates += refill && required;
+		}
+#endif
 		if (refill && memory.priorityWork) {
-			diagnostics.Defer(Block::PriorityWork);
+			Defer(Block::PriorityWork, record);
 			return;
 		}
 		if (!refill && (!completeScan || !frontier.empty() || now - record.stableSince < Policy::StableDemandMs)) {
-			diagnostics.Defer(!completeScan || !frontier.empty() ? Block::InventoryIncomplete : Block::DemandSettling);
+			Defer(!completeScan || !frontier.empty() ? Block::InventoryIncomplete : Block::DemandSettling, record);
 			return;
 		}
 		if (!record.drop && reducedRecords.size() >= maximumReducedTextures) {
-			diagnostics.Defer(Block::ReducedLimit);
+			Defer(Block::ReducedLimit, record);
 			return;
 		}
 		if (!Memory::StreamingFits(memory.local.Budget, memory.local.CurrentUsage, memory.pendingBytes,
-				record.bytes[target], refill, required, memory.priorityWork, memory.recoveryDemandBytes)) {
+				record.bytes[target], refill, required, memory.priorityWork, memory.recoveryDemandBytes, options.reserveMiB * Policy::MiB)) {
 			const bool softDemandBlocked = memory.recoveryDemandBytes && Memory::StreamingFits(memory.local.Budget,
-																			 memory.local.CurrentUsage, memory.pendingBytes, record.bytes[target], refill, required, memory.priorityWork);
-			diagnostics.Defer(softDemandBlocked ? Block::RecoveryHeadroom : Block::ReplacementHeadroom);
+																			 memory.local.CurrentUsage, memory.pendingBytes, record.bytes[target], refill, required, memory.priorityWork, 0, options.reserveMiB * Policy::MiB);
+			Defer(softDemandBlocked ? Block::RecoveryHeadroom : Block::ReplacementHeadroom, record);
 			record.retryAfter = now + 1000;
 			++admissionDeferrals;
 			return;
@@ -598,9 +1001,16 @@ void TextureStreaming::State::Select()
 	if (!selected)
 		return;
 	auto& record = records.at(selected);
-	reader.Start({ selected, epoch, record.path, record.full, record.desired });
-	reading = true;
-	detail = selectedRefill ? "Reading restoration mips" : "Reading reduced mip chain";
+	ReadRequest request{ selected, epoch, record.path, record.full, record.desired, selectedRefill ? ReadKind::Restore : ReadKind::ValidateSource };
+	if (!selectedRefill && record.sourceValidated) {
+		transaction.emplace();
+		transaction->payload.request = std::move(request);
+		detail = "Copying resident lower mips on the GPU";
+	} else {
+		reader.Start(std::move(request));
+		reading = true;
+		detail = selectedRefill ? "Reading restoration mips or using RAM cache" : "Validating DDS source before GPU reduction";
+	}
 }
 
 void TextureStreaming::State::Publish(Record& record, Transaction& work)
@@ -615,6 +1025,7 @@ void TextureStreaming::State::Publish(Record& record, Transaction& work)
 		return;
 	}
 	origin.protectedConsumer |= record.protectedConsumer;
+	origin.preloaded = false;
 	if (FAILED(StreamingTextures::WriteOrigin(work.upload.texture.Get(), origin))) {
 		record.retryAfter = GetTickCount64() + 10000;
 		Fail("Could not preserve replacement consumer requirements");
@@ -663,23 +1074,49 @@ void TextureStreaming::State::Publish(Record& record, Transaction& work)
 	work.oldView.Attach(record.engine->resourceView);
 	record.engine->texture = work.upload.texture.Detach();
 	record.engine->resourceView = work.upload.view.Detach();
-	record.engine->width = static_cast<std::uint16_t>(work.upload.desc.Width);
-	record.engine->height = static_cast<std::uint16_t>(work.upload.desc.Height);
-	record.engine->mips = static_cast<std::uint8_t>(work.upload.desc.MipLevels);
+	// Some runtimes leave optional wrapper metadata unset; preserve that representation.
+	StreamingTextures::UpdateEngineMetadata(*record.engine, work.upload.desc);
 	record.current = record.engine->texture;
 	record.currentView = record.engine->resourceView;
-	if (work.payload.request.drop < record.drop)
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	work.terrainConsumer = (origin.requiredCategories & StreamingTextures::Terrain) != 0;
+#endif
+	if (work.payload.request.drop < record.drop) {
 		++restores;
-	else
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		work.payload.cacheHit ? ++cachedRestores : ++ddsRestores;
+		terrainRestores += work.terrainConsumer;
+#endif
+	} else {
 		++shrinks;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		++gpuCopyShrinks;
+		if (work.terrainConsumer && work.payload.request.drop > record.drop) {
+			++terrainShrinks;
+			const auto length = std::min(record.path.size(), terrainReduction.path.size() - 1);
+			std::copy_n(record.path.data(), length, terrainReduction.path.data());
+			terrainReduction.path[length] = '\0';
+			terrainReduction.serial = origin.serial;
+			terrainReduction.requiredCategories = origin.requiredCategories;
+			terrainReduction.fullWidth = record.full.Width;
+			terrainReduction.fullHeight = record.full.Height;
+			terrainReduction.width = work.upload.desc.Width;
+			terrainReduction.height = work.upload.desc.Height;
+			terrainReduction.previousDrop = record.drop;
+			terrainReduction.drop = work.payload.request.drop;
+		}
+#endif
+	}
 	const auto previousDrop = record.drop;
 	record.drop = work.payload.request.drop;
+	if (!record.drop)
+		record.loadLifetime.reset();
 	record.stableSince = GetTickCount64();
 	context->End(work.retirement.Get());
 	work.published = true;
 	work.replacementCommitted = true;
 	work.logicalReductionBytes = record.bytes[previousDrop] - std::min(record.bytes[previousDrop], record.bytes[record.drop]);
-	work.payload.image.Release();
+	work.payload.image.reset();
 	detail = "Waiting for old texture GPU retirement";
 	if (firstPressureReductionPending && record.drop > previousDrop) {
 		firstPressureReductionPending = false;
@@ -700,7 +1137,7 @@ void TextureStreaming::State::CancelTransaction()
 		work.oldView = work.upload.view;
 		work.upload.texture.Reset();
 		work.upload.view.Reset();
-		work.payload.image.Release();
+		work.payload.image.reset();
 		globals::d3d::context->End(work.retirement.Get());
 		work.published = true;
 	} else {
@@ -713,12 +1150,23 @@ void TextureStreaming::State::ServiceTransaction()
 	if (reading) {
 		if (auto result = reader.Poll()) {
 			reading = false;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			sourceBytesRead += result->sourceBytesRead;
+			if (result->sourceBytesRead)
+				result->request.kind == ReadKind::ValidateSource ? ++sourceHeaderReads : ++sourcePayloadReads;
+#endif
 			if (result->request.epoch != epoch || !records.contains(result->request.serial)) {
 				++cancelled;
 			} else if (!result->error.empty()) {
 				records.at(result->request.serial).retryAfter = GetTickCount64() + 10000;
-				Fail(result->error);
+				Fail(std::format("{}: {}", result->error, result->request.path));
 			} else {
+				auto& record = records.at(result->request.serial);
+				record.sourceValidated = true;
+				if (result->headerHash) {
+					record.headerHash = result->headerHash;
+					record.fileBytes = result->fileBytes;
+				}
 				transaction.emplace();
 				transaction->payload = std::move(*result);
 			}
@@ -733,6 +1181,7 @@ void TextureStreaming::State::ServiceTransaction()
 		if (hr == S_OK) {
 			work.oldView.Reset();
 			work.oldTexture.Reset();
+			work.upload.copySource.Reset();
 			memory = Memory::Get().Sample(globals::d3d::device, 0, true);
 			if (memory.Fresh(GetTickCount64())) {
 				const auto logicalReductionBytes = work.logicalReductionBytes;
@@ -743,11 +1192,18 @@ void TextureStreaming::State::ServiceTransaction()
 					if (work.logicalReductionBytes) {
 						++diagnostics.retiredReductions;
 						diagnostics.retiredLogicalReductionBytes += work.logicalReductionBytes;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+						if (work.terrainConsumer) {
+							++terrainRetiredReductions;
+							terrainRetiredLogicalBytes += work.logicalReductionBytes;
+						}
+#endif
 					}
 				} else {
 					++diagnostics.retiredCancelledUploads;
 				}
 				transaction.reset();
+				detail = enabled ? "Monitoring texture demand and GPU memory" : "Disabled";
 				if (reportReduction) {
 					pressureEpisode.retirementReported = true;
 					logger::info("[TextureStreaming] First reduced replacement retired during pressure episode: logical capacity removed {:.2f} MiB; physical VRAM relief is not measured",
@@ -767,14 +1223,13 @@ void TextureStreaming::State::ServiceTransaction()
 	}
 	auto& record = found->second;
 	const auto target = work.payload.request.drop;
-	if (record.source->rendererTexture != record.engine || record.engine->texture != record.current || record.engine->resourceView != record.currentView || record.engine->UAV || target > Demand(record) ||
-		(target > record.drop && !pressure.conserving)) {
+	if (record.source->rendererTexture != record.engine || record.engine->texture != record.current || record.engine->resourceView != record.currentView || record.engine->UAV || target > Target(record, Demand(record))) {
 		CancelTransaction();
 		return;
 	}
 	if (!work.reservation) {
 		const bool refill = target < record.drop;
-		work.reservation = Memory::Get().TryReserveStreaming(globals::d3d::device, StreamingTextures::LogicalBytes(record.full, target), refill, Demand(record) < record.drop);
+		work.reservation = Memory::Get().TryReserveStreaming(globals::d3d::device, StreamingTextures::LogicalBytes(record.full, target), refill, Demand(record) < record.drop, options.reserveMiB * Policy::MiB);
 		if (!work.reservation) {
 			++admissionDeferrals;
 			diagnostics.Defer(Block::ReplacementHeadroom);
@@ -783,7 +1238,9 @@ void TextureStreaming::State::ServiceTransaction()
 			transaction.reset();
 			return;
 		}
-		auto hr = work.upload.Begin(globals::d3d::device, record.full, record.view, target);
+		auto hr = work.payload.request.kind == ReadKind::ValidateSource ?
+		              work.upload.BeginCopy(globals::d3d::device, record.full, record.view, target, record.current, record.drop) :
+		              work.upload.Begin(globals::d3d::device, record.full, record.view, target);
 		const D3D11_QUERY_DESC query{ D3D11_QUERY_EVENT, 0 };
 		if (SUCCEEDED(hr))
 			hr = globals::d3d::device->CreateQuery(&query, &work.retirement);
@@ -803,7 +1260,14 @@ void TextureStreaming::State::ServiceTransaction()
 		CancelTransaction();
 		return;
 	}
-	const auto hr = work.upload.Advance(context, work.payload.image, uploadBytesPerFrame);
+	const auto hr = [&] {
+		if (work.payload.request.kind == ReadKind::ValidateSource) {
+			CS_GPU_PASS("TextureStreaming::Shrink");
+			return work.upload.AdvanceCopy(context, uploadBytesPerFrame);
+		}
+		CS_GPU_PASS("TextureStreaming::Restore");
+		return work.payload.image ? work.upload.Advance(context, *work.payload.image, uploadBytesPerFrame) : E_UNEXPECTED;
+	}();
 	if (FAILED(hr)) {
 		record.retryAfter = GetTickCount64() + 10000;
 		Fail(std::format("Replacement upload failed: 0x{:08X}", static_cast<std::uint32_t>(hr)));
@@ -821,19 +1285,22 @@ void TextureStreaming::State::Tick()
 	if (lastFrame == frame)
 		return;
 	lastFrame = frame;
-	if (!enabled && records.empty() && !reading && !transaction) {
+	if (!enabled && records.empty() && !reading && !transaction && !StreamingTextures::LoadHooks::HasPending()) {
 		detail = "Disabled";
 		return;
 	}
 	Util::RendererOwnership owner(Util::GetRendererContextLock(globals::game::renderer, globals::d3d::context));
 	if (!owner)
 		return;
-	memory = Memory::Get().Sample(globals::d3d::device);
+	AdoptLoads();
+	memory = Memory::Get().SampleStreaming(globals::d3d::device);
 	const bool transition = globals::features::upscaling.IsTextureStreamingTransitionActive();
 	memory.priorityWork |= transition;
 	const auto start = globals::state->worldLoadTransitionStartFrame.load(std::memory_order_acquire);
 	const bool loading = globals::state->IsSaveLoadSafeModeActive();
 	const bool blocked = loading || transition;
+	if (paused && !blocked)
+		detail = ReductionRequested() ? "Scanning textures for safe detail reductions" : "Monitoring GPU memory pressure";
 	if (start != worldStart || blocked != paused || deviceGeneration != memory.generation) {
 		++epoch;
 		worldStart = start;
@@ -842,6 +1309,7 @@ void TextureStreaming::State::Tick()
 			transaction.reset();
 			records.clear();
 			reducedRecords.clear();
+			reader.ClearCache();
 		}
 		deviceGeneration = memory.generation;
 		frontier.clear();
@@ -853,7 +1321,7 @@ void TextureStreaming::State::Tick()
 	}
 	const auto now = GetTickCount64();
 	const auto pressureChange = pressure.Update(now, memory.sampledAtMs, memory.Fresh(now), memory.local.Budget,
-		Memory::Add(memory.local.CurrentUsage, memory.pendingBytes));
+		Memory::Add(memory.local.CurrentUsage, memory.pendingBytes), options.reserveMiB * Policy::MiB);
 	if (pressureChange != Policy::PressureChange::None) {
 		firstPressureReductionPending = pressure.conserving;
 		logger::info("[TextureStreaming] Memory pressure {}: usage {:.1f} MiB, budget {:.1f} MiB, pending {:.1f} MiB; enabled={}, paused={}",
@@ -907,6 +1375,8 @@ void TextureStreaming::State::ReportPressureEpisode(std::string_view reason, std
 
 void TextureStreaming::State::Prune()
 {
+	if (!enabled && reducedRecords.empty() && !reading && !transaction)
+		reader.ClearCache(true);
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(200);
 	auto entry = records.find(pruneCursor);
 	if (entry == records.end())
@@ -933,17 +1403,29 @@ TextureStreaming& TextureStreaming::Instance()
 }
 std::pair<std::string, std::vector<std::string>> TextureStreaming::GetFeatureSummary()
 {
-	return { "Reduces texture detail on static objects when GPU memory is tight.",
+	return { "Streams distant textures on memory pressure or continuously.",
 		{ "Conservative static DDS coverage with optional categories", "Stereo and mip-bias aware detail", "Bounded restoration with shared NR and render-scale headroom" } };
 }
 void TextureStreaming::PostPostLoad()
 {
+	// All SKSE plugins are loaded before this phase, independent of their DLL load order.
+	if (GetModuleHandleW(L"SPS.dll")) {
+		std::scoped_lock lock(state->mutex);
+		state->externalStreamingConflict = true;
+		state->enabled = false;
+		state->detail = failedLoadedMessage = streamingConflictWarning;
+		loaded = false;
+		logger::warn("[TextureStreaming] {}", failedLoadedMessage);
+		return;
+	}
 	if (originHookReady.load())
 		return;
 	try {
 		originalDDSLoader = reinterpret_cast<DDSLoader>(REL::Relocation<std::uintptr_t>{ REL::VariantID(75721, 77533, 0xDD2B60) }.address());
 		const auto result = Util::AttachDetour(reinterpret_cast<void**>(&originalDDSLoader), reinterpret_cast<void*>(&LoadDDS));
 		originHookReady.store(result.error == NO_ERROR, std::memory_order_release);
+		if (result.error == NO_ERROR)
+			StreamingTextures::LoadHooks::Install();
 		if (result.error != NO_ERROR)
 			logger::error("[TextureStreaming] DDS provenance hook failed ({}); streaming unavailable", result.error);
 	} catch (const std::exception& error) {
@@ -957,6 +1439,7 @@ void TextureStreaming::Reset()
 		state->Tick();
 	} catch (const std::exception& error) {
 		state->enabled = false;
+		StreamingTextures::LoadHooks::Configure(false, state->modes, state->options, state->categories, state->maximumDrop);
 		state->Fail(std::format("Streaming stopped after an exception: {}", error.what()));
 	}
 }
@@ -986,14 +1469,27 @@ void TextureStreaming::CaptureWorldDemand(float mipBias)
 			std::abs(camera.projMatrixUnjittered._11), std::abs(camera.projMatrixUnjittered._22), 0 };
 	}
 }
-void TextureStreaming::Configure(bool enabled, std::uint32_t maximumDrop, std::optional<StreamingTextures::Categories> categories)
+void TextureStreaming::Configure(bool enabled, std::uint32_t maximumDrop, std::optional<StreamingTextures::Categories> categories,
+	std::optional<StreamingTextures::Modes> modes, std::optional<StreamingTextures::Options> options)
 {
+	if (options)
+		StreamingTextures::ValidateOptions(*options);
 	if (maximumDrop < 1 || maximumDrop > Policy::MaximumDrop)
 		throw std::invalid_argument("MaximumMipDrop must be between 1 and 3");
+	if (modes && enabled != modes->Enabled())
+		throw std::invalid_argument("Enabled must match the selected streaming modes");
 	std::scoped_lock lock(state->mutex);
-	if (categories && state->categories != *categories) {
-		state->categories = *categories;
+	const auto nextModes = modes.value_or(enabled ? (state->modes.Enabled() ? state->modes : StreamingTextures::Modes{}) : StreamingTextures::Modes{ false, false });
+	const bool coverageChanged = categories && state->categories != *categories;
+	const bool active = enabled && !state->externalStreamingConflict;
+	if (coverageChanged || state->modes != nextModes || state->enabled != active || state->maximumDrop != maximumDrop || (options && state->options != *options))
 		++state->epoch;
+	if (options && state->options.reserveMiB != options->reserveMiB)
+		state->pressure = {};
+	if (options)
+		state->options = *options;
+	if (coverageChanged) {
+		state->categories = *categories;
 		state->frontier.clear();
 		state->visited.clear();
 		state->completeScan = 0;
@@ -1001,17 +1497,40 @@ void TextureStreaming::Configure(bool enabled, std::uint32_t maximumDrop, std::o
 		for (auto& [id, record] : state->records)
 			record.consumers.Clear();
 	}
-	state->enabled = enabled;
-	if (!enabled)
+	state->modes = nextModes;
+	state->enabled = active;
+	if (!active)
 		state->UpdatePressureDiagnostics(GetTickCount64());
 	state->maximumDrop = maximumDrop;
-	state->detail = enabled ? "Monitoring GPU memory pressure" : "Restoring texture detail as headroom permits";
+	StreamingTextures::LoadHooks::Configure(active, state->modes, state->options, state->categories, state->maximumDrop);
+	state->detail = state->externalStreamingConflict ? streamingConflictWarning :
+	                !active                          ? "Restoring texture detail as headroom permits" :
+	                nextModes.continuous             ? "Continuous texture streaming" :
+	                                                   "Monitoring GPU memory pressure";
 }
+#ifdef DEVBENCH_BRIDGE_ENABLED
+void TextureStreaming::SetDebugForceStreaming(bool enabled)
+{
+	std::scoped_lock lock(state->mutex);
+	if (enabled && !state->enabled)
+		throw std::invalid_argument("Enable Texture Streaming before forcing reductions");
+	if (state->modes.continuous == enabled)
+		return;
+	state->modes.continuous = enabled;
+	state->enabled = state->modes.Enabled() && !state->externalStreamingConflict;
+	StreamingTextures::LoadHooks::Configure(state->enabled, state->modes, state->options, state->categories, state->maximumDrop);
+	++state->epoch;
+	state->detail = enabled ? "Continuous texture streaming" : "Restoring texture detail as headroom permits";
+}
+#endif
 void TextureStreaming::LoadSettings(nlohmann::json& object)
 {
 	try {
 		const auto maximum = StreamingTextures::ParseMaximumMipDrop(object.value("MaximumMipDrop", nlohmann::json(2)));
-		Configure(object.value("Enabled", false), maximum, StreamingTextures::ParseCategories(object.value("Categories", nlohmann::json::object())));
+		const auto modes = object.contains("Modes") ? StreamingTextures::ParseModes(object.at("Modes")) :
+		                                              StreamingTextures::Modes{ object.value("Enabled", true), false };
+		Configure(modes.Enabled(), maximum, object.contains("Categories") ? StreamingTextures::ParseCategories(object.at("Categories")) : StreamingTextures::Categories{}, modes,
+			object.contains("Options") ? StreamingTextures::ParseOptions(object.at("Options")) : StreamingTextures::Options{});
 	} catch (const std::exception& error) {
 		logger::warn("[TextureStreaming] Invalid saved settings retained previous configuration: {}", error.what());
 	}
@@ -1019,10 +1538,11 @@ void TextureStreaming::LoadSettings(nlohmann::json& object)
 void TextureStreaming::SaveSettings(nlohmann::json& object)
 {
 	std::scoped_lock lock(state->mutex);
-	object = { { "Enabled", state->enabled }, { "MaximumMipDrop", state->maximumDrop },
-		{ "Categories", StreamingTextures::SerializeCategories(state->categories) } };
+	object = { { "Enabled", state->modes.Enabled() }, { "Modes", StreamingTextures::SerializeModes(state->modes) },
+		{ "MaximumMipDrop", state->maximumDrop }, { "Categories", StreamingTextures::SerializeCategories(state->categories) },
+		{ "Options", StreamingTextures::SerializeOptions(state->options) } };
 }
-void TextureStreaming::RestoreDefaultSettings() { Configure(false, 2, StreamingTextures::Categories{}); }
+void TextureStreaming::RestoreDefaultSettings() { Configure(true, 2, StreamingTextures::Categories{}, StreamingTextures::Modes{}, StreamingTextures::Options{}); }
 nlohmann::json TextureStreaming::GetStatus() const
 {
 	std::scoped_lock lock(state->mutex);
@@ -1036,7 +1556,10 @@ nlohmann::json TextureStreaming::GetStatus() const
 		desiredRestores += record.desired < record.drop;
 	}
 	const auto& memory = state->memory;
-	return { { "enabled", state->enabled }, { "maximumMipDrop", state->maximumDrop },
+	nlohmann::json result = { { "enabled", state->enabled }, { "maximumMipDrop", state->maximumDrop },
+		{ "externalStreamingConflict", state->externalStreamingConflict }, { "unavailableReason", failedLoadedMessage },
+		{ "modes", StreamingTextures::SerializeModes(state->modes) },
+		{ "options", StreamingTextures::SerializeOptions(state->options) }, { "rememberedSizes", StreamingTextures::LoadHooks::Status() },
 		{ "categories", StreamingTextures::SerializeCategories(state->categories) }, { "originHookReady", originHookReady.load() },
 		{ "conserving", state->pressure.conserving }, { "records", state->records.size() }, { "protectedRecords", protectedCount },
 		{ "reducedTextures", reduced }, { "fullLogicalBytes", full }, { "residentLogicalBytes", resident },
@@ -1058,30 +1581,64 @@ nlohmann::json TextureStreaming::GetStatus() const
 						{ "usageBytes", memory.local.CurrentUsage }, { "pendingBytes", memory.pendingBytes }, { "recoveryDemandBytes", memory.recoveryDemandBytes }, { "priorityWork", memory.priorityWork },
 						{ "sampledAtMs", memory.sampledAtMs }, { "deviceGeneration", memory.generation }, { "sampleSequence", memory.sequence },
 						{ "adapterLuidLow", memory.adapter.LowPart }, { "adapterLuidHigh", memory.adapter.HighPart } } } };
-}
-void TextureStreaming::DrawSettingsEnabledControl()
-{
-	bool enabled;
-	std::uint32_t maximum;
-	{
-		std::scoped_lock lock(state->mutex);
-		enabled = state->enabled;
-		maximum = state->maximumDrop;
-	}
-	if (Util::Widgets::Checkbox("Enabled", &enabled))
-		Configure(enabled, maximum);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	const auto simulation = Memory::Get().GetStreamingPressure();
+	const auto now = GetTickCount64();
+	const bool simulationActive = simulation.Active(now, simulation.generation);
+	result["pressureSimulation"] = { { "active", simulationActive }, { "headroomMiB", simulation.headroomMiB },
+		{ "budgetBytes", simulation.budgetBytes }, { "startedAtMs", simulation.startedAtMs }, { "expiresAtMs", simulation.expiresAtMs },
+		{ "remainingMilliseconds", simulationActive ? simulation.expiresAtMs - now : 0 }, { "deviceGeneration", simulation.generation } };
+	result["memory"]["physicalBudgetBytes"] = memory.physicalBudgetBytes;
+	result["memory"]["pressureSimulated"] = memory.pressureSimulated;
+	const auto cache = state->reader.CacheStatus();
+	result["transfers"] = { { "gpuCopyShrinks", state->gpuCopyShrinks }, { "cachedRestores", state->cachedRestores }, { "ddsRestores", state->ddsRestores },
+		{ "sourceHeaderReads", state->sourceHeaderReads }, { "sourcePayloadReads", state->sourcePayloadReads }, { "sourceBytesRead", state->sourceBytesRead } };
+	result["restorationCache"] = { { "limitBytes", cache.limitBytes }, { "bytes", cache.bytes }, { "entries", cache.entries }, { "generation", cache.generation },
+		{ "hits", cache.hits }, { "misses", cache.misses }, { "evictions", cache.evictions }, { "storeFailures", cache.storeFailures } };
+	result["debugForceStreaming"] = state->modes.continuous;
+	result["materialDiagnostics"] = MaterialDiagnosticStatus(state->materialDiagnostics);
+	const auto& terrain = state->terrainReduction;
+	std::uint64_t terrainRecords = 0, terrainReduced = 0, terrainDesiredShrinks = 0;
+	for (const auto& [id, record] : state->records)
+		if (record.terrainConsumer) {
+			++terrainRecords;
+			terrainReduced += record.drop != 0;
+			terrainDesiredShrinks += record.desired > record.drop;
+		}
+	result["terrainDiagnostics"] = {
+		{ "records", terrainRecords }, { "reducedTextures", terrainReduced }, { "desiredShrinks", terrainDesiredShrinks },
+		{ "inventory", DiagnosticStatus(state->terrainInventoryDiagnostics) },
+		{ "exclusionSamples", DiagnosticSampleStatus(state->terrainExclusions, Diagnostics::exclusionNames) },
+		{ "blockedSamples", DiagnosticSampleStatus(state->terrainBlocks, Diagnostics::blockNames) },
+		{ "textures", TextureDiagnosticStatus(state->terrainTextureDiagnostics) },
+		{ "demand", DemandDiagnosticStatus(state->terrainDemandDiagnostics) },
+		{ "committedShrinks", state->terrainShrinks }, { "committedRestores", state->terrainRestores },
+		{ "retiredReductions", state->terrainRetiredReductions }, { "retiredLogicalReductionBytes", state->terrainRetiredLogicalBytes },
+		{ "materials", MaterialDiagnosticStatus(state->terrainMaterialDiagnostics) },
+		{ "lastReduction", !state->terrainShrinks ? nlohmann::json(nullptr) : nlohmann::json{ { "texturePath", terrain.path.data() }, { "resourceSerial", terrain.serial }, { "requiredCategories", terrain.requiredCategories }, { "fullWidth", terrain.fullWidth }, { "fullHeight", terrain.fullHeight }, { "width", terrain.width }, { "height", terrain.height }, { "previousDrop", terrain.previousDrop }, { "drop", terrain.drop } } }
+	};
+	result["textureDiagnostics"] = TextureDiagnosticStatus(state->textureDiagnostics);
+	result["demandDiagnostics"] = DemandDiagnosticStatus(state->demandDiagnostics);
+#endif
+	result["distanceReductionRequested"] = state->ReductionRequested();
+	result["reductionRequested"] = state->enabled && (state->ReductionRequested() || state->options.maximumSize != 0);
+	return result;
 }
 void TextureStreaming::DrawSettings()
 {
 	bool enabled;
+	StreamingTextures::Modes modes;
 	int maximum;
+	StreamingTextures::Options options;
 	StreamingTextures::Categories categories;
 	std::string detail;
 	std::uint64_t reduced, logicalBytesRemoved = 0;
 	{
 		std::scoped_lock lock(state->mutex);
 		enabled = state->enabled;
+		modes = state->modes;
 		maximum = state->maximumDrop;
+		options = state->options;
 		categories = state->categories;
 		detail = state->detail;
 		reduced = state->reducedRecords.size();
@@ -1095,41 +1652,67 @@ void TextureStreaming::DrawSettings()
 	if (!available)
 		Util::Text::WrappedWarning("Texture streaming is unavailable because texture source tracking could not start. Restart the game to try again.");
 	MenuUI::SettingsPage page("TextureStreaming", {
-													  { "quality", "Texture detail", "Choose how much texture detail can be reduced under memory pressure.", "Detail limit and restoration", true, true, "Balance detail and memory", nullptr, nullptr, available },
-													  { "categories", "Optional categories", "Enable additional static texture categories individually.", "Controlled coverage tests", true, false, nullptr, nullptr, nullptr, available },
-													  { "status", "Status", "Inspect streaming activity and logical texture capacity.", "Activity and memory accounting", true, true, nullptr },
+													  { "quality", "Texture detail", "Set VRAM reserve and texture detail.", "Streaming controls", true, true, nullptr, nullptr, nullptr, available },
+													  { "categories", "Coverage", "Optional texture types.", "Additional coverage", true, false, nullptr, nullptr, nullptr, available },
+													  { "status", "Status", "Current streaming activity.", "Activity and capacity", true, true, nullptr },
 												  });
 	if (page.Is("quality")) {
-		{
-			const auto disabled = Util::DisableGuard(!available);
-			if (Util::Widgets::SliderInt("Maximum mip levels removed", &maximum, 1, Policy::MaximumDrop))
-				Configure(enabled, maximum);
-		}
-		MenuUI::DetailText("Static objects only, such as buildings and rocks. Reduces detail when GPU memory is tight; restores it as memory allows.");
+		const auto disabled = Util::DisableGuard(!available);
+		const auto previousModes = modes;
+		const auto previousOptions = options;
+		const auto previousMaximum = maximum;
+		Util::Widgets::Checkbox("On pressure", &modes.onPressure);
+		Util::AddTooltip("Stream distant textures when GPU memory is tight. Restores detail when pressure clears. On by default.");
+		ImGui::Spacing();
+		Util::Widgets::Checkbox("Always stream", &modes.continuous);
+		Util::AddTooltip("Stream distant textures continuously, even with enough GPU memory. Nearby textures restore detail within the selected size cap. Saved between sessions.");
+		ImGui::Spacing();
+		int reserveSteps = options.reserveMiB / Util::TextureMemoryPolicy::ReserveStepMiB;
+		const auto reserveLabel = std::format("{} MiB", options.reserveMiB);
+		if (Util::Widgets::SliderInt("Keep free", &reserveSteps, 1, Util::TextureMemoryPolicy::MaximumReserveMiB / Util::TextureMemoryPolicy::ReserveStepMiB,
+				reserveLabel.c_str(), ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput))
+			options.reserveMiB = std::clamp(reserveSteps, 1, static_cast<int>(Util::TextureMemoryPolicy::MaximumReserveMiB / Util::TextureMemoryPolicy::ReserveStepMiB)) * Util::TextureMemoryPolicy::ReserveStepMiB;
+		Util::AddTooltip("Start pressure streaming below this free VRAM budget. Refills preserve the reserve; optional refills wait for another 1 GiB of headroom.");
+		Util::Widgets::Checkbox("Remember sizes", &options.rememberedSizes);
+		Util::AddTooltip("Reuse validated texture sizes across loads and sessions when streaming is active. New or changed sources load normally first.");
+		constexpr std::array sizes{ 0u, 1024u, 2048u, 4096u, 8192u };
+		int selectedSize = static_cast<int>(std::find(sizes.begin(), sizes.end(), options.maximumSize) - sizes.begin());
+		if (Util::Widgets::Combo("Maximum size", &selectedSize,
+				"Unlimited\0"
+				"1K\0"
+				"2K\0"
+				"4K\0"
+				"8K\0"))
+			options.maximumSize = sizes[selectedSize];
+		Util::AddTooltip("Caps eligible textures even nearby and with enough VRAM. Reduces fine detail. Protected textures stay full size; Unlimited preserves source detail.");
+		Util::Widgets::SliderInt("Maximum mip levels removed", &maximum, 1, Policy::MaximumDrop, "%d", ImGuiSliderFlags_AlwaysClamp);
+		maximum = std::clamp(maximum, 1, static_cast<int>(Policy::MaximumDrop));
+		Util::AddTooltip("Limits distance-based reductions. The optional size cap can remove more mips, including nearby. Texture protections still apply.");
+		if (modes != previousModes || options != previousOptions || maximum != previousMaximum)
+			Configure(modes.Enabled(), maximum, std::nullopt, modes, options);
 	}
 	if (page.Is("categories")) {
 		const auto disabled = Util::DisableGuard(!available);
-		bool changed = Util::Widgets::Checkbox("Landscape textures on static meshes", &categories.landscapeStatics);
-		MenuUI::DetailText("Includes ordinary static meshes using landscape-folder textures.");
-		changed |= Util::Widgets::Checkbox("Alpha-tested static surfaces", &categories.alphaTestedStatics);
-		MenuUI::DetailText("Includes non-animated cutout surfaces. Lower detail can change fine edges.");
-		changed |= Util::Widgets::Checkbox("Emissive static surfaces", &categories.emissiveStatics);
-		MenuUI::DetailText("Includes diffuse and normal maps on static emissive materials.");
-		if (changed)
+		const auto previous = categories;
+		const std::array choices{
+			MenuUI::ToggleChoice{ "Landscape", &categories.landscapeStatics, "Landscape-folder textures used by ordinary static meshes." },
+			MenuUI::ToggleChoice{ "Cutouts", &categories.alphaTestedStatics, "Non-animated alpha-tested static surfaces. Lower detail can soften fine edges." },
+			MenuUI::ToggleChoice{ "Emissive", &categories.emissiveStatics, "Diffuse and normal maps on static emissive surfaces. Glow maps remain protected." },
+			MenuUI::ToggleChoice{ "Terrain", &categories.terrain, "Near-terrain diffuse and normal layers. Shared layers keep nearby detail. Parallax terrain also requires Parallax. LOD, overlays and noise remain excluded." },
+			MenuUI::ToggleChoice{ "Parallax", &categories.parallax, "Experimental diffuse and normal streaming on parallax meshes and terrain. For terrain also enable Terrain. Height maps stay full size; appearance may change." },
+		};
+		for (const auto& choice : choices) {
+			Util::Widgets::Checkbox(choice.label, choice.value);
+			Util::AddTooltip(choice.tooltip, ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled);
+			ImGui::Spacing();
+		}
+		if (categories != previous)
 			Configure(enabled, maximum, categories);
 	}
 	if (page.Is("status")) {
 		MenuUI::DetailNote(detail.c_str());
-		{
-			MenuUI::DetailGrid grid("StreamingStatus");
-			grid.Next();
-			MenuUI::SectionHeading("Texture activity");
-			MenuUI::DetailText(std::format("Reduced textures: {}", reduced).c_str());
-			grid.Next();
-			MenuUI::SectionHeading("Logical capacity");
-			MenuUI::DetailText(std::format("Capacity removed: {:.1f} MiB", static_cast<double>(logicalBytesRemoved) / Policy::MiB).c_str());
-		}
-		MenuUI::DetailText("Logical capacity is not a measurement of physical VRAM reclaimed.");
+		MenuUI::DetailText(std::format("Reduced textures: {}", reduced).c_str());
+		MenuUI::DetailText(std::format("Capacity removed: {:.1f} MiB", static_cast<double>(logicalBytesRemoved) / Policy::MiB).c_str());
+		Util::AddTooltip("Logical texture capacity; physical VRAM relief may differ.");
 	}
-	MenuUI::DetailText("Excluded: characters, clothing, skin, terrain, distant LOD, water, parallax, blended transparency, glow maps and runtime-generated textures.");
 }

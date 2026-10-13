@@ -29,17 +29,17 @@ int main()
 			}
 			Require(rejected, "Malformed mip limit escaped boundary validation");
 		}
-		for (unsigned selected = 0; selected < 8; ++selected) {
-			StreamingTextures::Categories categories{ (selected & 1u) != 0, (selected & 2u) != 0, (selected & 4u) != 0 };
-			for (unsigned required = 0; required < 8; ++required)
+		for (unsigned selected = 0; selected < 32; ++selected) {
+			StreamingTextures::Categories categories{ (selected & 1u) != 0, (selected & 2u) != 0, (selected & 4u) != 0, (selected & 8u) != 0, (selected & 16u) != 0 };
+			for (unsigned required = 0; required < 32; ++required)
 				Require(categories.Allows(required) == ((required & ~selected) == 0), "A shared consumer escaped category consent");
-			Require(!categories.Allows(8u), "Unknown category was admitted");
+			Require(!categories.Allows(32u), "Unknown category was admitted");
 			Require(StreamingTextures::ParseCategories(StreamingTextures::SerializeCategories(categories)) == categories, "Category settings lost a selection");
 		}
-		Require(StreamingTextures::ParseCategories(nlohmann::json::object()) == StreamingTextures::Categories{}, "Missing categories changed conservative defaults");
-		Require(StreamingTextures::ParseCategories({ { "emissiveStatics", true } }) == StreamingTextures::Categories{ false, false, true }, "Independent category selection enabled another category");
+		Require(StreamingTextures::ParseCategories(nlohmann::json::object()) == StreamingTextures::Categories{ false, false, false, false, false }, "An empty replacement retained default coverage");
+		Require(StreamingTextures::ParseCategories({ { "emissiveStatics", true } }) == StreamingTextures::Categories{ false, false, true, false, false }, "Independent category selection enabled another category");
 		for (const auto& value : { nlohmann::json(nullptr), nlohmann::json(true), nlohmann::json::array(),
-				 nlohmann::json{ { "terrain", true } }, nlohmann::json{ { "alphaTestedStatics", 1 } },
+				 nlohmann::json{ { "water", true } }, nlohmann::json{ { "alphaTestedStatics", 1 } },
 				 nlohmann::json{ { "landscapeStatics", "true" } }, nlohmann::json{ { "emissiveStatics", nullptr } } }) {
 			bool rejected = false;
 			try {
@@ -98,10 +98,33 @@ int main()
 		inventory.Clear();
 		Require(inventory.committed.empty() && inventory.scanning.empty() && !inventory.verified && !inventory.seen, "World invalidation retained consumers");
 		Require(inventory.Expired(0), "Invalidated full-size inventory pinned textures through loading");
+		Require(P::CappedDrop(8192, 256, 14, 1024) == 3, "Size cap was overridden by the distance detail floor");
+		Require(P::CappedDrop(4096, 4096, 13, 0) == 0, "Unlimited retained a size cap");
+		Require(P::CappedDrop(4096, 4096, 13, 8192) == 0, "Cap upscaled a smaller texture");
+		for (const auto reserve : { 256u, 1024u, 8192u }) {
+			StreamingTextures::Options options{ reserve, false, 1024 };
+			Require(StreamingTextures::ParseOptions(StreamingTextures::SerializeOptions(options)) == options, "Residency options did not round-trip");
+		}
+		for (const auto bad : { -1, 0, 255, 257, 8193 }) {
+			auto options = StreamingTextures::SerializeOptions({});
+			options["reserveMiB"] = bad;
+			bool rejected = false;
+			try {
+				(void)StreamingTextures::ParseOptions(options);
+			} catch (const std::invalid_argument&) {
+				rejected = true;
+			}
+			Require(rejected, "Invalid reserve escaped validation");
+		}
+		P::Pressure adjusted;
+		Require(adjusted.Update(1, 1, true, 10000 * P::MiB, 8100 * P::MiB) == P::PressureChange::None, "Old percentage threshold overrode the configured reserve");
+		Require(adjusted.Update(2, 2, true, 10000 * P::MiB, 8100 * P::MiB, 2048 * P::MiB) == P::PressureChange::Entered, "Configured reserve failed to trigger");
+		Require(Memory::StreamingFits(10000 * P::MiB, 8000 * P::MiB, 0, 100 * P::MiB, true, true, false, 0, 512 * P::MiB), "Low configured reserve did not permit visible restoration");
+		Require(!Memory::StreamingFits(10000 * P::MiB, 8000 * P::MiB, 0, 100 * P::MiB, true, true, false, 0, 2048 * P::MiB), "Refill crossed configured reserve");
 		P::Pressure pressure;
-		Require(pressure.Update(1000, 1000, true, 10000 * P::MiB, 8100 * P::MiB) == P::PressureChange::Entered, "Pressure entry event missing");
+		Require(pressure.Update(1000, 1000, true, 10000 * P::MiB, 9100 * P::MiB) == P::PressureChange::Entered, "Pressure entry event missing");
 		for (unsigned frame = 0; frame < 1000; ++frame)
-			Require(pressure.Update(1000, 1000, true, 10000 * P::MiB, 8100 * P::MiB) == P::PressureChange::None, "Repeated pressure sample emitted another event");
+			Require(pressure.Update(1000, 1000, true, 10000 * P::MiB, 9100 * P::MiB) == P::PressureChange::None, "Repeated pressure sample emitted another event");
 		Require(pressure.conserving, "High pressure did not request reclamation");
 		for (std::uint64_t time = 1250; time < 6250; time += 250) {
 			pressure.Update(time, time, true, 10000 * P::MiB, 6000 * P::MiB);
@@ -110,7 +133,7 @@ int main()
 		Require(pressure.Update(6250, 6250, true, 10000 * P::MiB, 6000 * P::MiB) == P::PressureChange::Recovered, "Recovery event missing");
 		Require(pressure.Update(6250, 6250, true, 10000 * P::MiB, 6000 * P::MiB) == P::PressureChange::None, "Repeated recovery emitted another event");
 		Require(!pressure.conserving, "Sustained recovery never allowed refill");
-		pressure.Update(6500, 6500, true, 10000 * P::MiB, 8100 * P::MiB);
+		pressure.Update(6500, 6500, true, 10000 * P::MiB, 9100 * P::MiB);
 		pressure.Update(7000, 7000, true, 10000 * P::MiB, 6000 * P::MiB);
 		pressure.Update(13000, 13000, true, 10000 * P::MiB, 6000 * P::MiB);
 		Require(pressure.conserving, "A missing observation window authorized refill");
@@ -118,17 +141,17 @@ int main()
 		Require(pressure.healthySince == 0, "Stale budget observation retained a recovery window");
 		constexpr auto m = P::MiB;
 		Require(Memory::StreamingFits(10000 * m, 6000 * m, 0, 500 * m, true, false, false), "Healthy optional refill rejected");
-		Require(!Memory::StreamingFits(10000 * m, 6000 * m, 600 * m, 500 * m, true, false, false), "Outstanding rebuild allocation not included in peak");
-		Require(!Memory::StreamingFits(10000 * m, 6000 * m, 0, 1100 * m, true, false, false), "Full replacement overlap was treated as net growth");
+		Require(!Memory::StreamingFits(10000 * m, 6000 * m, 1600 * m, 500 * m, true, false, false), "Outstanding rebuild allocation not included in peak");
+		Require(!Memory::StreamingFits(10000 * m, 6000 * m, 0, 2100 * m, true, false, false), "Full replacement overlap was treated as net growth");
 		Require(!Memory::StreamingFits(10000 * m, 3000 * m, 0, m, true, true, true), "Refill consumed transition headroom");
 		Require(Memory::StreamingFits(10000 * m, 8000 * m, 0, m, false, false, true), "Reclamation could not proceed while high priority work waited");
 		Require(Memory::StreamingFits(10000 * m, 9800 * m, 0, m, false, false, true), "Safe reclamation was blocked by critical pressure");
 		Require(!Memory::StreamingFits(10000 * m, 9900 * m, 0, m, false, false, false), "Reclamation consumed its overlap safety headroom");
 		Require(Memory::StreamingFits(10000 * m, 7500 * m, 0, 100 * m, true, true, false), "Required detail could not recover under moderate pressure");
-		Require(!Memory::StreamingFits(10000 * m, 6000 * m, 0, 500 * m, true, false, false, 600 * m), "Optional refill consumed future NR recovery headroom");
+		Require(!Memory::StreamingFits(10000 * m, 6000 * m, 0, 500 * m, true, false, false, 1600 * m), "Optional refill consumed future NR recovery headroom");
 		Require(Memory::StreamingFits(10000 * m, 7500 * m, 0, 100 * m, true, true, false, 4000 * m), "Waiting NR starved required visible detail");
 		Require(Memory::StreamingFits(10000 * m, 9800 * m, 0, m, false, false, false, UINT64_MAX), "Future NR demand blocked safe reclamation");
-		Require(!Memory::StreamingFits(10000 * m, 7500 * m, 1000 * m, 100 * m, true, true, false, 0), "Required detail ignored an actual outstanding allocation");
+		Require(!Memory::StreamingFits(10000 * m, 7500 * m, 1600 * m, 100 * m, true, true, false, 0), "Required detail ignored an actual outstanding allocation");
 		Require(!Memory::StreamingFits(10000 * m, 0, 0, m, true, false, false, UINT64_MAX), "Recovery demand overflow admitted optional refill");
 		StreamingTextures::PressureEpisode episode;
 		Require(!episode.SummaryDue(20000), "Inactive pressure emitted diagnostics");

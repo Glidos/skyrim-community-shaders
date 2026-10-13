@@ -219,8 +219,11 @@ namespace Util
 	{
 		hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled);
 		if (hovered) {
-			ImGui::BeginTooltip();
-			ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+			hovered = ImGui::BeginTooltipEx(ImGuiTooltipFlags_OverridePrevious, ImGuiWindowFlags_None);
+			if (!hovered)
+				return;
+			const float wrapWidth = ImMax(1.0f, ImGui::GetMainViewport()->WorkSize.x - ImGui::GetStyle().WindowPadding.x * 2.0f);
+			ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrapWidth);
 			// Apply Subtext font for consistent tooltip styling
 			if (auto* menu = globals::menu) {
 				if (auto* subtextFont = menu->GetFont(Menu::FontRole::Subtext)) {
@@ -308,53 +311,38 @@ namespace Util
 		const ImGuiViewport* viewport = ImGui::GetMainViewport();
 		constexpr float kTooltipOffsetX = 16.0f;
 		constexpr float kTooltipOffsetY = 12.0f;
-
 		const float viewportLeft = viewport->WorkPos.x;
-		const float viewportRight = viewport->WorkPos.x + viewport->WorkSize.x;
+		const float viewportRight = viewportLeft + viewport->WorkSize.x;
 		const float viewportTop = viewport->WorkPos.y;
-		const float viewportBottom = viewport->WorkPos.y + viewport->WorkSize.y;
-
-		// Vertical: flip above cursor when it would overflow the bottom.
-		const bool placeAboveCursor = (mousePos.y + kTooltipOffsetY + estimatedHeight) > viewportBottom;
-		float posY;
-		float pivotY;
-		if (placeAboveCursor) {
-			const float tentativeTopY = mousePos.y - kTooltipOffsetY - estimatedHeight;
-			posY = (tentativeTopY < viewportTop) ? (viewportTop + estimatedHeight) : (mousePos.y - kTooltipOffsetY);
-			pivotY = 1.0f;
-		} else {
-			posY = mousePos.y + kTooltipOffsetY;
-			pivotY = 0.0f;
-		}
-
-		// Horizontal: clamp so the tooltip stays within viewport bounds.
-		float posX = mousePos.x + kTooltipOffsetX;
-		if (estimatedWidth > 0.0f) {
-			const float maxX = viewportRight - estimatedWidth;
-			posX = ImMax(viewportLeft, ImMin(posX, maxX));
-		}
-
-		ImGui::SetNextWindowPos(ImVec2(posX, posY), ImGuiCond_Always, ImVec2(0.0f, pivotY));
+		const float viewportBottom = viewportTop + viewport->WorkSize.y;
+		const float maxX = ImMax(viewportLeft, viewportRight - estimatedWidth);
+		const float maxY = ImMax(viewportTop, viewportBottom - estimatedHeight);
+		const float posX = ImClamp(mousePos.x + kTooltipOffsetX, viewportLeft, maxX);
+		const float desiredY = mousePos.y + kTooltipOffsetY + estimatedHeight > viewportBottom ?
+		                           mousePos.y - kTooltipOffsetY - estimatedHeight :
+		                           mousePos.y + kTooltipOffsetY;
+		ImGui::SetNextWindowPos({ posX, ImClamp(desiredY, viewportTop, maxY) }, ImGuiCond_Always);
 	}
 
 	void AddTooltip(const char* a_desc, ImGuiHoveredFlags a_flags)
 	{
-		if (ImGui::IsItemHovered(a_flags)) {
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 8, 8 });
-			const ImVec2 pad = ImGui::GetStyle().WindowPadding;
-			const float wrapWidth = ImGui::GetFontSize() * 50.0f;
-			const ImVec2 wrappedTextSize = ImGui::CalcTextSize(a_desc, nullptr, false, wrapWidth);
-			const float estimatedTooltipHeight = wrappedTextSize.y + pad.y * 2.0f;
-			const float estimatedTooltipWidth = wrappedTextSize.x + pad.x * 2.0f;
-			SetTooltipPositionNearMouse(estimatedTooltipHeight, estimatedTooltipWidth);
+		if (!a_desc || !*a_desc || !ImGui::IsItemHovered(a_flags))
+			return;
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 8, 8 });
+		const auto restorePadding = SKSE::stl::scope_exit([] { ImGui::PopStyleVar(); });
+		const ImVec2 pad = ImGui::GetStyle().WindowPadding;
+		const auto* viewport = ImGui::GetMainViewport();
+		const float wrapWidth = ImMax(1.0f, viewport->WorkSize.x - pad.x * 2.0f);
+		const ImVec2 textSize = ImGui::CalcTextSize(a_desc, nullptr, false, wrapWidth);
+		SetTooltipPositionNearMouse(textSize.y + pad.y * 2.0f, textSize.x + pad.x * 2.0f);
+		ImGui::SetNextWindowSizeConstraints({ 0, 0 }, { viewport->WorkSize.x, FLT_MAX });
 
-			if (ImGui::BeginTooltip()) {
-				ImGui::PushTextWrapPos(wrapWidth);
-				ImGui::TextUnformatted(a_desc);
-				ImGui::PopTextWrapPos();
-				ImGui::EndTooltip();
-			}
-			ImGui::PopStyleVar();
+		// Specific help replaces a widget's default tooltip and its earlier clip rectangle.
+		if (ImGui::BeginTooltipEx(ImGuiTooltipFlags_OverridePrevious, ImGuiWindowFlags_None)) {
+			const auto endTooltip = SKSE::stl::scope_exit([] { ImGui::EndTooltip(); });
+			ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrapWidth);
+			const auto restoreWrap = SKSE::stl::scope_exit([] { ImGui::PopTextWrapPos(); });
+			ImGui::TextUnformatted(a_desc);
 		}
 	}
 

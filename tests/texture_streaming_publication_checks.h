@@ -1,6 +1,8 @@
 #pragma once
 
 #include "Features/TextureStreaming/Categories.h"
+#include "Features/TextureStreaming/RememberedSizes.h"
+#include "Features/TextureStreaming/RestorationCache.h"
 #include "Features/TextureStreaming/TextureData.h"
 #include "d3d11_shader_test.h"
 #include <algorithm>
@@ -79,8 +81,11 @@ namespace
 				ID3D11Resource* current = nullptr;
 				ID3D11ShaderResourceView* currentView = nullptr;
 				std::array<std::uint64_t, 4> bytes{ 1024, 256, 64, 16 };
+				D3D11_TEXTURE2D_DESC full{};
+				std::string path = "textures/landscape/test.dds";
 				unsigned drop = 1;
 				bool protectedConsumer = false;
+				std::shared_ptr<void> loadLifetime;
 				std::uint64_t stableSince = 0, retryAfter = 0;
 			};
 			struct Transaction
@@ -92,7 +97,10 @@ namespace
 						unsigned drop = 0;
 						std::uint64_t serial = 42;
 					} request;
-					DirectX::ScratchImage image;
+					StreamingTextures::TexturePixels image;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+					bool cacheHit = false;
+#endif
 				} payload;
 				StreamingTextures::Upload upload;
 				ComPtr<ID3D11Resource> oldTexture;
@@ -100,9 +108,21 @@ namespace
 				ComPtr<ID3D11Query> retirement;
 				bool published = false, replacementCommitted = false;
 				std::uint64_t logicalReductionBytes = 0;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				bool terrainConsumer = false;
+#endif
 			};
 			std::unordered_set<std::uint64_t> reducedRecords{ 42 };
 			unsigned restores = 0, shrinks = 0, failures = 0;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			unsigned gpuCopyShrinks = 0, cachedRestores = 0, ddsRestores = 0, terrainShrinks = 0, terrainRestores = 0;
+			struct TerrainReduction
+			{
+				std::array<char, 257> path{};
+				std::uint64_t serial = 0;
+				std::uint32_t requiredCategories = 0, fullWidth = 0, fullHeight = 0, width = 0, height = 0, previousDrop = 0, drop = 0;
+			} terrainReduction;
+#endif
 			bool firstPressureReductionPending = false, cancelled = false, enabled = true;
 			std::string detail;
 			void Fail(const char*) { ++failures; }
@@ -149,6 +169,7 @@ namespace
 			engine.texture = old.texture.Detach();
 			engine.resourceView = old.view.Detach();
 			record.engine = &engine;
+			record.full = full;
 			record.current = engine.texture;
 			record.currentView = engine.resourceView;
 			work.payload.request.drop = target;
@@ -223,6 +244,46 @@ void CheckStreamingPublication(ID3D11Device* device, ID3D11DeviceContext* contex
 			for (unsigned stage = 0; stage < 5; ++stage)
 				f.ExpectBound(stage, nullptr);
 		}
+		for (unsigned target : { 0u, 2u }) {
+			for (unsigned fields = 0; fields < 8; ++fields) {
+				Fixture f(device, context, target);
+				f.engine.width = fields & 1 ? 512 : 0;
+				f.engine.height = fields & 2 ? 512 : 0;
+				f.engine.mips = fields & 4 ? 10 : 0;
+				f.shadow.vr.CSTexture[4] = f.shadow.flat.CSTexture[4] = nullptr;
+				f.Bind(5);
+				Check(StreamingTextures::WriteOrigin(f.engine.texture, { 42, false, 0 }));
+				auto* old = f.engine.resourceView;
+				const auto expected = f.work.upload.desc;
+				f.state.Publish(f.record, f.work);
+				RequirePublication(f.work.replacementCommitted && !f.state.cancelled && f.work.oldView.Get() == old,
+					"Unavailable engine metadata blocked publication or lost retirement ownership");
+				RequirePublication(f.engine.width == (fields & 1 ? expected.Width : 0) &&
+									   f.engine.height == (fields & 2 ? expected.Height : 0) && f.engine.mips == (fields & 4 ? expected.MipLevels : 0),
+					"Publication did not preserve unavailable engine fields or refresh populated metadata");
+				ComPtr<ID3D11Texture2D> actual;
+				Check(f.engine.texture->QueryInterface(IID_PPV_ARGS(&actual)));
+				D3D11_TEXTURE2D_DESC observed{};
+				actual->GetDesc(&observed);
+				RequirePublication(observed.Width == expected.Width && observed.Height == expected.Height && observed.MipLevels == expected.MipLevels,
+					"GPU residency depended on optional engine metadata");
+			}
+		}
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		for (const auto categories : { 0u, static_cast<std::uint32_t>(StreamingTextures::Parallax), static_cast<std::uint32_t>(StreamingTextures::Terrain | StreamingTextures::Parallax) }) {
+			Fixture f(device, context, 2);
+			f.shadow.vr.CSTexture[4] = f.shadow.flat.CSTexture[4] = nullptr;
+			f.Bind(5);
+			Check(StreamingTextures::WriteOrigin(f.engine.texture, { 42, false, categories }));
+			f.state.Publish(f.record, f.work);
+			const bool terrain = (categories & StreamingTextures::Terrain) != 0;
+			RequirePublication(f.work.replacementCommitted && f.state.terrainShrinks == (terrain ? 1u : 0u), "Parallax mesh was falsely attributed to terrain");
+			if (terrain)
+				RequirePublication(f.work.terrainConsumer && f.state.terrainReduction.requiredCategories == categories &&
+									   f.state.terrainReduction.width == 256 && f.state.terrainReduction.fullWidth == 1024 && f.state.terrainReduction.previousDrop == 1 && f.state.terrainReduction.drop == 2,
+					"Terrain/parallax attribution lost source or replacement dimensions");
+		}
+#endif
 		for (unsigned special = 0; special < 6; ++special) {
 			Fixture f(device, context, 2);
 			f.shadow.vr.CSTexture[4] = f.shadow.flat.CSTexture[4] = nullptr;

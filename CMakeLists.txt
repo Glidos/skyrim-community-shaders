@@ -1760,6 +1760,37 @@ if(BUILD_CONTROLLER_TESTS)
         set_tests_properties(${TEST_NAME} PROPERTIES LABELS "ControllerTests")
     endfunction()
 
+    set(_tooltip_test_dir "${CMAKE_CURRENT_BINARY_DIR}/generated/tooltip-test")
+    add_custom_command(
+        OUTPUT
+            "${_tooltip_test_dir}/tooltip_under_test.h"
+            "${_tooltip_test_dir}/tooltip_wrapper_under_test.h"
+            "${_tooltip_test_dir}/tooltip_wrapper_declaration.h"
+        COMMAND
+            "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
+            "-DOUTPUT_DIRECTORY=${_tooltip_test_dir}" -P
+            "${PROJECT_SOURCE_DIR}/tests/extract_tooltip.cmake"
+        DEPENDS
+            src/Utils/UI.cpp
+            src/Utils/UI.h
+            tests/extract_tooltip.cmake
+            tests/extract_source_region.cmake
+        VERBATIM
+    )
+    add_controller_test(tooltip_layout_test TooltipLayout tests/tooltip_layout_test.cpp)
+    target_sources(
+        tooltip_layout_test
+        PRIVATE
+            "${_tooltip_test_dir}/tooltip_under_test.h"
+            "${_tooltip_test_dir}/tooltip_wrapper_under_test.h"
+            "${_tooltip_test_dir}/tooltip_wrapper_declaration.h"
+    )
+    target_include_directories(
+        tooltip_layout_test
+        PRIVATE "${_tooltip_test_dir}"
+    )
+    target_link_libraries(tooltip_layout_test PRIVATE imgui::imgui)
+
     file(
         GLOB_RECURSE _settings_ui_sources
         CONFIGURE_DEPENDS

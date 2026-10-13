@@ -1,5 +1,6 @@
 #pragma once
 #include "Categories.h"
+#include "MaterialDiagnostics.h"
 #include "Policy.h"
 #include <array>
 #include <cstdint>
@@ -8,13 +9,19 @@ namespace RE
 {
 	class BSGeometry;
 	class BSLightingShaderMaterialBase;
+	class NiSourceTexture;
 }
 namespace StreamingTextures
 {
-	/** Classify supported static materials; unknown and animated sampling stays protected. */
-	RE::BSLightingShaderMaterialBase* StaticMaterial(RE::BSGeometry* geometry, std::uint32_t* categories = nullptr);
-	/** Bound the largest world-space length per UV unit over every triangle. */
-	double UnitsPerUV(RE::BSGeometry* geometry, RE::BSLightingShaderMaterialBase* material);
+	/** Ordinary diffuse/normal slots, including native and registered PBR terrain layers; auxiliary maps stay protected. */
+	bool IsStreamingSlot(const RE::BSLightingShaderMaterialBase* material, const RE::NiSourceTexture* texture);
+	/** Classify supported static materials and required consent bits; unknown and animated sampling stays protected. */
+	RE::BSLightingShaderMaterialBase* StaticMaterial(RE::BSGeometry* geometry, std::uint32_t* categories = nullptr
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		,
+		MaterialInspection* inspection = nullptr
+#endif
+	);
 	struct DemandContext
 	{
 		std::array<TextureStreamingPolicy::Eye, 2> eyes{};
@@ -24,6 +31,6 @@ namespace StreamingTextures
 		std::uint32_t frame = UINT32_MAX;
 		std::uint64_t sampledAtMs = 0;
 	};
-	/** Resolve both eyes against the committed renderer plan and effective shader bias. */
-	double RequiredEdge(RE::BSGeometry* geometry, double unitsPerUV, const DemandContext& demand);
+	/** Estimate texture demand from projected world bounds, both eyes and effective shader bias. */
+	double RequiredEdge(RE::BSGeometry* geometry, const DemandContext& demand);
 }

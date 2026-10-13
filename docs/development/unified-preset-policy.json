@@ -18,8 +18,8 @@
         "sha256": "4A71CA9248978CB5C289CBF7DB40AB609320DA823C26300DA91D3FC258F975F7"
     },
     "runtimeSettingsContract": {
-        "revision": 10,
-        "sourceTreeSha256": "F4525569BAE396727FC0A5B3672067464BC970D5E6B863F725ADD51B6AF7BA94",
+        "revision": 11,
+        "sourceTreeSha256": "C4B01D51573DC275AD98FF72CC92F2EC0D696D218A696701DA8223DE4404FCC5",
         "inventory": {
             "fixedSources": [
                 "src/Api/FeatureDevBenchBridge.cpp",
@@ -60,7 +60,8 @@
                 "src/SettingsSerialization.cpp",
                 "src/SettingsSerialization.h",
                 "src/State.cpp",
-                "src/State.h"
+                "src/State.h",
+                "src/Utils/TextureMemoryPolicy.h"
             ],
             "roots": ["src/Features"],
             "extensions": [".cpp", ".h"],
@@ -183,7 +184,8 @@
             "src/SettingsSerialization.cpp",
             "src/SettingsSerialization.h",
             "src/State.cpp",
-            "src/State.h"
+            "src/State.h",
+            "src/Utils/TextureMemoryPolicy.h"
         ]
     },
     "baseNormalization": {

@@ -3,9 +3,31 @@
 #include <array>
 #include <cstdint>
 #include <string_view>
+#ifdef DEVBENCH_BRIDGE_ENABLED
+#	include <string>
+#endif
 
 namespace StreamingTextures
 {
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	/** Retain one bounded texture and geometry identity for each diagnostic check. */
+	template <std::size_t Count>
+	struct DiagnosticSamples
+	{
+		std::array<bool, Count> observed{};
+		std::array<std::string, Count> texturePaths{}, geometryNames{};
+
+		void Observe(std::size_t reason, std::string_view texturePath, std::string_view geometryName)
+		{
+			if (reason >= Count || observed[reason])
+				return;
+			texturePaths[reason] = texturePath.substr(0, 256);
+			geometryNames[reason] = geometryName.substr(0, 128);
+			observed[reason] = true;
+		}
+	};
+#endif
+
 	/** Counts observations, not unique textures; increments need no allocation or formatting. */
 	struct Diagnostics
 	{

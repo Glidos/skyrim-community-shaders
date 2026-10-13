@@ -252,8 +252,8 @@ namespace Util
 	void SetTooltipPositionNearMouse(float estimatedHeight, float estimatedWidth = 0.0f);
 
 	/**
-	 * Shows a positioned tooltip with wrapped text when the previous item is hovered.
-	 * Uses SetTooltipPositionNearMouse for viewport-aware placement.
+	 * Shows help for the previous item, replacing earlier tooltips in the same frame.
+	 * Wraps only at the viewport width and grows vertically to fit the text.
 	 * @param a_desc Tooltip text
 	 * @param a_flags Hover flags (default: ImGuiHoveredFlags_DelayNormal)
 	 */

@@ -37,13 +37,23 @@ if(NOT _compatibility_found)
 endif()
 
 foreach(_bridge_contract IN ITEMS
-    "ServiceFoundation value({ ServiceName, 1, 1, 2 })"
-    "{ \"minor\", 1 }, { \"schemaRevision\", 2 }"
+    "ServiceFoundation value({ ServiceName, 1, 1, 14 })"
+    "{ \"minor\", 1 }, { \"schemaRevision\", 14 }"
     "PresetCompatibility::ToJson(PresetCompatibility::GetPublished())"
 )
     string(FIND "${_bridge}" "${_bridge_contract}" _bridge_position)
     if(_bridge_position EQUAL -1)
         message(FATAL_ERROR "Feature DevBench compatibility contract is missing: ${_bridge_contract}")
+    endif()
+endforeach()
+
+foreach(_coverage IN ITEMS terrain parallax)
+    string(JSON _coverage_default GET
+        "${_descriptor}" inputSchema properties textureStreaming properties
+        categories properties ${_coverage} default
+    )
+    if(NOT _coverage_default)
+        message(FATAL_ERROR "Streaming schema must advertise default-on ${_coverage}")
     endif()
 endforeach()
 
