@@ -384,6 +384,10 @@ namespace globals
 				NeuralRendering::Color::ExposureCapture::Instance().ObserveDraw(This, NeuralRendering::Color::ExposureDrawKind::IndexedInstanced);
 #endif
 			func(This, indexCount, instanceCount, startIndex, baseVertex, startInstance);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			const GrassCollisionVertexProbe::Draw draw{ indexCount, instanceCount, startIndex, startInstance, baseVertex };
+			globals::features::grassCollision.ObserveVertexDraw(This, draw, func.get(), nullptr);
+#endif
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -423,6 +427,10 @@ namespace globals
 				NeuralRendering::Color::ExposureCapture::Instance().ObserveDraw(This, NeuralRendering::Color::ExposureDrawKind::IndexedIndirect);
 #endif
 			func(This, arguments, offset);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			const GrassCollisionVertexProbe::Draw draw{ .arguments = arguments, .argumentOffset = offset };
+			globals::features::grassCollision.ObserveVertexDraw(This, draw, nullptr, func.get());
+#endif
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};

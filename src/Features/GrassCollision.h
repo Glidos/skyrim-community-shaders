@@ -3,6 +3,14 @@
 #include "Buffer.h"
 #include "Utils/LazyShader.h"
 
+#ifdef DEVBENCH_BRIDGE_ENABLED
+#	include "GrassCollisionVertexProbe.h"
+#	include <atomic>
+#	include <mutex>
+#	include <optional>
+#	include <vector>
+#endif
+
 struct GrassCollision : Feature
 {
 private:
@@ -92,6 +100,18 @@ public:
 	void QueueCollisions();
 	void Update();
 
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	/** @brief Request three frames of collision observations and one asynchronous texture readback. */
+	void RequestDiagnostics();
+	/** @brief Read the last requested collision observations without touching renderer state. */
+	json GetDiagnostics() const;
+	/** @brief Observe collision bindings immediately before a native or batched grass draw. */
+	void ObserveDrawBindings(bool a_batched);
+	/** @brief Inspect bounded output pairs from the exact native or indirect D3D draw. */
+	void ObserveVertexDraw(ID3D11DeviceContext* a_context, const GrassCollisionVertexProbe::Draw& a_draw,
+		GrassCollisionVertexProbe::DirectDraw a_direct, GrassCollisionVertexProbe::IndirectDraw a_indirect);
+#endif
+
 	virtual void LoadSettings(json& o_json) override;
 	virtual void SaveSettings(json& o_json) override;
 
@@ -122,4 +142,57 @@ public:
 			logger::info("[GRASS COLLISION] Installed hooks");
 		}
 	};
+
+#ifdef DEVBENCH_BRIDGE_ENABLED
+private:
+	static constexpr uint32_t kDiagnosticsWindowFrames = 3;
+	struct QueueDiagnostics
+	{
+		uint32_t frame = 0;
+		size_t candidates = 0, actorRoots = 0, shapeVisits = 0, boundFailures = 0, radiusRejected = 0;
+		size_t playerShapes = 0, otherActorShapes = 0, boundingBoxes = 0, shapes = 0;
+		float3 cameraPosition{};
+		std::vector<float4> shapeSamples;
+	};
+	struct UpdateDiagnostics
+	{
+		uint32_t frame = 0, boundingBoxes = 0;
+		size_t shapes = 0;
+		bool shaderObjectAvailable = false, dispatchIssued = false;
+		float timeDelta = 0;
+		float2 posOffset{};
+		DirectX::XMUINT2 arrayOrigin{};
+		DirectX::XMINT2 validMargin{};
+		float cameraHeightDelta = 0;
+	};
+	struct DrawDiagnostics
+	{
+		uint32_t firstFrame = 0, lastFrame = 0;
+		size_t nativeChecks = 0, batchedChecks = 0;
+		size_t missingConstantBuffer = 0, wrongConstantBuffer = 0, missingTexture = 0, wrongTexture = 0;
+		size_t collisionShaderChecks = 0, missingCollisionShaderInputs = 0, unidentifiedVertexShaders = 0, shaderReflectionFailures = 0;
+	};
+	ID3D11DeviceContext1* GetVertexProbeContext();
+	void PollVertexProbe(uint32_t a_frame);
+	void ObserveCollisionTexture(uint32_t a_frame, const PerFrame& a_constants);
+	void PollCollisionTexture(uint32_t a_frame);
+	bool DiagnosticsActive(uint32_t a_frame) const;
+	mutable std::mutex diagnosticsMutex;
+	std::atomic_uint64_t diagnosticsRequestFrame{ UINT64_MAX };
+	std::atomic_uint64_t diagnosticsGeneration{ 0 };
+	std::optional<QueueDiagnostics> queueDiagnostics;
+	std::optional<UpdateDiagnostics> updateDiagnostics;
+	DrawDiagnostics drawDiagnostics;
+	std::vector<std::pair<winrt::com_ptr<ID3D11VertexShader>, uint8_t>> shaderDiagnostics;
+	json textureDiagnostics = nullptr;
+	winrt::com_ptr<ID3D11Texture2D> diagnosticReadback;
+	uint64_t readbackRequestGeneration = UINT64_MAX;
+	uint32_t readbackFrame = 0;
+	DirectX::XMUINT2 readbackOrigin{};
+	bool readbackPending = false;
+	GrassCollisionVertexProbe vertexProbe;
+	winrt::com_ptr<ID3D11DeviceContext1> vertexProbeContext;
+	std::string vertexProbeError;
+	std::atomic_bool vertexProbeFailed{ false };
+#endif
 };

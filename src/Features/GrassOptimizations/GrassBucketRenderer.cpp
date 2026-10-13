@@ -2158,6 +2158,9 @@ void GrassBucketRenderer::Impl::EmitDraws(const Bucket& bucket)
 #if defined(DEVBENCH_BRIDGE_ENABLED) || defined(TRACY_SUPPORT)
 			CS_GPU_PASS("GrassOptimizations::DrawIndirect");
 #endif
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			globals::features::grassCollision.ObserveDrawBindings(true);
+#endif
 			context->DrawIndexedInstancedIndirect(bucket.result.arguments->resource.get(), slot * 32 + 12);
 #ifdef DEVBENCH_BRIDGE_ENABLED
 			++frameWork.indirectDraws;
@@ -2276,6 +2279,9 @@ void GrassBucketRenderer::DrawGroup(RE::BSGraphics::Renderer* renderer, RE::BSGr
 #ifdef DEVBENCH_BRIDGE_ENABLED
 	if (self.diagnostics.load(std::memory_order_relaxed))
 		++self.nativeDraws;
+#endif
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	globals::features::grassCollision.ObserveDrawBindings(false);
 #endif
 	originalDraw(renderer, mesh, firstTriangle, triangles, instances, descriptor, buffer);
 }

@@ -10,6 +10,7 @@
 #	include "Features/DynamicCubemaps.h"
 #	include "Features/ExtendedMaterials.h"
 #	include "Features/FoliageLighting.h"
+#	include "Features/GrassCollision.h"
 #	include "Features/GrassOptimizations.h"
 #	include "Features/LinearLighting.h"
 #	include "Features/ScreenSpaceGI.h"
@@ -791,8 +792,10 @@ namespace
 				return { { "error", "requestTelemetry must be a boolean" } };
 			return RunOnMainThread([request = a_args.value("requestTelemetry", true)]() -> json {
 				auto& grass = globals::features::grassOptimizations;
-				if (request)
+				if (request) {
 					grass.RequestTelemetry();
+					globals::features::grassCollision.RequestDiagnostics();
+				}
 				json scene = { { "frame", globals::state ? json(globals::state->frameCountAtomic.load(std::memory_order_relaxed)) : json(nullptr) } };
 				scene["csxMenuOpen"] = globals::menu && globals::menu->IsEnabled;
 				if (auto ui = globals::game::ui)
@@ -807,7 +810,7 @@ namespace
 					scene["gameHour"] = calendar->GetHour();
 				if (auto sky = globals::game::sky; sky && sky->currentWeather)
 					scene["weatherFormId"] = sky->currentWeather->GetFormID();
-				return { { "ok", true }, { "action", "grass_telemetry" }, { "grassOptimizations", grass.GetDiagnostics() }, { "scene", std::move(scene) } };
+				return { { "ok", true }, { "action", "grass_telemetry" }, { "grassOptimizations", grass.GetDiagnostics() }, { "grassCollision", globals::features::grassCollision.GetDiagnostics() }, { "scene", std::move(scene) } };
 			});
 		}
 		if (action == "set_adaptive_balance_dof") {
@@ -1260,7 +1263,69 @@ namespace MenuDevBenchBridge
 				{ "type", "boolean" }, { "default", true },
 				{ "description", "grass_telemetry only: false reads the previous publication without requesting another sample." }
 			};
-			document["description"] = std::string("grass_telemetry requests a lightweight render-thread GO resource snapshot (maximum 1 Hz) and returns the previous publication plus scene context. telemetry is null until grass renders; its frame and age identify stale data. ok acknowledges the request/read, not snapshot freshness. Work covers the last completed grass frame. This does not enable diagnostic shaders or reset time/weather. ") + document["description"].get<std::string>();
+			document["description"] = std::string("grass_telemetry requests a lightweight render-thread GO resource snapshot (maximum 1 Hz) and returns the previous publication plus scene context. It also requests three frames of DevBench-only grassCollision input, shape coordinates, upload, shader-object readiness, native/batched VS b5/t100 bindings and bound vertex shader input reflection, plus one nonblocking GPU collision-texture readback and up to sixteen paired vertex-output samples from exact native/indirect grass draws. Vertex replays use the active shader and bindings, replacing only t100 with a zero field for the baseline; stream output prevents rasterization. Each replay is capped at 96 indices and 128 instances. Completed vertex samples compare camera-relative world and clip-space displacement, including nearby vertices; zero displacement with no nearby vertices is inconclusive. The texture reports pending/completed/failed/timed_out independently of the three-frame window; a completed readback proves GPU field contents, not visible bending. Read with requestTelemetry=false after the window to preserve the observations; null queue or update and drawBindings.observed=false mean those stages were not observed. dispatchIssued is CPU submission evidence, not completed GPU execution or visible bending. telemetry is null until grass renders; its frame and age identify stale data. ok acknowledges the request/read, not snapshot freshness. Work covers the last completed grass frame. The vertex probe adds bounded diagnostic GPU work while requested and must not be treated as a performance-neutral observation. It does not reset time/weather. ") + document["description"].get<std::string>();
+			const json collisionCountSchema = { { "type", "integer" }, { "minimum", 0 } };
+			const json collisionNumberSchema = { { "type", { "number", "null" } } };
+			const auto collisionVectorSchema = [&](size_t a_size) {
+				return json{ { "type", "array" }, { "minItems", a_size }, { "maxItems", a_size }, { "items", collisionNumberSchema } };
+			};
+			json collisionQueueProperties = {
+				{ "frame", collisionCountSchema }, { "cameraPosition", collisionVectorSchema(3) },
+				{ "shapeSamplesCameraRelative", { { "type", "array" }, { "maxItems", 8 }, { "items", collisionVectorSchema(4) },
+													{ "description", "Up to eight collected camera-relative spheres as x,y,z,radius." } } }
+			};
+			for (const char* field : { "actorCandidates", "actorRoots", "shapeVisits", "shapeBoundFailures", "radiusRejected",
+					 "playerShapes", "otherActorShapes", "boundingBoxes", "collisionShapes" })
+				collisionQueueProperties[field] = collisionCountSchema;
+			json collisionDrawProperties = {
+				{ "observed", { { "type", "boolean" } } },
+				{ "firstFrame", { { "type", { "integer", "null" } } } },
+				{ "lastFrame", { { "type", { "integer", "null" } } } }
+			};
+			for (const char* field : { "nativeChecks", "batchedChecks", "missingConstantBuffer", "wrongConstantBuffer",
+					 "missingTexture", "wrongTexture", "collisionShaderChecks", "missingCollisionShaderInputs",
+					 "unidentifiedVertexShaders", "shaderReflectionFailures" })
+				collisionDrawProperties[field] = collisionCountSchema;
+			json collisionTextureProperties = {
+				{ "status", { { "type", "string" }, { "enum", json::array({ "pending", "completed", "failed", "timed_out" }) } } }
+			};
+			for (const char* field : { "capturedFrame", "completedFrame", "hresult", "width", "height", "nonFiniteCells",
+					 "nonzeroCells", "nearCameraNonzeroCells" })
+				collisionTextureProperties[field] = collisionCountSchema;
+			for (const char* field : { "maxNormalizedNearCamera", "minNormalizedHeight", "maxNormalizedHeight" })
+				collisionTextureProperties[field] = collisionNumberSchema;
+			document["outputSchema"]["properties"]["grassCollision"] = {
+				{ "type", "object" }, { "properties", { { "schemaVersion", { { "type", "integer" }, { "const", 3 } } },
+														  { "requestGeneration", collisionCountSchema },
+														  { "loaded", { { "type", "boolean" } } }, { "enabled", { { "type", "boolean" } } },
+														  { "requestedFrame", { { "type", { "integer", "null" } } } },
+														  { "captureWindowFrames", { { "type", "integer" }, { "minimum", 1 } } },
+														  { "queue", { { "type", { "object", "null" } }, { "properties", std::move(collisionQueueProperties) },
+																		 { "description", "Latest collision input in the requested window; null means not observed." } } },
+														  { "update", { { "type", { "object", "null" } }, { "properties", { { "frame", collisionCountSchema }, { "uploadedBoundingBoxes", collisionCountSchema }, { "uploadedShapes", collisionCountSchema }, { "shaderObjectAvailable", { { "type", "boolean" } } }, { "dispatchIssued", { { "type", "boolean" } } }, { "timeDelta", collisionNumberSchema }, { "cameraHeightDelta", collisionNumberSchema }, { "posOffset", collisionVectorSchema(2) }, { "arrayOrigin", collisionVectorSchema(2) }, { "validMargin", collisionVectorSchema(2) } } }, { "description", "Collision upload and CPU dispatch submission; null means not observed. It does not prove GPU completion." } } },
+														  { "texture", { { "type", { "object", "null" } }, { "properties", std::move(collisionTextureProperties) },
+																		   { "description", "One asynchronous full collision-field readback per request. Near-camera statistics cover a 512-unit square; null means not observed. Completion does not prove visible bending." } } },
+														  { "drawBindings", { { "type", "object" }, { "properties", std::move(collisionDrawProperties) },
+																				{ "description", "Bound resources and vertex bytecode inputs immediately before grass draws. Unidentified shaders and reflection failures remain separate from shaders missing collision inputs." } } } } }
+			};
+			json vertexSampleProperties = {
+				{ "status", { { "type", "string" }, { "enum", json::array({ "pending", "failed", "timed_out", "output_count_mismatch", "invalid_outputs", "empty", "completed" }) } } },
+				{ "pass", { { "type", "string" }, { "enum", json::array({ "depth", "color" }) } } },
+				{ "drawKind", { { "type", "string" }, { "enum", json::array({ "native", "indirect" }) } } },
+				{ "example", { { "type", "object" }, { "properties", { { "collisionOnWorld", collisionVectorSchema(3) }, { "collisionOffWorld", collisionVectorSchema(3) },
+																		 { "collisionOnClip", collisionVectorSchema(4) }, { "collisionOffClip", collisionVectorSchema(4) } } } } }
+			};
+			for (const char* field : { "capturedFrame", "completedFrame", "shaderDescriptor", "hresult", "sampledVertices",
+					 "movedVertices", "nearCameraVertices", "nearCameraMovedVertices", "nonFiniteVertices" })
+				vertexSampleProperties[field] = collisionCountSchema;
+			for (const char* field : { "maxWorldDisplacement", "maxClipDisplacement", "minimumCameraDistance" })
+				vertexSampleProperties[field] = collisionNumberSchema;
+			document["outputSchema"]["properties"]["grassCollision"]["properties"]["vertexProbe"] = {
+				{ "type", "object" }, { "properties", { { "schemaVersion", { { "type", "integer" }, { "const", 1 } } }, { "requestGeneration", collisionCountSchema }, { "maximumPairs", collisionCountSchema }, { "maximumIndices", collisionCountSchema }, { "maximumInstances", collisionCountSchema }, { "skippedPipelines", collisionCountSchema }, { "samples", { { "type", "array" }, { "maxItems", 16 }, { "items", { { "type", "object" }, { "properties", std::move(vertexSampleProperties) } } } } } } }, { "description", "Paired output of the active grass vertex shader with the real and zero collision field. Query counts must match before comparison; no nearby vertices or empty samples cannot establish a bending failure." }
+			};
+			document["outputSchema"]["properties"]["grassCollision"]["properties"]["vertexProbeError"] = {
+				{ "type", { "string", "null" } }, { "description", "Explicit diagnostic exception; null means none recorded." }
+			};
 			document["outputSchema"]["properties"]["grassOptimizations"] = {
 				{ "type", "object" }, { "properties", { { "telemetrySchema", { { "type", "integer" }, { "const", 1 } } },
 														  { "telemetry", { { "type", { "object", "null" } }, { "description", "Latest retained snapshot; frame identifies grass work, ageMilliseconds measures time since publication. Byte counts are buffer payloads, not GPU residency. Viewport dimensions are null when main-depth culling did not run." } } },
