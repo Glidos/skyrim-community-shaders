@@ -375,7 +375,8 @@ namespace SharedData
 		float fireSaturation;
 		float fireCurve;
 		float pointLightCurve;
-		float3 padding;
+		float moonReflectionStrength;
+		float2 padding;
 		AdaptiveBalanceAppearanceSettings appearance;
 	};
 

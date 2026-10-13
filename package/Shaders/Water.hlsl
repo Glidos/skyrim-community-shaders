@@ -1761,7 +1761,7 @@ float3 GetSunColor(float3 normal, float3 viewDirection)
 	float3 sunSpecular = reflectionMul * Color::DirectionalLight((SunColor.xyz * SunDir.w) / max(llDirLightMult, 1e-5), SharedData::linearLightingSettings.isDirLightLinear) * (1.0 - exp(-DeepColor.w)) * llDirLightMult;
 	[branch] if (SharedData::waterAppearanceSettings.Enabled)
 		sunSpecular *= SharedData::waterAppearanceSettings.SunSpecularMultiplier;
-	return sunSpecular;
+	return sunSpecular * Color::MoonReflectionMultiplier();
 #			endif
 }
 #		endif

@@ -73,6 +73,15 @@ namespace Color
 		return grade ? AdaptiveBalanceColorBounds::Output(color) : color;
 	}
 
+	/// Scale only direct nighttime specular; scene previews retain their authored lighting.
+	float MoonReflectionMultiplier(bool linearSpace = false)
+	{
+		float strength = IsSceneColorDraw() ? SharedData::adaptiveBalanceSettings.moonReflectionStrength : 1.0;
+		// Legacy highlights are converted to linear irradiance when composed.
+		[branch] if (!linearSpace && strength != 1.0) strength = IrradianceToGamma(strength);
+		return strength;
+	}
+
 	/// Apply once after ambient sources are combined, in the renderer's lighting space.
 	float3 ApplyAmbientBalance(float3 color)
 	{

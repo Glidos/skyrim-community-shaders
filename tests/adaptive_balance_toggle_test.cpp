@@ -4,6 +4,7 @@
 
 #include "Features/AdaptiveBalanceDepthOfField.h"
 #include "Features/AdaptiveBalanceGodraySettings.h"
+#include "Features/WetternessLightingPolicy.h"
 #include "SettingsMigrations.h"
 #include <algorithm>
 #include <array>
@@ -79,8 +80,32 @@ namespace RE
 			uint8_t windSpeed = 0;
 		} data;
 	};
+	struct TESClimate
+	{
+		struct
+		{
+			struct Interval
+			{
+				uint8_t begin;
+				uint8_t end;
+			};
+			Interval sunrise{ 36, 48 };
+			Interval sunset{ 108, 120 };
+		} timing;
+	};
 	struct Sky
 	{
+		enum class Mode
+		{
+			kFull
+		};
+		struct
+		{
+			Mode get() const { return Mode::kFull; }
+		} mode;
+		TESClimate climate;
+		TESClimate* currentClimate = &climate;
+		float currentGameHour = 12.0f;
 		NiColor skyColor[17]{};
 		float windSpeed = 0.8f;
 		Weather* currentWeather = nullptr;
@@ -136,6 +161,7 @@ struct AdaptiveBrightness
 	bool IsRuntimeAvailable() const;
 	bool IsRuntimeEnabled() const;
 	float GetEffectiveGodrayFinalBrightness() const;
+	float GetEffectiveMoonReflectionStrength() const;
 	void SetEnabled(bool enabled);
 	PerFrameData GetCommonBufferData() const;
 	bool NeedsVanillaPointLightData() const;

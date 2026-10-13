@@ -74,6 +74,9 @@ struct AdaptiveBrightness : Feature
 	};
 
 	static constexpr std::size_t kProfileCount = static_cast<std::size_t>(Profile::Count);
+	static constexpr float kMoonReflectionStrengthMin = 0.0f;
+	static constexpr float kMoonReflectionStrengthMax = 2.0f;
+	static constexpr float kMoonReflectionStrengthDefault = 1.0f;
 
 	struct WaterWindSettings
 	{
@@ -167,6 +170,7 @@ struct AdaptiveBrightness : Feature
 		bool enabled = true;
 		bool useAmbientEffectLighting = false;
 		float godrayFinalBrightness = AdaptiveBalanceGodray::kDefault;
+		float moonReflectionStrength = kMoonReflectionStrengthDefault;
 		float dayStartHour = 9.0f;
 		float nightStartHour = 21.0f;
 		float transitionHours = 1.0f;
@@ -203,7 +207,8 @@ struct AdaptiveBrightness : Feature
 		float fireSaturation;
 		float fireCurve;
 		float pointLightCurve;
-		float pointLightCurvePadding[3];
+		float moonReflectionStrength;
+		float pointLightCurvePadding[2];
 		AdaptiveBalanceAppearanceSettings appearance;
 	};
 	STATIC_ASSERT_ALIGNAS_16(PerFrameData);
@@ -224,6 +229,7 @@ struct AdaptiveBrightness : Feature
 	static_assert(offsetof(PerFrameData, fireSaturation) == 88);
 	static_assert(offsetof(PerFrameData, fireCurve) == 92);
 	static_assert(offsetof(PerFrameData, pointLightCurve) == 96);
+	static_assert(offsetof(PerFrameData, moonReflectionStrength) == 100);
 
 	struct alignas(16) VanillaPointLightData
 	{
@@ -339,6 +345,8 @@ struct AdaptiveBrightness : Feature
 	bool IsRuntimeEnabled() const;
 	/** Return the global final godray multiplier, or neutral while Adaptive Balance is bypassed. */
 	float GetEffectiveGodrayFinalBrightness() const;
+	/** Resolves the exterior night specular multiplier; neutral indoors and while bypassed. */
+	float GetEffectiveMoonReflectionStrength() const;
 	/** Resolves shared lighting and refreshes its matching per-draw point-light requirement. */
 	PerFrameData GetCommonBufferData() const;
 	/** Uses the latest shared-lighting buffer state without recomposing profiles for each draw. */

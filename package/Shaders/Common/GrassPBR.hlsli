@@ -205,7 +205,8 @@ PS_OUTPUT RenderPBRGrass(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	DirectLightingOutput dirOutput;
 	GrassPBR::GetDirectLight(dirOutput, dirContext, material, pbrDetail);
 	totalLighting.diffuse += dirOutput.diffuse;
-	totalLighting.specular += dirOutput.specular;
+	// The grass G-buffer stores specular in linear irradiance.
+	totalLighting.specular += dirOutput.specular * Color::MoonReflectionMultiplier(true);
 	totalLighting.transmission += dirOutput.transmission;
 
 #	if defined(LIGHT_LIMIT_FIX)

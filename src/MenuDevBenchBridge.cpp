@@ -405,8 +405,9 @@ namespace
 			double minimum;
 			double maximum;
 		};
-		static constexpr std::array<Field, 24> fields{ { { "skySaturation", 0.0, 2.0 },
+		static constexpr std::array<Field, 25> fields{ { { "skySaturation", 0.0, 2.0 },
 			{ "godrayFinalBrightness", AdaptiveBalanceGodray::kMin, AdaptiveBalanceGodray::kMax },
+			{ "moonReflectionStrength", AdaptiveBrightness::kMoonReflectionStrengthMin, AdaptiveBrightness::kMoonReflectionStrengthMax },
 			{ "cloudBrightness", 0.0, 2.0 },
 			{ "cloudSaturation", 0.0, 2.0 },
 			{ "cloudGammaOffset", -1.0, 1.0 },
@@ -510,6 +511,7 @@ namespace
 		configured["lightingAdvanced"] = profile.advanced;
 		configured["useAmbientEffectLighting"] = balance.settings.useAmbientEffectLighting;
 		configured["godrayFinalBrightness"] = balance.settings.godrayFinalBrightness;
+		configured["moonReflectionStrength"] = balance.settings.moonReflectionStrength;
 		auto effective = waterFields(balance.GetEffectiveWaterAppearanceSettings());
 		const auto lighting = balance.GetEffectiveSharedLightingSettings();
 		effective["skySaturation"] = lighting.skySaturation;
@@ -533,6 +535,7 @@ namespace
 		effective["appearance"] = lighting.appearance;
 		effective["useAmbientEffectLighting"] = balance.IsRuntimeEnabled() && balance.settings.useAmbientEffectLighting;
 		effective["godrayFinalBrightness"] = balance.GetEffectiveGodrayFinalBrightness();
+		effective["moonReflectionStrength"] = balance.GetEffectiveMoonReflectionStrength();
 		return { { "global", std::move(configured) }, { "effective", std::move(effective) } };
 	}
 
@@ -1146,6 +1149,7 @@ namespace
 				balance.settings.globalProfile = profile;
 				balance.settings.useAmbientEffectLighting = visuals.value("useAmbientEffectLighting", balance.settings.useAmbientEffectLighting);
 				balance.settings.godrayFinalBrightness = visuals.value("godrayFinalBrightness", balance.settings.godrayFinalBrightness);
+				balance.settings.moonReflectionStrength = visuals.value("moonReflectionStrength", balance.settings.moonReflectionStrength);
 				menu->RequestSettingsDirtyCheck();
 				return { { "action", action }, { "persisted", false }, { "status", BuildStatus() } };
 			} else if (action == "set_grass_optimizations_settings" || action == "set_grass_hiz_enabled") {
@@ -1282,11 +1286,21 @@ namespace MenuDevBenchBridge
 				{ "description", "Global final godray brightness after gamma conversion; independent of profile intensity and lightingAdvanced. Adaptive Balance off makes the effective multiplier 1. Does not enable godrays." }
 			};
 			document["inputSchema"]["properties"]["visuals"]["properties"]["godrayFinalBrightness"] = finalBrightnessSchema;
-			const json finalBrightnessStatus = {
+			json finalBrightnessStatus = {
 				{ "type", "object" },
 				{ "properties", { { "global", { { "type", "object" }, { "properties", { { "godrayFinalBrightness", finalBrightnessSchema } } } } },
 									{ "effective", { { "type", "object" }, { "properties", { { "godrayFinalBrightness", finalBrightnessSchema } } } } } } }
 			};
+			const json moonReflectionSchema = {
+				{ "type", "number" }, { "minimum", AdaptiveBrightness::kMoonReflectionStrengthMin }, { "maximum", AdaptiveBrightness::kMoonReflectionStrengthMax },
+				{ "default", AdaptiveBrightness::kMoonReflectionStrengthDefault },
+				{ "description", "Global direct moonlit specular strength for materials, wet surfaces and water. Zero removes these highlights, one preserves them, two doubles them. Blends through the active climate's dusk and dawn; neutral indoors and while Adaptive Balance is inactive. Material previews retain their lighting. Independent of lightingAdvanced, diffuse light, environment reflections and moon appearance." }
+			};
+			document["inputSchema"]["properties"]["visuals"]["properties"]["moonReflectionStrength"] = moonReflectionSchema;
+			for (const auto* layer : { "global", "effective" })
+				finalBrightnessStatus["properties"][layer]["properties"]["moonReflectionStrength"] = moonReflectionSchema;
+			document["description"] = document["description"].get<std::string>() +
+			                          " set_adaptive_balance_visuals accepts moonReflectionStrength in [0,2] (default 1), stages it without saving or enabling Adaptive Balance, and rejects invalid values before mutation. The global slider scales direct nighttime specular highlights on materials, wet surfaces and water using the active climate's dusk and dawn; diffuse lighting and environment reflections are independent. status.adaptiveBalanceVisuals reports configured and effective strengths.";
 			document["outputSchema"]["properties"]["adaptiveBalanceVisuals"] = finalBrightnessStatus;
 			document["outputSchema"]["properties"]["status"]["properties"]["adaptiveBalanceVisuals"] = finalBrightnessStatus;
 			return document.dump();

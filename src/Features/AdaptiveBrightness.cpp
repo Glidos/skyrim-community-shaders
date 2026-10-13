@@ -15,11 +15,13 @@
 #include "Utils/PointLightFlags.h"
 #include "Utils/UI.h"
 #include "WeatherColorAdjustment.h"
+#include "WetternessLightingPolicy.h"
 
 #include "RE/B/BGSLocation.h"
 #include "RE/P/PlayerCharacter.h"
 #include "RE/S/Sky.h"
 #include "RE/T/TES.h"
+#include "RE/T/TESClimate.h"
 #include "RE/T/TESObjectCELL.h"
 #include "RE/T/TESWeather.h"
 #include "RE/T/TESWorldSpace.h"
@@ -105,6 +107,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	enabled,
 	useAmbientEffectLighting,
 	godrayFinalBrightness,
+	moonReflectionStrength,
 	dayStartHour,
 	nightStartHour,
 	transitionHours,
@@ -800,6 +803,8 @@ namespace
 	void NormalizeBaseSettings(AdaptiveBrightness::Settings& a_settings)
 	{
 		a_settings.godrayFinalBrightness = AdaptiveBalanceGodray::SanitizeFinalBrightness(a_settings.godrayFinalBrightness);
+		a_settings.moonReflectionStrength = Util::ClampFinite(a_settings.moonReflectionStrength,
+			AdaptiveBrightness::kMoonReflectionStrengthMin, AdaptiveBrightness::kMoonReflectionStrengthMax, AdaptiveBrightness::kMoonReflectionStrengthDefault);
 		AdaptiveBalanceDepthOfField::SanitizeSettings(a_settings.depthOfField);
 		ClampProfileSettings(a_settings.globalProfile);
 		a_settings.globalProfile.waterWind.overrideEnabled = true;
@@ -1270,6 +1275,7 @@ namespace
 		return {
 			{ "useAmbientEffectLighting", a_settings.useAmbientEffectLighting },
 			{ "godrayFinalBrightness", a_settings.godrayFinalBrightness },
+			{ "moonReflectionStrength", a_settings.moonReflectionStrength },
 			{ "globalProfile", a_settings.globalProfile },
 			{ "depthOfField", a_settings.depthOfField },
 			{ "dayStartHour", a_settings.dayStartHour },
@@ -1407,6 +1413,7 @@ namespace
 
 			importedSettings.useAmbientEffectLighting = GetOptionalBool(migratedPreset, "useAmbientEffectLighting", false);
 			importedSettings.godrayFinalBrightness = GetOptionalFloat(migratedPreset, "godrayFinalBrightness", AdaptiveBalanceGodray::kDefault);
+			importedSettings.moonReflectionStrength = GetOptionalFloat(migratedPreset, "moonReflectionStrength", AdaptiveBrightness::kMoonReflectionStrengthDefault);
 			importedSettings.dayStartHour = GetOptionalFloat(migratedPreset, "dayStartHour", importedSettings.dayStartHour);
 			importedSettings.nightStartHour = GetOptionalFloat(migratedPreset, "nightStartHour", importedSettings.nightStartHour);
 			importedSettings.transitionHours = GetOptionalFloat(migratedPreset, "transitionHours", importedSettings.transitionHours);
@@ -1753,6 +1760,7 @@ json AdaptiveBrightness::CapturePerformanceSettingsState() const
 		{ "enabled", settings.enabled },
 		{ "useAmbientEffectLighting", settings.useAmbientEffectLighting },
 		{ "godrayFinalBrightness", settings.godrayFinalBrightness },
+		{ "moonReflectionStrength", settings.moonReflectionStrength },
 		{ "globalProfile", settings.globalProfile },
 		{ "depthOfField", settings.depthOfField }
 	};
@@ -2139,6 +2147,10 @@ void AdaptiveBrightness::DrawLightingSettings(
 		ImGui::Text("Master lighting adjustment for this %s layer.", a_globalLayer ? "global" : "profile");
 
 	if (a_globalLayer) {
+		Util::Widgets::SliderFloat("Moon Reflection Strength", &settings.moonReflectionStrength,
+			kMoonReflectionStrengthMin, kMoonReflectionStrengthMax, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+		if (auto _tt = Util::HoverTooltipWrapper())
+			ImGui::TextWrapped("Scale direct moonlit highlights on materials, wet surfaces and water. Zero removes these highlights; one preserves their strength; two doubles it. Follows the active climate's dusk and dawn. Diffuse moonlight, sky reflections and the moon itself remain independent. This global control works without detailed lighting.");
 		Util::Widgets::SliderFloat("Final Godray Brightness", &settings.godrayFinalBrightness,
 			AdaptiveBalanceGodray::kMin, AdaptiveBalanceGodray::kMax, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 		if (auto _tt = Util::HoverTooltipWrapper())
@@ -3069,6 +3081,25 @@ float AdaptiveBrightness::GetEffectiveGodrayFinalBrightness() const
 	return IsRuntimeEnabled() ? AdaptiveBalanceGodray::SanitizeFinalBrightness(settings.godrayFinalBrightness) : AdaptiveBalanceGodray::kDefault;
 }
 
+float AdaptiveBrightness::GetEffectiveMoonReflectionStrength() const
+{
+	if (!IsRuntimeEnabled() || LocationContext::Get().inInterior)
+		return kMoonReflectionStrengthDefault;
+
+	const float strength = Util::ClampFinite(settings.moonReflectionStrength,
+		kMoonReflectionStrengthMin, kMoonReflectionStrengthMax, kMoonReflectionStrengthDefault);
+	if (strength == kMoonReflectionStrengthDefault)
+		return strength;
+	const auto* sky = globals::game::sky;
+	if (!sky || sky->mode.get() != RE::Sky::Mode::kFull || !sky->currentClimate)
+		return kMoonReflectionStrengthDefault;
+	const auto& timing = sky->currentClimate->timing;
+	const float nightFactor = WetternessLightingPolicy::NightFactor(sky->currentGameHour,
+		timing.sunrise.begin / 6.0f, timing.sunrise.end / 6.0f,
+		timing.sunset.begin / 6.0f, timing.sunset.end / 6.0f);
+	return std::lerp(kMoonReflectionStrengthDefault, strength, nightFactor);
+}
+
 AdaptiveBrightness::Profile AdaptiveBrightness::GetInteriorProfile() const
 {
 	const auto forms = GetCurrentLocationForms();
@@ -3920,6 +3951,7 @@ AdaptiveBrightness::PerFrameData AdaptiveBrightness::GetCommonBufferData() const
 	data.pointLightMult = effectiveSettings.pointLightMult;
 	data.pointLightSaturation = effectiveSettings.pointLightSaturation;
 	data.pointLightCurve = effectiveSettings.pointLightCurve;
+	data.moonReflectionStrength = GetEffectiveMoonReflectionStrength();
 	data.fireIntensity = effectiveSettings.fireIntensity;
 	data.fireSaturation = effectiveSettings.fireSaturation;
 	data.fireCurve = effectiveSettings.fireCurve;

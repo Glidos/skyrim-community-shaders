@@ -62,6 +62,7 @@ def extract(root, output):
         function(source, "void AdaptiveBrightness::SetPerformanceCostMeasurementEnabled("),
         function(source, "bool AdaptiveBrightness::IsRuntimeEnabled()"),
         function(source, "float AdaptiveBrightness::GetEffectiveGodrayFinalBrightness()"),
+        function(source, "float AdaptiveBrightness::GetEffectiveMoonReflectionStrength()"),
         between(source, "LinearLighting::Settings AdaptiveBrightness::GetNeutralLinearLightingSettings()", "void AdaptiveBrightness::UpdateVanillaPointLightData("),
         between(bloom, "\tconstexpr float kEnhancementIntensityMax", "\tvoid DrawTooltip("),
         function(bloom, "\tvoid SanitizeProfileWithDefaults("),

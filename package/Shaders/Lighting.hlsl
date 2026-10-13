@@ -3472,7 +3472,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 	lightsDiffuseColor += dirLightOutput.diffuse;
-	lightsSpecularColor += dirLightOutput.specular;
+	lightsSpecularColor += dirLightOutput.specular * Color::MoonReflectionMultiplier();
 #	if defined(TRUE_PBR)
 	coatLightsDiffuseColor += dirLightOutput.coatDiffuse;
 #		if defined(LOD_LAND_BLEND)

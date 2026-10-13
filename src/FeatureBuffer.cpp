@@ -137,6 +137,7 @@ namespace
 	static_assert(offsetof(AdaptiveBalanceSettingsCB, fireSaturation) == 88);
 	static_assert(offsetof(AdaptiveBalanceSettingsCB, fireCurve) == 92);
 	static_assert(offsetof(AdaptiveBalanceSettingsCB, pointLightCurve) == 96);
+	static_assert(offsetof(AdaptiveBalanceSettingsCB, moonReflectionStrength) == 100);
 	static_assert(sizeof(LinearLightingSettingsCB) == 112);
 	static_assert(offsetof(LinearLightingSettingsCB, enableAdaptiveBrightnessColorAdjustments) == 100);
 	static_assert(sizeof(TerrainBlendingSettingsCB) == 16);
