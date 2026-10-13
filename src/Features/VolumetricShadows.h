@@ -57,10 +57,10 @@ public:
 
 	Util::LazyShader<ID3D11ComputeShader> downsampleShadowMip0CS;
 	Util::LazyShader<ID3D11ComputeShader> downsampleShadowMip1CS;
+	Util::LazyShader<ID3D11ComputeShader> downsampleShadowGeneralMip0CS;
+	Util::LazyShader<ID3D11ComputeShader> downsampleShadowGeneralMip1CS;
 	Util::LazyShader<ID3D11ComputeShader> blurShadowHorizontalCS;
 	Util::LazyShader<ID3D11ComputeShader> blurShadowVerticalCS;
-
-	ID3D11ShaderResourceView* shadowView = nullptr;
 
 	ID3D11Texture2D* shadowCopyTexture = nullptr;
 	ID3D11ShaderResourceView* shadowCopySRV = nullptr;
@@ -71,6 +71,8 @@ public:
 	uint32_t shadowCopyWidth = 0;
 	uint32_t shadowCopyHeight = 0;
 	bool shadowCopyValid = false;
+	// Retry failed allocation only after shader reset or device recreation.
+	bool shadowCopyAllocationFailed = false;
 
 	ID3D11Texture2D* fallbackShadowTexture = nullptr;
 	ID3D11ShaderResourceView* fallbackShadowSRV = nullptr;
@@ -90,8 +92,10 @@ private:
 
 	void CompileComputeShaders();
 	void EnsureFallbackShadowTexture();
-	void EnsureShadowCopyTextures();
+	/** Creates a complete moment-buffer set or retains the lit fallback. */
+	bool EnsureShadowCopyTextures();
 	void ReleaseComputeShaders();
+	void ReleaseShadowCopyTextures();
 	void ReleaseTextures();
 	void ReleaseSampler();
 	void ReleaseResources();

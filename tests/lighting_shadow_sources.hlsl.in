@@ -1,0 +1,64 @@
+@PERMUTATION@
+@LIGHTING_FLAGS@
+
+namespace SharedData
+{
+	struct SkylightingSettings
+	{
+		uint Enabled;
+		uint ShadowDataAvailable;
+	};
+	static SkylightingSettings skylightingSettings;
+	static bool VolumetricShadowsEnabled;
+	static const bool InInterior = false;
+}
+namespace Skylighting
+{
+	bool IsEnabled() { return SharedData::skylightingSettings.Enabled != 0; }
+}
+static bool hasDirectionalShadows;
+static uint vsmSamples;
+static float vsmVisibility;
+namespace ShadowSampling
+{
+	bool HasDirectionalShadows() { return hasDirectionalShadows; }
+	float GetLightingShadow(float3 position, uint eyeIndex, out float detailedShadow)
+	{
+		++vsmSamples;
+		detailedShadow = SharedData::VolumetricShadowsEnabled ? 0.35 + 0.1 * eyeIndex : 1.0;
+		return SharedData::VolumetricShadowsEnabled ? vsmVisibility : 1.0;
+	}
+	float GetLightingShadow(float noise, float3 position, uint eyeIndex)
+	{
+		return hasDirectionalShadows ? 0.45 : 1.0;
+	}
+}
+struct Input
+{
+	float4 WorldPosition;
+};
+RWTexture2D<float4> Results : register(u0);
+
+[numthreads(64, 1, 1)] void main(uint3 id : SV_DispatchThreadID)
+{
+	SharedData::skylightingSettings.Enabled = (id.x & 1) != 0;
+	SharedData::skylightingSettings.ShadowDataAvailable = (id.x & 2) != 0;
+	SharedData::VolumetricShadowsEnabled = (id.x & 4) != 0;
+	bool inReflection = (id.x & 8) != 0;
+	bool inWorld = (id.x & 16) != 0;
+	hasDirectionalShadows = (id.x & 32) != 0;
+	float4 shadowColor = (id.x & 64) != 0 ? 1.0 : 0.0;
+	float skylightingShadowVisibility = (id.x & 128) != 0 ? 0.2 : 0.8;
+	vsmVisibility = (id.x & 128) != 0 ? 0.8 : 0.2;
+	vsmSamples = 0;
+	uint eyeIndex = 0;
+#if defined(VR)
+	eyeIndex = (id.x >> 8) & 1;
+#endif
+	Input input = (Input)0;
+	float screenNoise = 0.5;
+@ENGINE_MASK@
+@SHADOW_SELECTION@
+@SKYLIGHTING_MERGE@
+	Results[id.xy] = float4(dirSoftShadow, dirDetailedShadow, vsmSamples, Lighting::UseSkylightingShadowVisibility());
+}

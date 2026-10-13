@@ -3295,7 +3295,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #	if defined(VOLUMETRIC_SHADOWS)
 	bool dirVSMShadowSampled = false;
-	if (inWorld && !inReflection && ShadowSampling::HasDirectionalShadows()) {
+	if (inWorld && !inReflection && ShadowSampling::HasDirectionalShadows()
+#		if defined(DEFERRED) && defined(SKYLIGHTING_SHADOW_VIS)
+		&& !useSkylightingShadow
+#		endif
+	) {
 		dirSoftShadow = ShadowSampling::GetLightingShadow(input.WorldPosition.xyz, eyeIndex, dirVSMDetailedShadow);
 		dirVSMShadowSampled = true;
 	}
@@ -3387,7 +3391,11 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #	if defined(SKYLIGHTING_SHADOW_VIS)
 	if (useSkylightingShadow)
+#		if defined(DEFERRED)
+		dirSoftShadow = skylightingShadowVisibility;
+#		else
 		dirSoftShadow = min(dirSoftShadow, skylightingShadowVisibility);
+#		endif
 #	endif
 
 	float3 diffuseColor = 0.0.xxx;

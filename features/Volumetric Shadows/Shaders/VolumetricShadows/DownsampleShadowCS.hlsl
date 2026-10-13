@@ -21,6 +21,43 @@ static const uint CASCADE = 1;
 static const uint CASCADE = 0;
 #endif
 
+#if defined(DOWNSAMPLE_SHADOW_GENERAL)
+[numthreads(8, 8, 1)] void main(uint3 dispatchThreadID : SV_DispatchThreadID) {
+	uint outputW, outputH;
+	OutputTexture.GetDimensions(outputW, outputH);
+	if (dispatchThreadID.x >= outputW || dispatchThreadID.y >= outputH)
+		return;
+
+	uint inputW, inputH, inputSlices;
+	InputTexture.GetDimensions(inputW, inputH, inputSlices);
+	if (inputW == 0 || inputH == 0 || inputSlices <= CASCADE) {
+		OutputTexture[dispatchThreadID.xy] = float2(1, 1);
+		return;
+	}
+
+	// One writer owns the complete footprint even when it spans multiple thread groups.
+	uint2 inputSize = uint2(inputW, inputH);
+	uint2 outputSize = uint2(outputW, outputH);
+	uint2 begin = min(dispatchThreadID.xy * inputSize / outputSize, inputSize - 1);
+	uint2 end = min(max(begin + 1, (dispatchThreadID.xy + 1) * inputSize / outputSize), inputSize);
+	float2 moments = 0;
+	float sampleCount = 0;
+	[loop] for (uint y = begin.y; y < end.y; y += 2)
+	{
+		[loop] for (uint x = begin.x; x < end.x; x += 2)
+		{
+			float2 uv = (float2(x, y) + 0.5) / float2(inputSize);
+			float4 depths = min(InputTexture.GatherRed(LinearSampler, float3(uv, CASCADE)),
+				ESRAMShadow.GatherRed(LinearSampler, float3(uv, CASCADE)));
+			// Gather order is lower-left, lower-right, upper-right, upper-left.
+			float4 valid = float4(y + 1 < end.y, x + 1 < end.x && y + 1 < end.y, x + 1 < end.x, 1);
+			moments += float2(dot(depths, valid), dot(depths * depths, valid));
+			sampleCount += dot(valid, 1);
+		}
+	}
+	OutputTexture[dispatchThreadID.xy] = moments / sampleCount;
+}
+#else
 [numthreads(8, 8, 1)] void main(uint3 dispatchThreadID : SV_DispatchThreadID, uint3 groupThreadID : SV_GroupThreadID) {
 	uint2 pixCoord = dispatchThreadID.xy * 2;
 
@@ -101,3 +138,5 @@ static const uint CASCADE = 0;
 		OutputTexture[outputCoord] = g_scratchDepths[groupThreadID.x][groupThreadID.y];
 	}
 }
+
+#endif
