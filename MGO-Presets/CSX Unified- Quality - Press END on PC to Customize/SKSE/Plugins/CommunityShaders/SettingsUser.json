@@ -72,15 +72,15 @@
   "Preset Compatibility": {
     "contractVersion": 1,
     "presetId": "csx-unified-quality",
-    "presetVersion": "d2026.10.10.1",
+    "presetVersion": "d2026.10.13.1",
     "target": {
       "runtime": "VR",
       "minimumVersion": "3.20",
       "maximumVersionExclusive": "3.21"
     },
     "settingsContract": {
-      "revision": 10,
-      "sourceTreeSha256": "F4525569BAE396727FC0A5B3672067464BC970D5E6B863F725ADD51B6AF7BA94"
+      "revision": 11,
+      "sourceTreeSha256": "50C19AC9B20A1EFD78707E9D4C4BD993100C8487A4DA2716F92D0F20DBA943C7"
     }
   },
   "Upscaling": {
@@ -323,7 +323,7 @@
     "VRMenuScale": 2.0,
     "VROverlayCloseKeys": [],
     "VROverlayOpenKeys": [],
-    "WandAimPitchTrimDegrees": 0.0,
+    "WandAimPitchTrimDegrees": -26.0,
     "attachMode": 0,
     "comboTimeout": 3.0,
     "dragHighlightColor": [

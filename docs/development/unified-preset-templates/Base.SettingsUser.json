@@ -310,7 +310,7 @@
     "VRMenuScale": 2.0,
     "VROverlayCloseKeys": [],
     "VROverlayOpenKeys": [],
-    "WandAimPitchTrimDegrees": 0.0,
+    "WandAimPitchTrimDegrees": -26.0,
     "attachMode": 0,
     "comboTimeout": 3.0,
     "dragHighlightColor": [

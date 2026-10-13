@@ -146,8 +146,7 @@ namespace
 	bool ShouldRenderStandaloneWandBeam(const VR& vr)
 	{
 		return vr.CanUseWandPointing() && !vr.ocuPointerAvailable &&
-		       !vr.wandState.usingOCUPointer && vr.IsMenuPointerInHeadset() &&
-		       vr.customVRCursorVisible && vr.wandState.isIntersecting &&
+		       (vr.ShouldShowWandBeam(ControllerDevice::Primary) || vr.ShouldShowWandBeam(ControllerDevice::Secondary)) &&
 		       vr.ShouldPresentOverlayInHeadset() &&
 		       !globals::features::renderDoc.ShouldBlockUpscaling();
 	}
@@ -520,34 +519,48 @@ namespace
 		return packet;
 	}
 
-	bool TryProjectWandBeam(VR& a_vr, VR::OverlayType a_type, const Matrix& a_menuWorld,
+	VR::OverlayType GetWandBeamOverlayType(const VR& a_vr, ControllerDevice a_controller)
+	{
+		const auto& hand = a_vr.wandHandStates[a_controller == ControllerDevice::Primary ? 0 : 1];
+		if (hand.isIntersecting)
+			return hand.overlayType;
+		return a_vr.GetEffectiveMenuAttachMode() == VR::Settings::OverlayAttachMode::ControllerOnly ?
+		           VR::OverlayType::Controller :
+		           VR::OverlayType::HMD;
+	}
+
+	bool TryProjectWandBeam(VR& a_vr, ControllerDevice a_controller, VR::OverlayType a_type, const Matrix& a_menuWorld,
 		const Matrix& a_worldViewProjection, const WandBeamGeometry::Viewport& a_viewport,
 		UINT a_targetWidth, UINT a_targetHeight, WandBeamGeometry::ScreenBeam& a_beam)
 	{
-		if (!a_vr.CanUseWandPointing() || a_vr.ocuPointerAvailable || a_vr.wandState.usingOCUPointer ||
-			!a_vr.IsMenuPointerInHeadset() || !a_vr.customVRCursorVisible || !a_vr.wandState.isIntersecting ||
-			a_vr.customVRCursorOverlayType != a_type || a_vr.wandState.overlayType != a_type)
+		if (a_vr.ocuPointerAvailable || !a_vr.ShouldShowWandBeam(a_controller))
 			return false;
-		std::uint32_t canvasWidth = 0;
-		std::uint32_t canvasHeight = 0;
-		if (!a_vr.GetMenuCanvasSize(canvasWidth, canvasHeight) || canvasWidth == 0 || canvasHeight == 0)
+		const auto& hand = a_vr.wandHandStates[a_controller == ControllerDevice::Primary ? 0 : 1];
+		if (GetWandBeamOverlayType(a_vr, a_controller) != a_type)
 			return false;
-		const float u = a_vr.customVRCursorPos.x / float(canvasWidth);
-		const float v = a_vr.customVRCursorPos.y / float(canvasHeight);
-		if (!std::isfinite(u) || !std::isfinite(v) || u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f)
-			return false;
-
-		// The displayed cursor includes smoothing and click holds; its surface
-		// point is the beam endpoint in both eyes, even when the raw hit moves.
-		Vector3 endpoint = Vector3::Transform(Vector3(u - 0.5f, 0.5f - v, 0.0f), a_menuWorld);
-		if (!a_vr.ShouldUseInSceneOverlay() && a_vr.openVRInfo.runtimeType == VRDetection::RuntimeType::SteamVR) {
-			VR::PresentedMenuSurface surface;
-			if (!a_vr.TryGetPresentedMenuSurface(a_type, surface))
+		const Vector3& origin = hand.rayOrigin;
+		Vector3 endpoint = origin + hand.rayDirection * -a_vr.GetEffectiveHMDMenuOffset().z;
+		if (hand.isIntersecting && hand.hasScreenPosition) {
+			std::uint32_t canvasWidth = 0, canvasHeight = 0;
+			if (!a_vr.GetMenuCanvasSize(canvasWidth, canvasHeight) || canvasWidth == 0 || canvasHeight == 0)
 				return false;
-			endpoint = surface.topLeft + (surface.topRight - surface.topLeft) * u +
-			           (surface.bottomLeft - surface.topLeft) * v;
+			const auto cursor = a_vr.activeWandController == a_controller && a_vr.customVRCursorVisible && a_vr.IsMenuPointerInHeadset() && a_vr.customVRCursorOverlayType == hand.overlayType ?
+			                        a_vr.customVRCursorPos :
+			                        hand.screenPosition;
+			const float u = cursor.x / float(canvasWidth), v = cursor.y / float(canvasHeight);
+			if (!std::isfinite(u) || !std::isfinite(v) || u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f)
+				return false;
+			endpoint = Vector3::Transform(Vector3(u - 0.5f, 0.5f - v, 0.0f), a_menuWorld);
+			if (!a_vr.ShouldUseInSceneOverlay()) {
+				VR::PresentedMenuSurface surface;
+				if (a_vr.TryGetPresentedMenuSurface(a_type, surface))
+					endpoint = surface.topLeft + (surface.topRight - surface.topLeft) * u + (surface.bottomLeft - surface.topLeft) * v;
+				else if (a_vr.openVRInfo.runtimeType != VRDetection::RuntimeType::SteamVR)
+					endpoint = origin + hand.rayDirection * hand.hitDistance;
+				else
+					return false;
+			}
 		}
-		const Vector3& origin = a_vr.wandState.rayOrigin;
 		const auto project = [&](const Vector3& a_point) {
 			const XMVECTOR clip = XMVector4Transform(XMVectorSet(a_point.x, a_point.y, a_point.z, 1.0f), a_worldViewProjection);
 			return WandBeamGeometry::ClipPoint{ XMVectorGetX(clip), XMVectorGetY(clip), XMVectorGetZ(clip), XMVectorGetW(clip) };
@@ -2854,12 +2867,12 @@ void VR::RenderInSceneOverlay(vr::EVREye eye, ID3D11Texture2D* targetTexture, co
 		Matrix worldModelMatrix;
 		Matrix vp;
 		if (UseFixedWorldMenuPositioning()) {  // Fixed World Position
-			modelMatrix = VR::Config::CreateHMDOverlayScaleMatrix(menuScale) * fixedWorldOverlayPosition.m;
+			modelMatrix = VR::Config::CreateHMDOverlayScaleMatrix(GetEffectiveHMDMenuScale()) * fixedWorldOverlayPosition.m;
 			worldModelMatrix = modelMatrix;
 			vp = vpWorldSpace;
 		} else {  // HMD Relative
 			Matrix offset = Matrix::CreateTranslation(hmdOffset);
-			modelMatrix = VR::Config::CreateHMDOverlayScaleMatrix(menuScale) * offset;
+			modelMatrix = VR::Config::CreateHMDOverlayScaleMatrix(GetEffectiveHMDMenuScale()) * offset;
 			worldModelMatrix = modelMatrix * hmdWorld;
 			vp = vpHeadSpace;
 		}
@@ -2876,11 +2889,13 @@ void VR::RenderInSceneOverlay(vr::EVREye eye, ID3D11Texture2D* targetTexture, co
 			PublishPresentedMenuSurface(OverlayType::HMD, worldModelMatrix);
 			WandBeamGeometry::ScreenBeam beam;
 			const WandBeamGeometry::Viewport viewport{ vpDesc.TopLeftX, vpDesc.TopLeftY, vpDesc.Width, vpDesc.Height };
-			if (TryProjectWandBeam(*this, OverlayType::HMD, worldModelMatrix, vpWorldSpace,
-					viewport, texDesc.Width, texDesc.Height, beam)) {
-				const auto colour = GetWandPointerColor();
-				WandBeamRenderer::Draw(globals::d3d::device, inSceneResources.immediateContext.get(), beam, viewport,
-					{ colour.x, colour.y, colour.z, colour.w });
+			for (const auto controller : { ControllerDevice::Primary, ControllerDevice::Secondary }) {
+				if (TryProjectWandBeam(*this, controller, OverlayType::HMD, worldModelMatrix, vpWorldSpace,
+						viewport, texDesc.Width, texDesc.Height, beam)) {
+					const auto colour = GetWandPointerColor(controller);
+					WandBeamRenderer::Draw(globals::d3d::device, inSceneResources.immediateContext.get(), beam, viewport,
+						{ colour.x, colour.y, colour.z, colour.w });
+				}
 			}
 		}
 		overlayDrawn = hmdOverlayDrawn || overlayDrawn;
@@ -2934,11 +2949,13 @@ void VR::RenderInSceneOverlay(vr::EVREye eye, ID3D11Texture2D* targetTexture, co
 						PublishPresentedMenuSurface(OverlayType::Controller, modelMatrix);
 						WandBeamGeometry::ScreenBeam beam;
 						const WandBeamGeometry::Viewport viewport{ vpDesc.TopLeftX, vpDesc.TopLeftY, vpDesc.Width, vpDesc.Height };
-						if (TryProjectWandBeam(*this, OverlayType::Controller, modelMatrix, vpWorldSpace,
-								viewport, texDesc.Width, texDesc.Height, beam)) {
-							const auto colour = GetWandPointerColor();
-							WandBeamRenderer::Draw(globals::d3d::device, inSceneResources.immediateContext.get(), beam, viewport,
-								{ colour.x, colour.y, colour.z, colour.w });
+						for (const auto controller : { ControllerDevice::Primary, ControllerDevice::Secondary }) {
+							if (TryProjectWandBeam(*this, controller, OverlayType::Controller, modelMatrix, vpWorldSpace,
+									viewport, texDesc.Width, texDesc.Height, beam)) {
+								const auto colour = GetWandPointerColor(controller);
+								WandBeamRenderer::Draw(globals::d3d::device, inSceneResources.immediateContext.get(), beam, viewport,
+									{ colour.x, colour.y, colour.z, colour.w });
+							}
 						}
 					}
 					overlayDrawn = controllerOverlayDrawn || overlayDrawn;
@@ -3039,18 +3056,34 @@ void VR::CompositeInSceneOverlaySubmitTexture(vr::EVREye eye, ID3D11Texture2D* t
 	const Vector3 hmdOffset = GetEffectiveHMDMenuOffset();
 	const Vector3 controllerOffset = GetEffectiveControllerMenuOffset();
 	const bool beamOnly = !ShouldRenderInSceneMenu(*this);
-	const bool showOnHMD = beamOnly ? customVRCursorOverlayType == OverlayType::HMD :
-	                                  attachMode == AttachMode::HMDOnly || attachMode == AttachMode::Both;
-	const bool showOnController = beamOnly ? customVRCursorOverlayType == OverlayType::Controller :
-	                                         attachMode == AttachMode::ControllerOnly;
+	if (beamOnly) {
+		if (!ShouldRenderStandaloneWandBeam(*this))
+			return;
+		WandBeamGeometry::ScreenBeam beam;
+		const WandBeamGeometry::Viewport viewport{ viewX, viewY, viewW, viewH };
+		for (const auto controller : { ControllerDevice::Primary, ControllerDevice::Secondary }) {
+			if (TryProjectWandBeam(*this, controller, GetWandBeamOverlayType(*this, controller),
+					Matrix::Identity, vpWorldSpace, viewport, targetDesc.Width, targetDesc.Height, beam)) {
+				const auto colour = GetWandPointerColor(controller);
+				const bool drawn = WandBeamRenderer::Composite(device, inSceneResources.immediateContext.get(),
+					targetUAV, beam, viewport, { colour.x, colour.y, colour.z, colour.w });
+				if (overlayComposited)
+					*overlayComposited = *overlayComposited || drawn;
+			}
+		}
+		return;
+	}
+
+	const bool showOnHMD = attachMode == AttachMode::HMDOnly || attachMode == AttachMode::Both;
+	const bool showOnController = attachMode == AttachMode::ControllerOnly;
 	if (showOnHMD) {
 		if (UseFixedWorldMenuPositioning()) {
-			modelMatrix = VR::Config::CreateHMDOverlayScaleMatrix(menuScale) * fixedWorldOverlayPosition.m;
+			modelMatrix = VR::Config::CreateHMDOverlayScaleMatrix(GetEffectiveHMDMenuScale()) * fixedWorldOverlayPosition.m;
 			worldModelMatrix = modelMatrix;
 			viewProjection = vpWorldSpace;
 		} else {
 			Matrix offset = Matrix::CreateTranslation(hmdOffset);
-			modelMatrix = VR::Config::CreateHMDOverlayScaleMatrix(menuScale) * offset;
+			modelMatrix = VR::Config::CreateHMDOverlayScaleMatrix(GetEffectiveHMDMenuScale()) * offset;
 			worldModelMatrix = modelMatrix * hmdWorld;
 			viewProjection = vpHeadSpace;
 		}
@@ -3071,20 +3104,6 @@ void VR::CompositeInSceneOverlaySubmitTexture(vr::EVREye eye, ID3D11Texture2D* t
 		worldModelMatrix = modelMatrix;
 		viewProjection = vpWorldSpace;
 	} else {
-		return;
-	}
-
-	if (beamOnly) {
-		WandBeamGeometry::ScreenBeam beam;
-		const WandBeamGeometry::Viewport viewport{ viewX, viewY, viewW, viewH };
-		if (ShouldRenderStandaloneWandBeam(*this) && TryProjectWandBeam(*this, presentedType,
-														 worldModelMatrix, vpWorldSpace, viewport, targetDesc.Width, targetDesc.Height, beam)) {
-			const auto colour = GetWandPointerColor();
-			const bool drawn = WandBeamRenderer::Composite(device, inSceneResources.immediateContext.get(),
-				targetUAV, beam, viewport, { colour.x, colour.y, colour.z, colour.w });
-			if (overlayComposited)
-				*overlayComposited = drawn;
-		}
 		return;
 	}
 
@@ -3217,11 +3236,13 @@ void VR::CompositeInSceneOverlaySubmitTexture(vr::EVREye eye, ID3D11Texture2D* t
 	PublishPresentedMenuSurface(presentedType, worldModelMatrix);
 	WandBeamGeometry::ScreenBeam beam;
 	const WandBeamGeometry::Viewport viewport{ viewX, viewY, viewW, viewH };
-	if (TryProjectWandBeam(*this, presentedType, worldModelMatrix, vpWorldSpace,
-			viewport, targetDesc.Width, targetDesc.Height, beam)) {
-		const auto colour = GetWandPointerColor();
-		WandBeamRenderer::Composite(device, inSceneResources.immediateContext.get(), targetUAV, beam, viewport,
-			{ colour.x, colour.y, colour.z, colour.w });
+	for (const auto controller : { ControllerDevice::Primary, ControllerDevice::Secondary }) {
+		if (TryProjectWandBeam(*this, controller, presentedType, worldModelMatrix, vpWorldSpace,
+				viewport, targetDesc.Width, targetDesc.Height, beam)) {
+			const auto colour = GetWandPointerColor(controller);
+			WandBeamRenderer::Composite(device, inSceneResources.immediateContext.get(), targetUAV, beam, viewport,
+				{ colour.x, colour.y, colour.z, colour.w });
+		}
 	}
 	if (overlayComposited) {
 		*overlayComposited = true;

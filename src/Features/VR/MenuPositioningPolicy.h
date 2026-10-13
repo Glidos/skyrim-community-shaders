@@ -1,7 +1,26 @@
 #pragma once
 
+#include <algorithm>
+#include <cmath>
+
 namespace VRMenuPositioningPolicy
 {
+	inline constexpr float MinDistance = 1.5f;
+	inline constexpr float MaxDistance = 3.0f;
+	inline constexpr float DefaultDistance = 2.25f;
+
+	/** Keep menu depth usable for saved settings, live edits and controller drag. */
+	inline float SanitizeDistance(float a_metres)
+	{
+		return std::isfinite(a_metres) ? std::clamp(a_metres, MinDistance, MaxDistance) : DefaultDistance;
+	}
+
+	/** Native overlay dimensions contain scale twice; preserve width / distance. */
+	inline float ScaleForDistance(float a_scale, float a_distance, float a_referenceDistance)
+	{
+		return a_scale * std::sqrt(a_distance / a_referenceDistance);
+	}
+
 	template <class T>
 	constexpr T SelectEffectiveValue(bool a_layoutUnlocked, T a_savedValue, T a_lockedValue)
 	{

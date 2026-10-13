@@ -2,7 +2,7 @@
     "schemaVersion": 4,
     "status": "provisional-calibration-v2",
     "generatedAtEvidenceDate": "2026-08-30",
-    "packageVersion": "d2026.10.10.1",
+    "packageVersion": "d2026.10.13.1",
     "policy": "one vendor-neutral base with three explicit graphics tiers and capability-selected DLSS or FSR",
     "presetCompatibility": {
         "contractVersion": 1,
@@ -15,11 +15,11 @@
     "tierOrder": ["Performance", "Balanced", "Quality"],
     "baseTemplate": {
         "path": "docs/development/unified-preset-templates/Base.SettingsUser.json",
-        "sha256": "4A71CA9248978CB5C289CBF7DB40AB609320DA823C26300DA91D3FC258F975F7"
+        "sha256": "3874C8235C31FA8FC37294E6D834EF4B1DA0785BEA5D582F14DB7C9DDA0A6416"
     },
     "runtimeSettingsContract": {
         "revision": 11,
-        "sourceTreeSha256": "C4B01D51573DC275AD98FF72CC92F2EC0D696D218A696701DA8223DE4404FCC5",
+        "sourceTreeSha256": "50C19AC9B20A1EFD78707E9D4C4BD993100C8487A4DA2716F92D0F20DBA943C7",
         "inventory": {
             "fixedSources": [
                 "src/Api/FeatureDevBenchBridge.cpp",
@@ -199,7 +199,7 @@
         ],
         "overrides": [
             { "path": ["Menu", "UI Mode"], "value": 0 },
-            { "path": ["VR", "WandAimPitchTrimDegrees"], "value": 0.0 }
+            { "path": ["VR", "WandAimPitchTrimDegrees"], "value": -26.0 }
         ]
     },
     "tierForbiddenPrefixes": [
@@ -470,7 +470,7 @@
         { "path": ["VR", "VRMenuPositioningMethod"], "value": 1 },
         { "path": ["VR", "VRMenuScale"], "value": 2.0 },
         { "path": ["VR", "VRMenuOffsetZ"], "value": -2.25 },
-        { "path": ["VR", "WandAimPitchTrimDegrees"], "value": 0.0 }
+        { "path": ["VR", "WandAimPitchTrimDegrees"], "value": -26.0 }
     ],
     "qualifications": {
         "vendor-capability-selection": {
@@ -758,7 +758,7 @@
             { "path": ["Volumetric Lighting", "ExteriorGodrays", "ShaftIntensity"], "value": 1.0 },
             { "path": ["Volumetric Lighting", "InteriorGodrays", "ShaftIntensity"], "value": 1.0 },
             { "path": ["Wetterness", "RainGrassDarkening"], "value": 0.15000000596046448 },
-            { "path": ["VR", "WandAimPitchTrimDegrees"], "value": 0.0 }
+            { "path": ["VR", "WandAimPitchTrimDegrees"], "value": -26.0 }
         ],
         "requiredArrayLengths": [
             { "path": ["Adaptive Balance", "profiles"], "length": 5 },

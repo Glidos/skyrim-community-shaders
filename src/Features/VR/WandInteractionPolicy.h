@@ -11,11 +11,17 @@ namespace WandInteractionPolicy
 		Secondary
 	};
 
+	constexpr bool ShouldShowBeam(Hand a_hand, Hand a_active, bool a_poseValid, bool a_showBoth)
+	{
+		return a_poseValid && a_hand != Hand::None && (a_showBoth || a_hand == a_active);
+	}
+
 	struct Candidate
 	{
 		bool hit = false;
 		bool moved = false;
 		float distance = std::numeric_limits<float>::max();
+		bool poseValid = false;
 	};
 
 	constexpr const Candidate& GetCandidate(Hand a_hand, const Candidate& a_primary, const Candidate& a_secondary)
@@ -40,7 +46,7 @@ namespace WandInteractionPolicy
 		if (a_captured != Hand::None)
 			return a_captured;
 
-		if (a_preferred != Hand::None && GetCandidate(a_preferred, a_primary, a_secondary).hit)
+		if (a_preferred != Hand::None && (GetCandidate(a_preferred, a_primary, a_secondary).hit || GetCandidate(a_preferred, a_primary, a_secondary).poseValid))
 			return a_preferred;
 
 		if (a_current != Hand::None) {
@@ -59,6 +65,12 @@ namespace WandInteractionPolicy
 		if (a_primary.hit)
 			return Hand::Primary;
 		if (a_secondary.hit)
+			return Hand::Secondary;
+		if (a_current != Hand::None && GetCandidate(a_current, a_primary, a_secondary).poseValid)
+			return a_current;
+		if (a_primary.poseValid)
+			return Hand::Primary;
+		if (a_secondary.poseValid)
 			return Hand::Secondary;
 		return Hand::None;
 	}

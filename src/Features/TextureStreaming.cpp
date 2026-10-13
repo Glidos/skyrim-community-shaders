@@ -41,7 +41,7 @@ namespace
 	using Diagnostics = StreamingTextures::Diagnostics;
 	using Block = Diagnostics::Block;
 	using Exclusion = Diagnostics::Exclusion;
-	constexpr auto streamingConflictWarning = "CSX texture streaming is disabled because Skyrim Performance Solution (SPS.dll) is loaded. Both plugins replace texture resources and must not stream them together. Disable the SPS mod and restart the game to use CSX native texture streaming.";
+	constexpr auto streamingConflictWarning = "SPS detected. Disable the SPS mod and restart to use CSX texture streaming.";
 	constexpr std::size_t maximumRecords = 16384, maximumConsumers = 256, maximumFrontier = 16384;
 	constexpr std::size_t maximumReducedTextures = 512;
 	constexpr std::uint64_t uploadBytesPerFrame = 4 * Policy::MiB;
@@ -440,7 +440,7 @@ struct TextureStreaming::State
 	};
 
 	mutable std::mutex mutex;
-	bool enabled = true, externalStreamingConflict = false;
+	bool requestedEnabled = true, enabled = true, externalStreamingConflict = false;
 	StreamingTextures::Modes modes;
 	StreamingTextures::Options options;
 #ifdef DEVBENCH_BRIDGE_ENABLED
@@ -505,6 +505,7 @@ struct TextureStreaming::State
 		return ReductionRequested() ? demanded : std::min(demanded, Policy::CappedDrop(record.full.Width, record.full.Height, record.full.MipLevels, options.maximumSize));
 	}
 	bool ReductionRequested() const noexcept;
+	void UpdateConfigurationDetail();
 	void Select();
 	void ServiceTransaction();
 	void CancelTransaction();
@@ -1414,9 +1415,9 @@ void TextureStreaming::PostPostLoad()
 		std::scoped_lock lock(state->mutex);
 		state->externalStreamingConflict = true;
 		state->enabled = false;
-		state->detail = failedLoadedMessage = streamingConflictWarning;
-		loaded = false;
-		logger::warn("[TextureStreaming] {}", failedLoadedMessage);
+		state->detail = streamingConflictWarning;
+		StreamingTextures::LoadHooks::Configure(false, state->modes, state->options, state->categories, state->maximumDrop);
+		logger::warn("[TextureStreaming] {}", streamingConflictWarning);
 		return;
 	}
 	if (originHookReady.load())
@@ -1436,6 +1437,8 @@ void TextureStreaming::PostPostLoad()
 void TextureStreaming::Reset()
 {
 	std::scoped_lock lock(state->mutex);
+	if (state->externalStreamingConflict)
+		return;
 	try {
 		state->Tick();
 	} catch (const std::exception& error) {
@@ -1470,6 +1473,14 @@ void TextureStreaming::CaptureWorldDemand(float mipBias)
 			std::abs(camera.projMatrixUnjittered._11), std::abs(camera.projMatrixUnjittered._22), 0 };
 	}
 }
+void TextureStreaming::State::UpdateConfigurationDetail()
+{
+	detail = externalStreamingConflict ? streamingConflictWarning :
+	         !enabled                  ? "Restoring texture detail as headroom permits" :
+	         modes.continuous          ? "Continuous texture streaming" :
+	         modes.onPressure          ? "Monitoring GPU memory pressure" :
+	                                     "Distance streaming off; texture size limit retained";
+}
 void TextureStreaming::Configure(bool enabled, std::uint32_t maximumDrop, std::optional<StreamingTextures::Categories> categories,
 	std::optional<StreamingTextures::Modes> modes, std::optional<StreamingTextures::Options> options)
 {
@@ -1477,10 +1488,8 @@ void TextureStreaming::Configure(bool enabled, std::uint32_t maximumDrop, std::o
 		StreamingTextures::ValidateOptions(*options);
 	if (maximumDrop < 1 || maximumDrop > Policy::MaximumDrop)
 		throw std::invalid_argument("MaximumMipDrop must be between 1 and 3");
-	if (modes && enabled != modes->Enabled())
-		throw std::invalid_argument("Enabled must match the selected streaming modes");
 	std::scoped_lock lock(state->mutex);
-	const auto nextModes = modes.value_or(enabled ? (state->modes.Enabled() ? state->modes : StreamingTextures::Modes{}) : StreamingTextures::Modes{ false, false });
+	const auto nextModes = modes.value_or(state->modes);
 	const bool coverageChanged = categories && state->categories != *categories;
 	const bool active = enabled && !state->externalStreamingConflict;
 	if (coverageChanged || state->modes != nextModes || state->enabled != active || state->maximumDrop != maximumDrop || (options && state->options != *options))
@@ -1499,15 +1508,13 @@ void TextureStreaming::Configure(bool enabled, std::uint32_t maximumDrop, std::o
 			record.consumers.Clear();
 	}
 	state->modes = nextModes;
+	state->requestedEnabled = enabled;
 	state->enabled = active;
 	if (!active)
 		state->UpdatePressureDiagnostics(GetTickCount64());
 	state->maximumDrop = maximumDrop;
 	StreamingTextures::LoadHooks::Configure(active, state->modes, state->options, state->categories, state->maximumDrop);
-	state->detail = state->externalStreamingConflict ? streamingConflictWarning :
-	                !active                          ? "Restoring texture detail as headroom permits" :
-	                nextModes.continuous             ? "Continuous texture streaming" :
-	                                                   "Monitoring GPU memory pressure";
+	state->UpdateConfigurationDetail();
 }
 #ifdef DEVBENCH_BRIDGE_ENABLED
 void TextureStreaming::SetDebugForceStreaming(bool enabled)
@@ -1518,10 +1525,10 @@ void TextureStreaming::SetDebugForceStreaming(bool enabled)
 	if (state->modes.continuous == enabled)
 		return;
 	state->modes.continuous = enabled;
-	state->enabled = state->modes.Enabled() && !state->externalStreamingConflict;
+	state->enabled = state->requestedEnabled && !state->externalStreamingConflict;
 	StreamingTextures::LoadHooks::Configure(state->enabled, state->modes, state->options, state->categories, state->maximumDrop);
 	++state->epoch;
-	state->detail = enabled ? "Continuous texture streaming" : "Restoring texture detail as headroom permits";
+	state->UpdateConfigurationDetail();
 }
 #endif
 void TextureStreaming::LoadSettings(nlohmann::json& object)
@@ -1529,8 +1536,8 @@ void TextureStreaming::LoadSettings(nlohmann::json& object)
 	try {
 		const auto maximum = StreamingTextures::ParseMaximumMipDrop(object.value("MaximumMipDrop", nlohmann::json(2)));
 		const auto modes = object.contains("Modes") ? StreamingTextures::ParseModes(object.at("Modes")) :
-		                                              StreamingTextures::Modes{ object.value("Enabled", true), false };
-		Configure(modes.Enabled(), maximum, object.contains("Categories") ? StreamingTextures::ParseCategories(object.at("Categories")) : StreamingTextures::Categories{}, modes,
+		                                              StreamingTextures::Modes{};
+		Configure(object.value("Enabled", modes.Enabled()), maximum, object.contains("Categories") ? StreamingTextures::ParseCategories(object.at("Categories")) : StreamingTextures::Categories{}, modes,
 			object.contains("Options") ? StreamingTextures::ParseOptions(object.at("Options")) : StreamingTextures::Options{});
 	} catch (const std::exception& error) {
 		logger::warn("[TextureStreaming] Invalid saved settings retained previous configuration: {}", error.what());
@@ -1539,7 +1546,7 @@ void TextureStreaming::LoadSettings(nlohmann::json& object)
 void TextureStreaming::SaveSettings(nlohmann::json& object)
 {
 	std::scoped_lock lock(state->mutex);
-	object = { { "Enabled", state->modes.Enabled() }, { "Modes", StreamingTextures::SerializeModes(state->modes) },
+	object = { { "Enabled", state->requestedEnabled }, { "Modes", StreamingTextures::SerializeModes(state->modes) },
 		{ "MaximumMipDrop", state->maximumDrop }, { "Categories", StreamingTextures::SerializeCategories(state->categories) },
 		{ "Options", StreamingTextures::SerializeOptions(state->options) } };
 }
@@ -1557,8 +1564,8 @@ nlohmann::json TextureStreaming::GetStatus() const
 		desiredRestores += record.desired < record.drop;
 	}
 	const auto& memory = state->memory;
-	nlohmann::json result = { { "enabled", state->enabled }, { "maximumMipDrop", state->maximumDrop },
-		{ "externalStreamingConflict", state->externalStreamingConflict }, { "unavailableReason", failedLoadedMessage },
+	nlohmann::json result = { { "enabled", state->enabled }, { "requestedEnabled", state->requestedEnabled }, { "maximumMipDrop", state->maximumDrop },
+		{ "externalStreamingConflict", state->externalStreamingConflict }, { "unavailableReason", state->externalStreamingConflict ? streamingConflictWarning : failedLoadedMessage },
 		{ "modes", StreamingTextures::SerializeModes(state->modes) },
 		{ "options", StreamingTextures::SerializeOptions(state->options) }, { "rememberedSizes", StreamingTextures::LoadHooks::Status() },
 		{ "categories", StreamingTextures::SerializeCategories(state->categories) }, { "originHookReady", originHookReady.load() },
@@ -1625,9 +1632,25 @@ nlohmann::json TextureStreaming::GetStatus() const
 	result["reductionRequested"] = state->enabled && (state->ReductionRequested() || state->options.maximumSize != 0);
 	return result;
 }
-void TextureStreaming::DrawSettings()
+void TextureStreaming::DrawSettingsEnabledControl()
 {
 	bool enabled;
+	std::uint32_t maximum;
+	bool conflict;
+	{
+		std::scoped_lock lock(state->mutex);
+		enabled = state->requestedEnabled;
+		maximum = state->maximumDrop;
+		conflict = state->externalStreamingConflict;
+	}
+	const auto disabled = Util::DisableGuard(conflict || !originHookReady.load());
+	if (Util::Widgets::Checkbox("Enabled", &enabled))
+		Configure(enabled, maximum);
+	Util::AddTooltip("Turns texture streaming on or off while keeping your current tuning.", ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled);
+}
+void TextureStreaming::DrawSettings()
+{
+	bool enabled, conflict;
 	StreamingTextures::Modes modes;
 	int maximum;
 	StreamingTextures::Options options;
@@ -1636,7 +1659,8 @@ void TextureStreaming::DrawSettings()
 	std::uint64_t reduced, logicalBytesRemoved = 0;
 	{
 		std::scoped_lock lock(state->mutex);
-		enabled = state->enabled;
+		enabled = state->requestedEnabled;
+		conflict = state->externalStreamingConflict;
 		modes = state->modes;
 		maximum = state->maximumDrop;
 		options = state->options;
@@ -1649,16 +1673,18 @@ void TextureStreaming::DrawSettings()
 				logicalBytesRemoved += record.bytes[0] - record.bytes[record.drop];
 			}
 	}
-	const bool available = originHookReady.load();
-	if (!available)
+	const bool available = originHookReady.load() && !conflict;
+	if (conflict)
+		Util::Text::WrappedWarning(streamingConflictWarning);
+	else if (!available)
 		Util::Text::WrappedWarning("Texture streaming is unavailable because texture source tracking could not start. Restart the game to try again.");
 	MenuUI::SettingsPage page("TextureStreaming", {
-													  { "quality", "Texture detail", "Set VRAM reserve and texture detail.", "Streaming controls", true, true, nullptr, nullptr, nullptr, available },
-													  { "categories", "Coverage", "Optional texture types.", "Additional coverage", true, false, nullptr, nullptr, nullptr, available },
+													  { "quality", "Texture detail", "Set VRAM reserve and texture detail.", "Streaming controls", true, true, nullptr, nullptr, nullptr, available && enabled },
+													  { "categories", "Coverage", "Optional texture types.", "Additional coverage", true, false, nullptr, nullptr, nullptr, available && enabled },
 													  { "status", "Status", "Current streaming activity.", "Activity and capacity", true, true, nullptr },
 												  });
 	if (page.Is("quality")) {
-		const auto disabled = Util::DisableGuard(!available);
+		const auto disabled = Util::DisableGuard(!available || !enabled);
 		const auto previousModes = modes;
 		const auto previousOptions = options;
 		const auto previousMaximum = maximum;
@@ -1690,10 +1716,10 @@ void TextureStreaming::DrawSettings()
 		maximum = std::clamp(maximum, 1, static_cast<int>(Policy::MaximumDrop));
 		Util::AddTooltip("Limits distance-based reductions. The optional size cap can remove more mips, including nearby. Texture protections still apply.");
 		if (modes != previousModes || options != previousOptions || maximum != previousMaximum)
-			Configure(modes.Enabled(), maximum, std::nullopt, modes, options);
+			Configure(enabled, maximum, std::nullopt, modes, options);
 	}
 	if (page.Is("categories")) {
-		const auto disabled = Util::DisableGuard(!available);
+		const auto disabled = Util::DisableGuard(!available || !enabled);
 		const auto previous = categories;
 		const std::array choices{
 			MenuUI::ToggleChoice{ "Landscape", &categories.landscapeStatics, "Landscape-folder textures used by ordinary static meshes." },

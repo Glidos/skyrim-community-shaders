@@ -622,7 +622,10 @@ void VR::ProcessOCUPointerInput()
 								!wandHandStates[capturedSlot].ocuOwnsInput)) {
 		CancelWandMouseInput(*this);
 	} else {
-		for (std::size_t slot = 0; slot < wandHandStates.size(); ++slot) {
+		const std::array<std::size_t, 2> order = capturedWandController == ControllerDevice::Secondary ?
+		                                             std::array<std::size_t, 2>{ 1, 0 } :
+		                                             std::array<std::size_t, 2>{ 0, 1 };
+		for (const auto slot : order) {
 			const auto controller = slot == 0 ? ControllerDevice::Primary : ControllerDevice::Secondary;
 			const auto& hand = wandHandStates[slot];
 			const auto edges = gOCUTriggerEdges[slot].Update(hand.ocuTriggerSequence,
@@ -1114,7 +1117,7 @@ void VR::ProcessControllerInputForImGui()
 			wandState = {};
 			gLastPresentedWandPointer = {};
 			gWandClaimedCursorThisFrame = false;
-			UpdateOCUPointerOwnership(true);
+			UpdateOCUPointerOwnership();
 			gWandInputCancelledThisFrame = false;
 			return;
 		}
@@ -1135,7 +1138,7 @@ void VR::ProcessControllerInputForImGui()
 		}
 		ProcessControllerInputForWandPointingPath(testMode, mouseDeadzone, io);
 		gLastPresentedWandPointer = { activeWandController, io.MousePos, wandState };
-		UpdateOCUPointerOwnership(true);
+		UpdateOCUPointerOwnership();
 		if (ocuPointerAvailable) {
 			const auto ownsController = [&](ControllerDevice controller) {
 				if (controller == ControllerDevice::Both)

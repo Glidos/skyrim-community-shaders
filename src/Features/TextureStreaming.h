@@ -23,7 +23,7 @@ struct TextureStreaming : Feature
 	/** Capture world camera and material sampling before later UI passes overwrite renderer state. */
 	void CaptureWorldDemand(float mipBias);
 	void DrawSettings() override;
-	void DrawSettingsEnabledControl() override {}
+	void DrawSettingsEnabledControl() override;
 	void LoadSettings(nlohmann::json&) override;
 	void SaveSettings(nlohmann::json&) override;
 	void RestoreDefaultSettings() override;

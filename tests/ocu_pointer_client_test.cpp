@@ -242,6 +242,24 @@ int main()
 			Client client;
 			client.ReadForFrame(1, 1, -25.0f, true);
 			Publish(1);
+			require(client.ReadForFrame(2, 1, -25.0f, true).valid && client.UpdateOwnership(3, 1, distances),
+				"released hands acquire navigation before either trigger is pressed");
+			const auto retainedGeneration = client.GetHandGeneration(1);
+			require(client.UpdateOwnership(3, 3, distances) && lastRequest.flags == (MenuVisible | HasLeftHit | HasRightHit),
+				"dual laser publishes both endpoints without releasing either hand");
+			require(client.UpdateOwnership(3, 0, distances) && client.TriggerEligible(1),
+				"temporarily missed menu keeps the other released hand armed");
+			Publish(2);
+			publication.hands[1].flags |= TriggerDown;
+			++publication.hands[1].triggerSequence;
+			require(client.ReadForFrame(3, 1, -25.0f, true).valid && client.UpdateOwnership(3, 2, distances) && client.TriggerDown(1) && client.GetHandGeneration(1) == retainedGeneration,
+				"first opposite-hand press transfers beam without reacquisition suppression");
+		}
+		{
+			ResetProvider();
+			Client client;
+			client.ReadForFrame(1, 1, -25.0f, true);
+			Publish(1);
 			publication.hands[0].flags |= TriggerDown;
 			publication.hands[0].triggerSequence = 10;
 			require(client.ReadForFrame(2, 1, -25.0f, true).valid && client.UpdateOwnership(1, 1, distances),

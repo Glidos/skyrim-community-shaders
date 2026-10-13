@@ -37,8 +37,8 @@ if(NOT _compatibility_found)
 endif()
 
 foreach(_bridge_contract IN ITEMS
-    "ServiceFoundation value({ ServiceName, 1, 1, 14 })"
-    "{ \"minor\", 1 }, { \"schemaRevision\", 14 }"
+    "ServiceFoundation value({ ServiceName, 1, 1, 15 })"
+    "{ \"minor\", 1 }, { \"schemaRevision\", 15 }"
     "PresetCompatibility::ToJson(PresetCompatibility::GetPublished())"
 )
     string(FIND "${_bridge}" "${_bridge_contract}" _bridge_position)
@@ -69,3 +69,11 @@ if(_evaluation_position EQUAL -1 OR
 endif()
 
 message(STATUS "Feature preset compatibility and DevBench contract is coherent")
+
+file(READ "${PROJECT_ROOT}/docs/development/unified-preset-policy.json" policy)
+file(READ "${PROJECT_ROOT}/src/PresetCompatibility.h" compatibility_header)
+string(JSON policy_revision GET "${policy}" runtimeSettingsContract revision)
+string(REGEX MATCH "kSettingsContractRevision = ([0-9]+)" revision_match "${compatibility_header}")
+if(NOT "${CMAKE_MATCH_1}" STREQUAL "${policy_revision}")
+    message(FATAL_ERROR "Preset generator and runtime settings revisions disagree")
+endif()

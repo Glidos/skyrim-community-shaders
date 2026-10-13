@@ -276,7 +276,8 @@ namespace Util
 	};
 	namespace Text
 	{
-		void WrappedWarning(const char*) {}
+		std::string warning;
+		void WrappedWarning(const char* text) { warning = text; }
 	}
 	namespace Widgets
 	{
@@ -359,7 +360,7 @@ struct TextureStreaming
 	{
 		std::mutex mutex;
 		StreamingTextures::Categories categories;
-		bool enabled = true, externalStreamingConflict = false;
+		bool requestedEnabled = true, enabled = true, externalStreamingConflict = false;
 		StreamingTextures::Modes modes;
 		StreamingTextures::Options options;
 		Policy::Pressure pressure;
@@ -367,6 +368,7 @@ struct TextureStreaming
 		bool debugForceStreaming = false;
 #endif
 		bool ReductionRequested() const noexcept;
+		void UpdateConfigurationDetail();
 		unsigned maximumDrop = 2;
 		std::uint64_t epoch = 7, completeScan = 12, nextScanMs = 10000;
 		std::vector<int> frontier{ 1 }, visited{ 1 }, reducedRecords;
@@ -383,6 +385,7 @@ struct TextureStreaming
 	void SaveSettings(nlohmann::json&);
 	void RestoreDefaultSettings();
 	void PostPostLoad();
+	void DrawSettingsEnabledControl();
 	void DrawSettings();
 };
 #define GetModuleHandleW FixtureModuleHandle
@@ -576,13 +579,28 @@ void CheckStreamingConflict()
 	originHookReady = false;
 	simulatedSPSLoaded = true;
 	blocked.PostPostLoad();
-	Require(!blocked.loaded && !blocked.state->enabled && blocked.state->externalStreamingConflict && !originHookReady && !hookInstalls,
+	Require(blocked.loaded && !blocked.state->enabled && blocked.state->externalStreamingConflict && !originHookReady && !hookInstalls,
 		"SPS detection installed a competing hook or left native streaming active");
-	Require(queriedModule == L"SPS.dll" && blocked.failedLoadedMessage.find("Disable the SPS mod and restart") != std::string::npos,
+	Require(queriedModule == L"SPS.dll" && blocked.state->detail.find("Disable the SPS mod and restart") != std::string::npos,
 		"Conflict warning did not identify the loaded plugin or give recovery guidance");
 	blocked.Configure(true, 2, std::nullopt, StreamingTextures::Modes{ false, true });
 	Require(!blocked.state->enabled && blocked.state->modes.continuous && blocked.state->detail == streamingConflictWarning,
 		"Continuous mode bypassed the loaded-plugin conflict or erased its warning");
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	blocked.SetDebugForceStreaming(false);
+	Require(blocked.state->detail == streamingConflictWarning && !blocked.state->enabled && blocked.state->requestedEnabled,
+		"Legacy trigger alias erased the SPS warning or bypassed inhibition");
+	blocked.Configure(true, 2, std::nullopt, StreamingTextures::Modes{ false, true });
+#endif
+
+	Util::Widgets::clicks = { { "Enabled", false }, { "On pressure", true } };
+	MenuUI::selected = "quality";
+	blocked.DrawSettingsEnabledControl();
+	blocked.DrawSettings();
+	Require(!blocked.state->enabled && blocked.state->requestedEnabled && !blocked.state->modes.onPressure &&
+				Util::Text::warning == streamingConflictWarning && !Util::disabled,
+		"Blocked UI bypassed SPS, hid its warning or leaked disabled state");
+	Util::Widgets::clicks.clear();
 	blocked.RestoreDefaultSettings();
 	Require(!blocked.state->enabled && blocked.state->modes == StreamingTextures::Modes{},
 		"Restoring defaults bypassed the conflict or destroyed trigger preferences");
@@ -826,6 +844,21 @@ int main()
 		saved.erase("Categories");
 		feature.LoadSettings(saved);
 		Require(feature.state->categories == Categories{}, "Absent saved categories did not use default coverage");
+		TextureStreaming master;
+		master.Configure(true, 3, std::nullopt, Modes{ false, true }, Options{ 2048, false, 1024 });
+		Util::Widgets::clicks = { { "Enabled", false } };
+		master.DrawSettingsEnabledControl();
+		master.SaveSettings(saved);
+		Require(!master.state->enabled && !saved.at("Enabled").get<bool>() && master.state->modes.continuous,
+			"Master toggle did not disable streaming while retaining continuous mode");
+		TextureStreaming restoredMaster;
+		restoredMaster.LoadSettings(saved);
+		Require(!restoredMaster.state->enabled && restoredMaster.state->modes.continuous && restoredMaster.state->options.maximumSize == 1024,
+			"Disabled master and tuning did not survive reload");
+		Util::Widgets::clicks = { { "Enabled", true } };
+		restoredMaster.DrawSettingsEnabledControl();
+		Require(restoredMaster.state->enabled && restoredMaster.state->modes.continuous && restoredMaster.state->maximumDrop == 3,
+			"Re-enabling lost detailed tuning");
 		TextureStreaming mode;
 		Require(mode.state->enabled && mode.state->modes == Modes{} && !mode.state->ReductionRequested(), "Default pressure policy activated at healthy memory");
 		mode.state->pressure.conserving = true;
@@ -850,11 +883,11 @@ int main()
 		MenuUI::selected = "quality";
 		mode.DrawSettings();
 		mode.state->pressure.conserving = true;
-		Require(!mode.state->enabled && !mode.state->ReductionRequested(), "Turning both triggers off retained pressure reductions");
+		Require(mode.state->enabled && !mode.state->ReductionRequested(), "Turning both triggers off retained distance reductions or disabled the independent cap");
 		mode.Configure(true, 2);
-		Require(mode.state->modes == Modes{} && mode.state->ReductionRequested(), "Legacy enable did not restore the default pressure trigger");
+		Require(mode.state->modes == Modes{ false, false } && !mode.state->ReductionRequested(), "Master enable changed trigger preferences");
 		mode.Configure(false, 2);
-		Require(mode.state->modes == Modes{ false, false }, "Legacy disable retained a trigger");
+		Require(!mode.state->requestedEnabled && mode.state->modes == Modes{ false, false }, "Master disable changed trigger preferences");
 		mode.LoadSettings(saved = { { "Enabled", false } });
 		Require(!mode.state->enabled, "An explicit disabled older preset was silently enabled");
 		mode.LoadSettings(saved = nlohmann::json::object());
@@ -899,7 +932,8 @@ int main()
 		} catch (const std::invalid_argument&) {
 			rejected = true;
 		}
-		Require(rejected && mode.state->modes == Modes{}, "Contradictory modes partially changed streaming");
+		Require(!rejected && !mode.state->enabled && mode.state->modes == Modes{}, "Disabled master failed to retain trigger preferences");
+		mode.Configure(true, 2);
 #ifdef DEVBENCH_BRIDGE_ENABLED
 		Require(!ParseDebugForceStreaming({ { "action", "texture_streaming" } }), "Omitted legacy alias mutated modes");
 		Require(ParseDebugForceStreaming({ { "action", "texture_streaming" }, { "debugForceStreaming", true } }) == true, "Legacy alias lost its boolean");
@@ -915,8 +949,9 @@ int main()
 		} catch (const std::invalid_argument&) {
 			rejected = true;
 		}
-		Require(rejected && !mode.state->modes.continuous, "Disabled streaming admitted a legacy continuous request");
+		Require(rejected && !mode.state->enabled, "Disabled streaming admitted a legacy continuous request");
 #endif
+		mode.Configure(true, 2);
 		MenuUI::selected = "quality";
 		Util::Widgets::sliderEdits = { { "Keep free", INT_MAX }, { "Maximum mip levels removed", INT_MAX } };
 		mode.DrawSettings();

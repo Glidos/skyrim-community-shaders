@@ -47,6 +47,7 @@ int main(int argc, char** argv)
 		const auto result = PresetCompatibility::Evaluate(preset, "CSX 3.20.0-VR");
 		assert(result.disposition == Disposition::kCompatible);
 		assert(result.ShouldApply());
+		assert(preset.at("VR").at("WandAimPitchTrimDegrees") == -26.0);
 		const auto& nr = preset.at("Neural Rendering").at("rendering");
 		assert(nr.at("neuralRenderingEnabled") == false);
 		assert(nr.at("neuralRenderingMode") == 2);
@@ -67,7 +68,7 @@ int main(int argc, char** argv)
 	assert(!older.ShouldApply());
 
 	for (const auto presetId : { "csx-unified-performance", "csx-unified-balanced", "csx-unified-quality" }) {
-		for (const auto revision : { 8u, 9u }) {
+		for (const auto revision : { 8u, 9u, 10u }) {
 			auto legacy = CompatiblePreset();
 			auto& marker = legacy["Preset Compatibility"];
 			marker["presetId"] = presetId;
@@ -85,7 +86,7 @@ int main(int argc, char** argv)
 			assert(!PresetCompatibility::Evaluate(legacy, "CSX 3.20.0-VR").ShouldApply());
 		}
 	}
-	for (const auto revision : { 5u, 7u, 11u }) {
+	for (const auto revision : { 5u, 7u, 12u }) {
 		auto incompatibleContract = CompatiblePreset();
 		incompatibleContract["Preset Compatibility"]["settingsContract"]["revision"] = revision;
 		assert(!PresetCompatibility::Evaluate(incompatibleContract, "CSX 3.20.0-VR").ShouldApply());

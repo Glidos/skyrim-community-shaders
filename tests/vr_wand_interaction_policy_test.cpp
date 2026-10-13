@@ -31,6 +31,20 @@ namespace
 		       SelectActiveHand(Hand::None, Hand::None, Hand::None, {}, {}) == Hand::None;
 	}
 
+	constexpr bool CoversOffSurfaceSelection()
+	{
+		const Candidate tracked{ false, false, 0, true };
+		return SelectActiveHand(Hand::None, Hand::None, Hand::Primary, tracked, tracked) == Hand::Primary &&
+		       SelectActiveHand(Hand::None, Hand::Secondary, Hand::Primary, Hit(1), tracked) == Hand::Secondary &&
+		       SelectActiveHand(Hand::Primary, Hand::Secondary, Hand::Primary, tracked, tracked) == Hand::Primary &&
+		       SelectActiveHand(Hand::None, Hand::None, Hand::None, {}, tracked) == Hand::Secondary;
+	}
+	static_assert(ShouldShowBeam(Hand::Primary, Hand::Primary, true, false));
+	static_assert(!ShouldShowBeam(Hand::Secondary, Hand::Primary, true, false));
+	static_assert(ShouldShowBeam(Hand::Secondary, Hand::Primary, true, true));
+	static_assert(!ShouldShowBeam(Hand::Secondary, Hand::Primary, false, true));
+	static_assert(!ShouldShowBeam(Hand::None, Hand::None, true, true));
+	static_assert(CoversOffSurfaceSelection());
 	static_assert(CoversCaptureAndPreference());
 	static_assert(CoversStableOwnership());
 	static_assert(CoversInitialAndMissSelection());

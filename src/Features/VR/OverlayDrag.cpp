@@ -277,7 +277,7 @@ void VR::UpdateActiveDrag()
 
 			settings.VRMenuOffsetX = offset.x;
 			settings.VRMenuOffsetY = offset.y;
-			settings.VRMenuOffsetZ = offset.z;
+			settings.VRMenuOffsetZ = -VRMenuPositioningPolicy::SanitizeDistance(-offset.z);
 			settings.VRMenuScale = overlayDragState.initialHMDScale;
 
 			static std::chrono::steady_clock::time_point lastLog = std::chrono::steady_clock::now();
@@ -470,8 +470,7 @@ void VR::UpdateFixedWorldPositioning(const Matrix& a_hmdWorld)
 	if (!IsFiniteVector(hmdPosition))
 		return;
 	if (!fixedWorldOverlayPosition.initialized || fixedWorldOverlayReanchorRequested) {
-		// The safe anchor uses fixed defaults, rather than accumulating mutable
-		// offsets, so opening the menu can always recover it.
+		// Reanchoring uses bounded depth at eye height, without accumulating drag offsets.
 		Vector3 hmdBackward{ a_hmdWorld._31, 0.0f, a_hmdWorld._33 };
 		if (!IsFiniteVector(hmdBackward) || hmdBackward.LengthSquared() < 1e-6f)
 			hmdBackward = Vector3::UnitZ;
@@ -483,10 +482,11 @@ void VR::UpdateFixedWorldPositioning(const Matrix& a_hmdWorld)
 		else
 			hmdRight.Normalize();
 
+		const float depth = GetEffectiveHMDMenuOffset().z;
 		const Vector3 anchor{
-			hmdPosition.x + hmdRight.x * Config::kDefaultHMDOffsetX + hmdBackward.x * Config::kDefaultHMDOffsetZ,
+			hmdPosition.x + hmdRight.x * Config::kDefaultHMDOffsetX + hmdBackward.x * depth,
 			hmdPosition.y,
-			hmdPosition.z + hmdRight.z * Config::kDefaultHMDOffsetX + hmdBackward.z * Config::kDefaultHMDOffsetZ,
+			hmdPosition.z + hmdRight.z * Config::kDefaultHMDOffsetX + hmdBackward.z * depth,
 		};
 		Matrix transform;
 		if (!MakeVerticalFacingTransform(anchor, hmdPosition, transform))

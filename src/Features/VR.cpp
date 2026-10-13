@@ -461,6 +461,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	VRMenuAutoResetDistance,
 	UseRuntimeDefaultMenuNavigation,
 	EnableWandPointing,
+	ShowBothWandLasers,
 	WandAimPitchTrimDegrees,
 	EnableStereoBlend,
 	StereoBlendDepthSigma,
@@ -1543,6 +1544,8 @@ namespace
 		}
 
 		if (effectiveWandNavigation) {
+			Util::Widgets::Checkbox("Show Both Lasers", &settings.ShowBothWandLasers);
+			Util::AddTooltip("Show both controller lasers. Either hand can click; a drag stays with the hand that started it.");
 			ImGui::SetNextItemWidth(220.0f);
 			Util::Widgets::SliderFloatOnRelease(
 				"Wand Aim Pitch Trim",
@@ -1788,7 +1791,7 @@ namespace
 			if (!settings.UnlockMenuPositionAndSize) {
 				ImGui::TextWrapped("The headset menu opens 2.25 metres ahead at eye height. It remains vertical and turns to face you.");
 			} else {
-				Util::Widgets::SliderFloat("Menu Scale", &settings.VRMenuScale, VR::Config::kMinMenuScale, VR::Config::kMaxMenuScale, "%.2f");
+				Util::Widgets::SliderFloatOnRelease("Menu Scale", &settings.VRMenuScale, VR::Config::kMinMenuScale, VR::Config::kMaxMenuScale, "%.2f", ImGuiSliderFlags_AlwaysClamp);
 				ImGui::TextWrapped("Move/resize the desktop window directly. Grip-drag the HMD menu; Menu Scale sets its size.");
 				Util::Widgets::Checkbox("Enable Controller Grip Drag", &settings.EnableDragToReposition);
 
@@ -1808,11 +1811,16 @@ namespace
 
 				const bool showOnHMD = settings.attachMode == VR::Settings::OverlayAttachMode::HMDOnly ||
 				                       settings.attachMode == VR::Settings::OverlayAttachMode::Both;
+				if (showOnHMD) {
+					float distance = -settings.VRMenuOffsetZ;
+					if (Util::Widgets::SliderFloatOnRelease("Menu Distance", &distance, VR::Config::kMinMenuDistance, VR::Config::kMaxMenuDistance, "%.2f m", ImGuiSliderFlags_AlwaysClamp))
+						vr.SetMenuDistance(distance);
+					Util::AddTooltip("Moves the headset menu while preserving its apparent size. Applies when released.");
+				}
 				if (showOnHMD && settings.VRMenuPositioningMethod == 0) {
 					ImGui::SeparatorText("HMD-relative offset");
 					Util::Widgets::SliderFloat("Horizontal##HMDMenuOffset", &settings.VRMenuOffsetX, VR::Config::kMinMenuOffset, VR::Config::kMaxMenuOffset, "%.2f m");
 					Util::Widgets::SliderFloat("Vertical##HMDMenuOffset", &settings.VRMenuOffsetY, VR::Config::kMinMenuOffset, VR::Config::kMaxMenuOffset, "%.2f m");
-					Util::Widgets::SliderFloat("Depth##HMDMenuOffset", &settings.VRMenuOffsetZ, VR::Config::kMinMenuOffset, VR::Config::kMaxMenuOffset, "%.2f m");
 				} else if (showOnHMD) {
 					if (ImGui::Button("Recenter Headset Menu")) {
 						vr.SetFixedOverlayToCurrentHMD();
@@ -2983,6 +2991,21 @@ float VR::GetEffectiveMenuScale() const
 		Config::kDefaultMenuScale);
 }
 
+float VR::GetEffectiveHMDMenuScale() const
+{
+	return VRMenuPositioningPolicy::ScaleForDistance(GetEffectiveMenuScale(),
+		-GetEffectiveHMDMenuOffset().z, -Config::kDefaultHMDOffsetZ);
+}
+
+void VR::SetMenuDistance(float a_metres)
+{
+	if (!std::isfinite(a_metres))
+		return;
+	settings.VRMenuOffsetZ = -VRMenuPositioningPolicy::SanitizeDistance(a_metres);
+	if (UseFixedWorldMenuPositioning())
+		SetFixedOverlayToCurrentHMD();
+}
+
 Vector3 VR::GetEffectiveHMDMenuOffset() const
 {
 	if (IsClosedMenuStatusOverlayActive()) {
@@ -2995,7 +3018,8 @@ Vector3 VR::GetEffectiveHMDMenuOffset() const
 
 	return VRMenuPositioningPolicy::SelectEffectiveValue(
 		settings.UnlockMenuPositionAndSize,
-		Vector3{ settings.VRMenuOffsetX, settings.VRMenuOffsetY, settings.VRMenuOffsetZ },
+		Vector3{ settings.VRMenuOffsetX, settings.VRMenuOffsetY,
+			-VRMenuPositioningPolicy::SanitizeDistance(-settings.VRMenuOffsetZ) },
 		Vector3{ Config::kDefaultHMDOffsetX, Config::kDefaultHMDOffsetY, Config::kDefaultHMDOffsetZ });
 }
 
@@ -3056,9 +3080,9 @@ void VR::UpdateVROverlayPosition()
 	// Texture size
 	float baseWidth = 1.0f;
 	const float menuScale = GetEffectiveMenuScale();
-	float overlayWidth = baseWidth * menuScale;
+	float overlayWidth = baseWidth * GetEffectiveHMDMenuScale();
 	float hmdOverlayHeight = overlayWidth * VR::Config::kHMDOverlayAspect;
-	float controllerOverlayHeight = overlayWidth * VR::Config::kOverlayAspect;
+	float controllerOverlayHeight = baseWidth * menuScale * VR::Config::kOverlayAspect;
 	const Vector3 hmdOffset = GetEffectiveHMDMenuOffset();
 	const bool showingClosedMenuOverlay = IsClosedMenuStatusOverlayActive();
 	if (showingClosedMenuOverlay) {
@@ -3101,7 +3125,7 @@ void VR::UpdateVROverlayPosition()
 
 			Util::SetOverlayInputFlags(ctx.overlay, menuOverlayHandle);
 			ctx.overlay->SetOverlayTransformTrackedDeviceRelative(menuOverlayHandle, vr::k_unTrackedDeviceIndex_Hmd, &hmdRelativeTransform);
-			ctx.overlay->SetOverlayWidthInMeters(menuOverlayHandle, baseWidth * menuScale);
+			ctx.overlay->SetOverlayWidthInMeters(menuOverlayHandle, overlayWidth);
 		}
 
 		if (useFixedWorldPositioning) {
@@ -3117,7 +3141,7 @@ void VR::UpdateVROverlayPosition()
 
 			Util::SetOverlayInputFlags(ctx.overlay, menuOverlayHandle);
 			ctx.overlay->SetOverlayTransformAbsolute(menuOverlayHandle, vr::TrackingUniverseStanding, &fixedTransform);
-			ctx.overlay->SetOverlayWidthInMeters(menuOverlayHandle, baseWidth * menuScale);
+			ctx.overlay->SetOverlayWidthInMeters(menuOverlayHandle, overlayWidth);
 		}
 	}
 
@@ -3139,14 +3163,14 @@ void VR::UpdateVROverlayPosition()
 				controllerOffset.x,
 				controllerOffset.y,
 				controllerOffset.z,
-				overlayWidth,
+				baseWidth * menuScale,
 				controllerOverlayHeight);
 
 			Util::SetOverlayInputFlags(ctx.overlay, menuControllerOverlayHandle);
 			ctx.overlay->SetOverlayTransformTrackedDeviceRelative(menuControllerOverlayHandle, controllerIndex, &transform);
 
 			// Update the overlay width to match the calculated size
-			ctx.overlay->SetOverlayWidthInMeters(menuControllerOverlayHandle, overlayWidth);
+			ctx.overlay->SetOverlayWidthInMeters(menuControllerOverlayHandle, baseWidth * menuScale);
 
 			// Update controller overlay flags for input interaction
 			Util::SetOverlayInputFlags(ctx.overlay, menuControllerOverlayHandle);

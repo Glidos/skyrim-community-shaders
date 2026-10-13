@@ -478,7 +478,7 @@ string(JSON _enable_type GET "${_wand_schema}" properties enableWandPointing typ
 string(JSON _pitch_type GET "${_wand_schema}" properties aimPitchTrimDegrees type)
 string(JSON _pitch_minimum GET "${_wand_schema}" properties aimPitchTrimDegrees minimum)
 string(JSON _pitch_maximum GET "${_wand_schema}" properties aimPitchTrimDegrees maximum)
-if(NOT _minimum_fields EQUAL 1 OR _additional_fields OR NOT _field_count EQUAL 2 OR
+if(NOT _minimum_fields EQUAL 1 OR _additional_fields OR NOT _field_count EQUAL 3 OR
     NOT _enable_type STREQUAL "boolean" OR NOT _pitch_type STREQUAL "number" OR
     NOT _pitch_minimum EQUAL -90 OR NOT _pitch_maximum EQUAL 90)
     message(FATAL_ERROR "Wand update must be nonempty with known bounded fields")
@@ -664,5 +664,17 @@ foreach(_field IN ITEMS scrollY scrollMaxY height)
     string(JSON _type GET "${_descriptor}" outputSchema properties viewport properties ${_field} type)
     if(NOT _type STREQUAL "number")
         message(FATAL_ERROR "Menu viewport geometry must be numeric: ${_field}")
+    endif()
+endforeach()
+
+string(JSON both_lasers_type GET "${_descriptor}" inputSchema properties wand properties showBothLasers type)
+if(NOT both_lasers_type STREQUAL "boolean")
+    message(FATAL_ERROR "Dual-laser control must be callable through DevBench")
+endif()
+foreach(field IN ITEMS scale distanceMetres)
+    string(JSON minimum GET "${_descriptor}" inputSchema properties placement properties ${field} minimum)
+    string(JSON maximum GET "${_descriptor}" inputSchema properties placement properties ${field} maximum)
+    if(NOT minimum EQUAL 1.5 OR (field STREQUAL "scale" AND NOT maximum EQUAL 2) OR (field STREQUAL "distanceMetres" AND NOT maximum EQUAL 3))
+        message(FATAL_ERROR "Menu placement schema must match safe UI bounds")
     endif()
 endforeach()

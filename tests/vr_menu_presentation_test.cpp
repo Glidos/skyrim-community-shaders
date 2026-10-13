@@ -1,4 +1,5 @@
 #define NOMINMAX
+#include "Features/VR/MenuPositioningPolicy.h"
 #include "Features/VR/OpenVRDetection.h"
 #include "Features/VR/WandSurfaceGeometry.h"
 #include <SimpleMath.h>
@@ -77,10 +78,13 @@ namespace
 		return !vr.ShouldUseInSceneOverlay();
 	}
 
-	unsigned CheckSurface(float scale, bool hmd, float yaw, bool relative)
+	unsigned CheckSurface(float scale, bool hmd, float yaw, bool relative, float distance)
 	{
 		const float aspect = hmd ? VR::Config::kHMDOverlayAspect : VR::Config::kOverlayAspect;
-		const Vector3 offset(0.26f, -0.04f, -2.25f);
+		const float referenceScale = scale;
+		if (hmd)
+			scale = VRMenuPositioningPolicy::ScaleForDistance(scale, distance, VRMenuPositioningPolicy::DefaultDistance);
+		const Vector3 offset(0.26f, -0.04f, -distance);
 		const Matrix anchor = Matrix::CreateFromYawPitchRoll(yaw, relative ? 0.2f : 0.0f, 0.0f) *
 		                      Matrix::CreateTranslation(0.7f, 1.6f, 0.3f);
 		const Matrix placement = Matrix::CreateTranslation(offset) * anchor;
@@ -98,6 +102,14 @@ namespace
 			toGeometry(Vector3::Transform(Vector3(0.5f, 0.5f, 0.0f), scene) - topLeft),
 			toGeometry(Vector3::Transform(Vector3(-0.5f, -0.5f, 0.0f), scene) - topLeft) };
 		unsigned failures = 0;
+		if (hmd) {
+			const float actualWidth = (Vector3::Transform(Vector3(0.5f, 0.5f, 0), scene) - topLeft).Length();
+			const float actualHeight = (Vector3::Transform(Vector3(-0.5f, -0.5f, 0), scene) - topLeft).Length();
+			const float referenceWidth = referenceScale * referenceScale / VRMenuPositioningPolicy::DefaultDistance;
+			if (std::abs(actualWidth / distance - referenceWidth) > 1e-5f ||
+				std::abs(actualHeight / distance - referenceWidth * aspect * aspect) > 1e-5f)
+				++failures;
+		}
 		Vector3 normal = placement.Backward();
 		normal.Normalize();
 		for (const float u : { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f }) {
@@ -130,11 +142,15 @@ int main()
 	}
 	for (const bool hmd : { true, false }) {
 		unsigned surfaceFailures = 0;
-		for (const float scale : { 0.5f, 1.0f, 1.5f, 2.0f }) {
+		for (const float scale : { 1.5f, 1.75f, 2.0f }) {
 			for (const float yaw : { -0.7f, 0.0f, 1.2f }) {
 				for (const bool relative : { false, true }) {
-					surfaceFailures += CheckSurface(scale, hmd, yaw, relative);
-					++surfaces;
+					for (const float distance : { VRMenuPositioningPolicy::MinDistance, VRMenuPositioningPolicy::DefaultDistance, VRMenuPositioningPolicy::MaxDistance }) {
+						if (!hmd && distance != VRMenuPositioningPolicy::DefaultDistance)
+							continue;
+						surfaceFailures += CheckSurface(scale, hmd, yaw, relative, distance);
+						++surfaces;
+					}
 				}
 			}
 		}

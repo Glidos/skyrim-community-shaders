@@ -53,6 +53,13 @@ namespace
 							!Project({}, {}, full, 20000, 720, 1.5f, beam) &&
 							!Project({}, {}, full, 1280, 720, std::numeric_limits<float>::infinity(), beam),
 			"invalid target dimensions and beam radius must be rejected");
+		for (const float degrees : { -90.0f, -89.0f, -47.0f, 0.0f, 47.0f, 89.0f, 90.0f }) {
+			const float radians = degrees * 3.14159265f / 180.0f;
+			const float depth = .5f + 2.25f * std::cos(radians);
+			const float height = -.2f + 2.25f * std::sin(radians);
+			passed &= Check(Project({ -.2f, -.2f, .4f, .5f }, { -.2f, height, depth - .1f, depth }, full, 1280, 720, 1.5f, beam),
+				"steep free rays must keep their visible segment even when the endpoint misses the view");
+		}
 		return passed;
 	}
 

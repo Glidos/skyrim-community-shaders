@@ -87,12 +87,14 @@ namespace
 		{ 225.0f / 255.0f, 245.0f / 255.0f, 1.0f, 0.95f }
 	};
 
-	ImVec4 ResolveWandPointerColor(const VR& a_vr, bool a_dot)
+	ImVec4 ResolveWandPointerColor(const VR& a_vr, bool a_dot, ControllerDevice a_controller)
 	{
-		bool pressed = ImGui::GetCurrentContext() && ImGui::GetIO().MouseDown[ImGuiMouseButton_Left];
+		if (!IsIndividualController(a_controller))
+			a_controller = a_vr.activeWandController;
+		bool pressed = a_controller == a_vr.activeWandController && ImGui::GetCurrentContext() && ImGui::GetIO().MouseDown[ImGuiMouseButton_Left];
 		if (g_ocuPointerFrame.valid) {
-			pressed = IsIndividualController(a_vr.activeWandController) &&
-			          (g_ocuPointerFrame.snapshot.hands[GetPhysicalHand(a_vr, a_vr.activeWandController)].flags & ocu_pointer::TriggerDown);
+			pressed = IsIndividualController(a_controller) &&
+			          (g_ocuPointerFrame.snapshot.hands[GetPhysicalHand(a_vr, a_controller)].flags & ocu_pointer::TriggerDown);
 			const auto& style = g_ocuPointerFrame.snapshot.style;
 			const auto* color = a_dot ? style.dotColor[pressed ? 1 : 0] : style.beamColor[pressed ? 1 : 0];
 			return ImVec4(color[0], color[1], color[2], color[3]);
@@ -363,7 +365,7 @@ namespace
 		if (!std::isfinite(menuScale) || menuScale < 1e-4f)
 			return false;
 		const Matrix overlayScale = a_type == VR::OverlayType::HMD ?
-		                                VR::Config::CreateHMDOverlayScaleMatrix(menuScale) :
+		                                VR::Config::CreateHMDOverlayScaleMatrix(a_vr.GetEffectiveHMDMenuScale()) :
 		                                VR::Config::CreateOverlayScaleMatrix(menuScale);
 		a_overlayWorld = overlayScale * a_overlayWorld;
 		return true;
@@ -621,8 +623,8 @@ void VR::UpdateCursorFromWandPointing(bool a_forceCursorUpdate, ControllerDevice
 	}
 	const auto& primary = wandHandStates[GetControllerSlot(ControllerDevice::Primary)];
 	const auto& secondary = wandHandStates[GetControllerSlot(ControllerDevice::Secondary)];
-	const WandInteractionPolicy::Candidate primaryCandidate{ primary.isIntersecting, primary.moved, primary.hitDistance };
-	const WandInteractionPolicy::Candidate secondaryCandidate{ secondary.isIntersecting, secondary.moved, secondary.hitDistance };
+	const WandInteractionPolicy::Candidate primaryCandidate{ primary.isIntersecting, primary.moved, primary.hitDistance, primary.poseValid };
+	const WandInteractionPolicy::Candidate secondaryCandidate{ secondary.isIntersecting, secondary.moved, secondary.hitDistance, secondary.poseValid };
 	activeWandController = FromPolicyHand(WandInteractionPolicy::SelectActiveHand(
 		ToPolicyHand(capturedWandController),
 		ToPolicyHand(a_preferredController),
@@ -751,7 +753,8 @@ void VR::ResetWandPointingRuntimeState()
 void VR::RefreshOCUPointerState()
 {
 	const bool enabled = CanUseWandPointing() && !settings.VRMenuControllerDiagnosticsTestMode &&
-	                     globals::menu && globals::menu->IsEnabled;
+	                     globals::menu && globals::menu->IsEnabled && ShouldPresentOverlayInHeadset() &&
+	                     GetEffectiveMenuAttachMode() != Settings::OverlayAttachMode::None;
 	auto* compositor = enabled ? RE::BSOpenVR::GetIVRCompositor() : nullptr;
 	const auto trackingOrigin = compositor ? static_cast<std::uint32_t>(compositor->GetTrackingSpace()) : 0u;
 	g_ocuPointerFrame = g_ocuPointerClient.ReadForFrame(static_cast<std::uint64_t>(ImGui::GetFrameCount() + 1),
@@ -772,7 +775,17 @@ void VR::RefreshOCUPointerState()
 	}
 }
 
-void VR::UpdateOCUPointerOwnership(bool a_presentationResolved)
+bool VR::ShouldShowWandBeam(ControllerDevice a_controller) const
+{
+	if (!CanUseWandPointing() || settings.VRMenuControllerDiagnosticsTestMode || !globals::menu || !globals::menu->IsEnabled ||
+		!ShouldPresentOverlayInHeadset() || GetEffectiveMenuAttachMode() == Settings::OverlayAttachMode::None || !IsIndividualController(a_controller))
+		return false;
+	const auto& hand = wandHandStates[GetControllerSlot(a_controller)];
+	return (!ocuPointerAvailable || hand.ocuOwnsInput) &&
+	       WandInteractionPolicy::ShouldShowBeam(ToPolicyHand(a_controller), ToPolicyHand(activeWandController), hand.poseValid, settings.ShowBothWandLasers);
+}
+
+void VR::UpdateOCUPointerOwnership()
 {
 	if (!ocuPointerAvailable)
 		return;
@@ -782,16 +795,13 @@ void VR::UpdateOCUPointerOwnership(bool a_presentationResolved)
 	for (const auto controller : { ControllerDevice::Primary, ControllerDevice::Secondary }) {
 		const auto& hand = wandHandStates[GetControllerSlot(controller)];
 		const auto physicalHand = GetPhysicalHand(*this, controller);
-		if (hand.poseValid && (hand.isIntersecting || capturedWandController == controller))
+		// Retain released tracked hands so the first click can transfer focus.
+		if (hand.poseValid)
 			handMask |= 1u << physicalHand;
-		const bool currentDisplayedHit = a_presentationResolved && IsMenuPointerInHeadset() &&
-		                                 customVRCursorVisible && wandState.isIntersecting && wandState.usingOCUPointer &&
-		                                 wandState.ocuFrameId == ocuPointerFrameId && hand.hasScreenPosition &&
-		                                 customVRCursorPos.x == hand.screenPosition.x && customVRCursorPos.y == hand.screenPosition.y &&
-		                                 customVRCursorOverlayType == hand.overlayType;
-		if (currentDisplayedHit && hand.isIntersecting && activeWandController == controller) {
+		// Visibility must survive intermediate input updates and missed surfaces.
+		if (WandInteractionPolicy::ShouldShowBeam(ToPolicyHand(controller), ToPolicyHand(activeWandController), hand.poseValid, settings.ShowBothWandLasers)) {
 			hitMask |= 1u << physicalHand;
-			distances[physicalHand] = hand.hitDistance;
+			distances[physicalHand] = hand.isIntersecting ? hand.hitDistance : -GetEffectiveHMDMenuOffset().z;
 		}
 	}
 	g_ocuPointerClient.UpdateOwnership(handMask, hitMask, distances);
@@ -829,12 +839,12 @@ void VR::ReleaseOCUPointerState()
 	g_ocuNeedsPresentedSurface = false;
 }
 
-ImVec4 VR::GetWandPointerColor() const
+ImVec4 VR::GetWandPointerColor(ControllerDevice a_controller) const
 {
-	return ResolveWandPointerColor(*this, false);
+	return ResolveWandPointerColor(*this, false, a_controller);
 }
 
 ImVec4 VR::GetWandPointerDotColor() const
 {
-	return ResolveWandPointerColor(*this, true);
+	return ResolveWandPointerColor(*this, true, activeWandController);
 }
