@@ -244,19 +244,18 @@ PS_OUTPUT main(PS_INPUT input)
 #		endif
 
 #		if defined(DITHER)
-#			if defined(VR)
-	// Keep the VR sky stereo-stable by avoiding screen-space dither in Color::Sky().
-	// If VR sky banding becomes visible, add a very small post-transform dither
-	// here using sky-stable coords: input.TexCoord0.zw for TEX, input.TexCoord0.xy otherwise.
-#				ifdef TEX
+#			if defined(VR) && defined(TEX)
+	// Keep VR sun glare free of noise amplified by its authored colour transform.
 	psout.Color.xyz = ComposeSkyColor(input.Color.xyz, baseColor.xyz, skyOffset, composeAuthoredSky) * skyBrightnessMultiplier;
 	psout.Color.w = baseColor.w * input.Color.w;
-#				else
-	psout.Color.xyz = ComposeSkyColor(input.Color.xyz, 1.0, skyOffset, composeAuthoredSky) * skyBrightnessMultiplier;
-	psout.Color.w = input.Color.w;
-#				endif  // TEX
 #			else
-	float2 noiseGradUv = float2(0.125, 0.125) * input.Position.xy;
+	float2 noiseGradPosition = input.Position.xy;
+#				if defined(VR)
+	// Align the dither between eyes using the active viewport, including render scaling.
+	if (StereoEnabled != 0)
+		noiseGradPosition = Stereo::EyeStableNoiseCoord(noiseGradPosition, SharedData::BufferDim.xy * FrameBuffer::DynamicResolutionParams1.xy);
+#				endif
+	float2 noiseGradUv = float2(0.125, 0.125) * noiseGradPosition;
 	// The 8x8 engine dither texture stores 0..63, so center it without shifting the weather color.
 	const float noiseGradCenter = 31.5 / 255.0;
 	float noiseGrad =
@@ -269,10 +268,15 @@ PS_OUTPUT main(PS_INPUT input)
 	psout.Color.xyz = (sunGlareColor * skyBrightnessMultiplier) + (composeAuthoredSky ? 0.0 : noiseGrad);
 	psout.Color.w = baseColor.w * input.Color.w;
 #				else
-	psout.Color.xyz = ComposeSkyColor(input.Color.xyz + noiseGrad, 1.0, skyOffset, composeAuthoredSky) * skyBrightnessMultiplier;
+	float3 skyGradientColor = ComposeSkyColor(input.Color.xyz, 1.0, skyOffset, composeAuthoredSky);
+	// Additive noise remains effective near black; brighter gradients use relative noise.
+	float3 additiveDither = max(skyGradientColor + noiseGrad, 0.0);
+	float3 multiplicativeDither = skyGradientColor * (1.0 + noiseGrad * 10.0);
+	float ditherBlend = saturate(dot(skyGradientColor, 8.0));
+	psout.Color.xyz = lerp(additiveDither, multiplicativeDither, ditherBlend) * skyBrightnessMultiplier;
 	psout.Color.w = input.Color.w;
 #				endif  // TEX
-#			endif      // VR
+#			endif      // VR && TEX
 
 #		elif defined(MOONMASK)
 	psout.Color.xyzw = baseColor;
