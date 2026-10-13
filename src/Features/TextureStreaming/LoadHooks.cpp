@@ -155,6 +155,7 @@ namespace StreamingTextures::LoadHooks
 			return;
 		catalog.path = Util::PathHelpers::GetCommunityShaderPath() / "TextureStreamingSizes.json";
 		catalog.worker = std::jthread([](std::stop_token stop) { catalog.Run(stop); });
+		// Texture-creation slot reference: dnai92/SPS; see README.md#texture-streaming-reference.
 		// The resource manager's texture-creation slot has the same layout in SE, AE and VR.
 		REL::Relocation<std::uintptr_t> table{ RE::VTABLE_BSShaderResourceManager[0] };
 		originalCreate = *reinterpret_cast<CreateTexture*>(table.address() + 0xD0);

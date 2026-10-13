@@ -281,6 +281,19 @@ The public 2.14.1 SDK archive does not contain `sl.dlss_nr.dll`,
 `nvngx_dlssnr.dll`, or their implementation sources. This update does not package
 DLSS Neural Rendering or add support for it.
 
+### Texture streaming reference
+
+Thanks to **dnai92** (**dani92** on Nexus) for
+[Skyrim Performance Solution (SPS)](https://www.nexusmods.com/skyrimspecialedition/mods/194164).
+SPS's streaming design and documented Skyrim texture-loader hook details
+informed CSX's native implementation. The
+[packaged acknowledgment](package/SKSE/Plugins/CommunityShaders/Licenses/SPS/NOTICE.txt)
+identifies the reference scope.
+[SPS source](https://github.com/dnai92/skyrimPerformanceSolution)
+is licensed under GPL-3.0-or-later with its
+[upstream exceptions](package/SKSE/Plugins/CommunityShaders/Licenses/SPS/EXCEPTIONS.md).
+These notices accompany future CSX packages.
+
 ### SKSE Plugin API
 
 [LGPL-3.0-or-later](COPYING.LESSER): `include/VRAPI/CSinterface001.h` and

@@ -47,6 +47,7 @@ namespace
 	constexpr std::uint64_t uploadBytesPerFrame = 4 * Policy::MiB;
 	std::atomic_bool originHookReady{ false };
 	std::atomic_uint64_t originSerial{ 0 };
+	// DDS-loader ABI and runtime addresses reference dnai92/SPS; see README.md#texture-streaming-reference.
 	using DDSLoader = std::int32_t (*)(void*, void*, RE::BSGraphics::Texture**, void*, std::uint64_t, std::uint64_t);
 	DDSLoader originalDDSLoader = nullptr;
 

@@ -1,0 +1,24 @@
+Skyrim Performance Solution (SPS) reference acknowledgment
+
+Upstream copyright: Copyright (c) 2026 dnai92.
+Nexus author: dani92.
+Official mod: https://www.nexusmods.com/skyrimspecialedition/mods/194164
+Source: https://github.com/dnai92/skyrimPerformanceSolution
+
+CSX texture streaming was developed with reference to SPS. The reference
+covers distance-based demand, GPU copies of lower mip levels, a restoration
+RAM buffer, adjustable VRAM reserve, remembered load sizes and a size cap.
+
+SPS's src/TextureStream.cpp also documents the DDS-loader ABI and its
+SE/AE/VR locations (75721, 77533, 0xDD2B60), and the texture-creation slot
+of BSShaderResourceManager (0xD0 / 8 = 0x1A). These integration details are
+acknowledged at the corresponding CSX hook sites.
+
+CSX has its own streaming policy, stereo demand calculation, validated DDS
+reader, bounded restoration cache, remembered-size format, upload and GPU
+retirement code. SPS implementation files, binaries and assets are not
+bundled.
+
+SPS is GPL-3.0-or-later with the additional permissions in EXCEPTIONS.md.
+The upstream LICENSE and EXCEPTIONS.md are included here unchanged for the
+referenced work. They do not replace CSX's own license and exceptions.
