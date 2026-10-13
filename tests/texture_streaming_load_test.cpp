@@ -304,6 +304,15 @@ int main()
 			Require(!Hooks::Prepare(device.Get(), 0), "Healthy budget applied a remembered reduction");
 			Util::GpuMemoryBudget::Get().snapshot.local.CurrentUsage = 9500ull << 20;
 			Require(Hooks::Prepare(device.Get(), 0).has_value(), "Pressure failed to enable remembered loads");
+			Hooks::SetPreviewActive(true);
+			Require(Hooks::Status().at("previewLoadGuardActive") && !Hooks::Prepare(device.Get(), 0), "Inventory preview inherited a remembered reduction under pressure");
+			Hooks::SetPreviewActive(true, 2);
+			Hooks::SetPreviewActive(true, 4);
+			Hooks::SetPreviewActive(false);
+			Hooks::SetPreviewActive(false, 2);
+			Require(!Hooks::Prepare(device.Get(), 0), "Closing one preview owner cleared another owner's guard");
+			Hooks::SetPreviewActive(false, 4);
+			Require(Hooks::Prepare(device.Get(), 0).has_value(), "Closing the preview did not resume remembered world loads");
 			Hooks::Configure(true, {}, options, {}, 1);
 			Util::GpuMemoryBudget::Get().snapshot.local.CurrentUsage = 4000ull << 20;
 			auto capped = Hooks::Prepare(device.Get(), 0);

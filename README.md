@@ -286,7 +286,9 @@ DLSS Neural Rendering or add support for it.
 Thanks to **dnai92** (**dani92** on Nexus) for
 [Skyrim Performance Solution (SPS)](https://www.nexusmods.com/skyrimspecialedition/mods/194164).
 SPS's streaming design and documented Skyrim texture-loader hook details
-informed CSX's native implementation. The
+informed CSX's native implementation. Light Limit Fix also adapts SPS's
+sun-angle and point-light shadow-culling policy, with CSX stereo and
+lifetime safeguards. The
 [packaged acknowledgment](package/SKSE/Plugins/CommunityShaders/Licenses/SPS/NOTICE.txt)
 identifies the reference scope.
 [SPS source](https://github.com/dnai92/skyrimPerformanceSolution)

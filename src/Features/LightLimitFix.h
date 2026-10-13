@@ -9,6 +9,7 @@
 
 #include "Features/LightLimitFix/ParticleLights.h"
 #include "Features/LightLimitFix/SceneLightSnapshot.h"
+#include "Features/LightLimitFix/ShadowCullingPolicy.h"
 
 #include <atomic>
 #include <cstddef>
@@ -297,7 +298,7 @@ public:
 	virtual json CapturePerformanceSettingsState() const override;
 	virtual bool SupportsPerformanceCostMeasurement() const override { return true; }
 	/** Includes deferred contact-shadow requests in the overview state. */
-	bool IsPerformanceToggleEnabled() const override { return settings.EnableParticleLights || IsContactShadowsRequested() || settings.EnableParticleContactShadows; }
+	bool IsPerformanceToggleEnabled() const override { return settings.EnableParticleLights || IsContactShadowsRequested() || settings.EnableParticleContactShadows || settings.ShadowCulling.Active(); }
 	/** Changes effect switches while retaining particle and shadow quality controls. */
 	void SetPerformanceToggleEnabled(bool a_enabled) override
 	{
@@ -305,9 +306,12 @@ public:
 		settings.EnableParticleLights = a_enabled && defaults.EnableParticleLights;
 		SetContactShadowsEnabled(a_enabled && defaults.EnableContactShadows);
 		settings.EnableParticleContactShadows = a_enabled && defaults.EnableParticleContactShadows;
+		settings.ShadowCulling.sun = a_enabled && defaults.ShadowCulling.sun;
+		settings.ShadowCulling.torch = a_enabled && defaults.ShadowCulling.torch;
+		settings.ShadowCulling.actors = a_enabled && defaults.ShadowCulling.actors;
 	}
 	virtual bool IsPerformanceCostMeasurementReady() const override;
-	virtual bool IsPerformanceCostMeasurementEnabled() const override { return settings.EnableParticleLights || settings.EnableContactShadows || settings.EnableParticleContactShadows; }
+	virtual bool IsPerformanceCostMeasurementEnabled() const override { return settings.EnableParticleLights || settings.EnableContactShadows || settings.EnableParticleContactShadows || settings.ShadowCulling.Active(); }
 	virtual void SetPerformanceCostMeasurementEnabled(bool a_enabled) override
 	{
 		const Settings defaults{};
@@ -326,12 +330,16 @@ public:
 			settings.ContactShadowClusterBudget = defaults.ContactShadowClusterBudget;
 			settings.ParticleContactShadowBudget = defaults.ParticleContactShadowBudget;
 			settings.StrictContactShadowBudget = defaults.StrictContactShadowBudget;
+			settings.ShadowCulling.sun = defaults.ShadowCulling.sun;
+			settings.ShadowCulling.torch = defaults.ShadowCulling.torch;
+			settings.ShadowCulling.actors = defaults.ShadowCulling.actors;
 			return;
 		}
 
 		settings.EnableParticleLights = false;
 		SetContactShadowsEnabled(false);
 		settings.EnableParticleContactShadows = false;
+		settings.ShadowCulling.sun = settings.ShadowCulling.torch = settings.ShadowCulling.actors = false;
 	}
 	virtual json CapturePerformanceCostMeasurementState() const override
 	{
@@ -349,7 +357,8 @@ public:
 			{ "ContactShadowQuality", settings.ContactShadowQuality },
 			{ "ContactShadowClusterBudget", settings.ContactShadowClusterBudget },
 			{ "ParticleContactShadowBudget", settings.ParticleContactShadowBudget },
-			{ "StrictContactShadowBudget", settings.StrictContactShadowBudget }
+			{ "StrictContactShadowBudget", settings.StrictContactShadowBudget },
+			{ "ShadowCulling", settings.ShadowCulling }
 		};
 	}
 	virtual void RestorePerformanceCostMeasurementState(const json& a_state) override
@@ -371,6 +380,8 @@ public:
 		settings.ContactShadowClusterBudget = a_state.value("ContactShadowClusterBudget", settings.ContactShadowClusterBudget);
 		settings.ParticleContactShadowBudget = a_state.value("ParticleContactShadowBudget", settings.ParticleContactShadowBudget);
 		settings.StrictContactShadowBudget = a_state.value("StrictContactShadowBudget", settings.StrictContactShadowBudget);
+		if (a_state.contains("ShadowCulling"))
+			settings.ShadowCulling = LightLimitFixDetail::ShadowCulling::Parse(a_state.at("ShadowCulling"));
 	}
 	virtual void DrawOverlay() override;
 	virtual bool IsOverlayVisible() const override { return settings.EnableLightsVisualisation; }
@@ -436,6 +447,7 @@ public:
 		uint ContactShadowClusterBudget = 4;
 		uint ParticleContactShadowBudget = 1;
 		uint StrictContactShadowBudget = 4;
+		LightLimitFixDetail::ShadowCulling::Settings ShadowCulling;
 	};
 
 	uint clusterSize[3] = { 16 };

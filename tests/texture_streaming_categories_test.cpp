@@ -310,6 +310,10 @@ namespace StreamingTextures::LoadHooks
 	void Install() {}
 	void Configure(bool, const Modes&, const Options&, const Categories&, std::uint32_t) {}
 }
+namespace StreamingTextures::Preview
+{
+	void Install() {}
+}
 namespace MenuUI
 {
 	struct ToggleChoice

@@ -5,10 +5,12 @@
 #include <cctype>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace StreamingTextures::LoadHooks
 {
-	inline void Forget(const std::string&) {}
+	inline std::string forgottenPreview;
+	inline void Forget(const std::string& name) { forgottenPreview = name; }
 	inline void Configure(bool, const Modes&, const Options&, const Categories&, std::uint32_t) {}
 }
 namespace StreamingInventoryFixture
@@ -74,12 +76,13 @@ namespace StreamingInventoryFixture
 				D3D11_SHADER_RESOURCE_VIEW_DESC view{};
 				std::array<std::uint64_t, Policy::MaximumDrop + 1> bytes{};
 				StreamingTextures::ConsumerInventory<Consumer> consumers;
-				bool protectedConsumer = false;
+				bool protectedConsumer = false, previewProtected = false;
 #ifdef DEVBENCH_BRIDGE_ENABLED
 				bool terrainConsumer = false;
 #endif
 			};
 			std::unordered_map<std::uint64_t, Record> records;
+			std::unordered_set<std::uint64_t> reducedRecords;
 			Diagnostics diagnostics;
 #ifdef DEVBENCH_BRIDGE_ENABLED
 			StreamingTextures::TextureDiagnostics textureDiagnostics, terrainTextureDiagnostics;
@@ -95,10 +98,13 @@ namespace StreamingInventoryFixture
 			bool enabled = true;
 			void Fail(const char* message) { throw std::runtime_error(message); }
 			void ObserveTexture(RE::NiSourceTexture*, RE::BSGeometry*, bool, std::uint32_t);
+			void ProtectPreviewTexture(RE::NiSourceTexture*);
+			void SuspendPreviewReductions(const char*);
 #include "streaming_defer_under_test.h"
 		};
 	};
 #include "streaming_observation_under_test.h"
+#include "streaming_preview_protection_under_test.h"
 }
 
 void CheckStreamingInventory(ID3D11Device* device)
@@ -131,6 +137,21 @@ void CheckStreamingInventory(ID3D11Device* device)
 		Require(state.records.at(71).terrainConsumer && state.terrainInventoryDiagnostics.candidateRegistrations == 1,
 			"Shared terrain/static diagnostic attribution depended on scan order");
 #endif
+		state.ProtectPreviewTexture(&source);
+		Require(state.records.at(71).previewProtected && state.records.at(71).protectedConsumer &&
+					ReadOrigin(original.texture.Get(), observed) && observed.protectedConsumer &&
+					StreamingTextures::LoadHooks::forgottenPreview == NormalizeTexturePath(source.name.c_str()),
+			"A shared inventory preview did not revoke streaming and remembered loads");
+		state.records.at(71).previewProtected = false;
+		state.reducedRecords.insert(71);
+		bool suspensionReported = false;
+		try {
+			state.SuspendPreviewReductions("test overflow");
+		} catch (const std::runtime_error&) {
+			suspensionReported = true;
+		}
+		Require(suspensionReported && !state.enabled && state.records.at(71).previewProtected && state.records.at(71).protectedConsumer,
+			"Incomplete preview traversal left reduced consumers eligible to remain downscaled");
 		source.name.text = "textures/armor/shared.dds";
 		state.ObserveTexture(&source, &geometry, true, 0);
 		Require(state.records.at(71).protectedConsumer && ReadOrigin(original.texture.Get(), observed) && observed.protectedConsumer,

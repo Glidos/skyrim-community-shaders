@@ -119,6 +119,7 @@ namespace StreamingTextures::LoadHooks
 			}
 		};
 		Catalog catalog;
+		std::atomic_uint32_t previewSources{ 0 };
 		struct LoadLifetime
 		{
 			RE::NiPointer<RE::NiSourceTexture> source;
@@ -171,10 +172,18 @@ namespace StreamingTextures::LoadHooks
 		catalog.categories = categories;
 		catalog.maximumDrop = maximumDrop;
 	}
+	void SetPreviewActive(bool active, std::uint32_t sourceMask)
+	{
+		if (active)
+			previewSources.fetch_or(sourceMask);
+		else
+			previewSources.fetch_and(~sourceMask);
+	}
+	bool IsPreviewActive() { return previewSources.load() != 0; }
 	std::optional<ReducedLoad> Prepare(ID3D11Device* device, std::uint64_t originalMaximum)
 	{
 		// An upstream size limit changes the restoration contract; leave that loader's request intact.
-		if (!loading || !loading->source || loading->load || originalMaximum || !device)
+		if (IsPreviewActive() || !loading || !loading->source || loading->load || originalMaximum || !device)
 			return std::nullopt;
 		try {
 			const auto* name = loading->source->name.c_str();
@@ -218,7 +227,7 @@ namespace StreamingTextures::LoadHooks
 				return std::nullopt;
 			}
 			std::scoped_lock lock(catalog.mutex);
-			if (!catalog.enabled || catalog.options != options || catalog.modes != modes || catalog.categories != categories ||
+			if (IsPreviewActive() || !catalog.enabled || catalog.options != options || catalog.modes != modes || catalog.categories != categories ||
 				catalog.maximumDrop != maximumDrop || catalog.protectedPaths.contains(path) || catalog.activeLoads->load() >= maximumLoads)
 				return std::nullopt;
 			auto lifetime = std::make_shared<LoadLifetime>(loading->source);
@@ -317,7 +326,7 @@ namespace StreamingTextures::LoadHooks
 	nlohmann::json Status()
 	{
 		std::scoped_lock lock(catalog.mutex);
-		return { { "hookReady", catalog.hookReady }, { "ready", catalog.ready }, { "entries", catalog.entries.size() },
+		return { { "previewLoadGuardActive", IsPreviewActive() }, { "hookReady", catalog.hookReady }, { "ready", catalog.ready }, { "entries", catalog.entries.size() },
 			{ "loadedReduced", catalog.hits }, { "rejectedSources", catalog.rejected }, { "failures", catalog.failures },
 			{ "activeLoads", catalog.activeLoads->load() }, { "protectionLimit", catalog.protectionLimit }, { "unsaved", catalog.revision != catalog.savedRevision }, { "error", catalog.error } };
 	}

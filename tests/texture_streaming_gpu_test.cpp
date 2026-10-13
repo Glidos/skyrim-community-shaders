@@ -201,6 +201,17 @@ int main()
 		for (UINT drop : { 1u, 2u, 3u })
 			CheckMipChain(device.Get(), context.Get(), DXGI_FORMAT_BC3_UNORM_SRGB, drop, 4096, 2048, 12, true, drop - 1);
 		CheckMipChain(device.Get(), context.Get(), DXGI_FORMAT_BC1_UNORM, 3, 8192, 256, 14, true);
+		for (const auto format : { DXGI_FORMAT_BC5_UNORM, DXGI_FORMAT_BC7_UNORM }) {
+			D3D11_TEXTURE2D_DESC full{ 8192, 8192, 14, 1, format, { 1, 0 }, D3D11_USAGE_DEFAULT, D3D11_BIND_SHADER_RESOURCE, 0, 0 };
+			Require(StreamingTextures::LogicalBytes(full, 0) == 89478512, "A full 8K BC5/BC7 source was rejected or miscounted");
+			DirectX::TexMetadata metadata{ 8192, 8192, 1, 1, 14, 0, 0, format, DirectX::TEX_DIMENSION_TEXTURE2D };
+			std::array<std::uint8_t, 148> header{};
+			size_t written = 0;
+			Require(SUCCEEDED(DirectX::EncodeDDSHeader(metadata, DirectX::DDS_FLAGS_FORCE_DX10_EXT, header.data(), header.size(), written)), "Could not encode 8K source header");
+			Require(StreamingTextures::MatchesDDSHeader(header, written + 89478512, full), "An ordinary 8K normal/color DDS exceeded admission");
+			Require(!StreamingTextures::MatchesDDSHeader(header, TextureStreamingPolicy::MaximumPayloadBytes + 1, full), "Unbounded DDS file was admitted");
+		}
+
 		CheckStreamingReader();
 		CheckStreamingInventory(device.Get());
 		CheckStreamingPublication(device.Get(), context.Get());

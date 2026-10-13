@@ -26,6 +26,11 @@ namespace
 
 namespace Util
 {
+	RE::TESObjectREFR* GetOwnUserData(const RE::NiAVObject* object)
+	{
+		return object ? REL::RelocateMember<RE::TESObjectREFR*>(object, 0x0F8, 0x110) : nullptr;
+	}
+
 	void RefreshForcedWeatherSky(RE::Sky* a_sky)
 	{
 		if (!a_sky)

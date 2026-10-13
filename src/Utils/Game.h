@@ -90,6 +90,9 @@ namespace Util
 	bool GetTemporal();
 	float GetVerticalFOVRad();
 
+	/** Return only the reference attached to this node, without walking its parents. */
+	RE::TESObjectREFR* GetOwnUserData(const RE::NiAVObject* object);
+
 	RE::NiPoint3 GetAverageEyePosition();
 	RE::NiPoint3 GetEyePosition(int eyeIndex);
 	RE::BSGraphics::ViewData GetCameraData(int eyeIndex);

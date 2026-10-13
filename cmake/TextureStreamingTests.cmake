@@ -57,6 +57,7 @@ set(_streaming_publication_headers
     "${_streaming_publication_dir}/streaming_reader_under_test.h"
     "${_streaming_publication_dir}/streaming_path_under_test.h"
     "${_streaming_publication_dir}/streaming_observation_under_test.h"
+    "${_streaming_publication_dir}/streaming_preview_protection_under_test.h"
     "${_streaming_publication_dir}/streaming_defer_under_test.h")
 add_custom_command(OUTPUT ${_streaming_publication_headers}
     COMMAND "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
@@ -96,3 +97,18 @@ target_link_libraries(texture_streaming_gpu_debug_test PRIVATE nlohmann_json::nl
 add_controller_test(texture_streaming_pressure_test TextureStreamingPressure tests/texture_streaming_pressure_test.cpp)
 target_compile_definitions(texture_streaming_pressure_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN DEVBENCH_BRIDGE_ENABLED)
 target_link_libraries(texture_streaming_pressure_test PRIVATE nlohmann_json::nlohmann_json)
+
+add_controller_test(sps_followups_policy_test SPSFollowupsPolicy tests/sps_followups_policy_test.cpp)
+target_link_libraries(sps_followups_policy_test PRIVATE nlohmann_json::nlohmann_json)
+
+set(_shadow_startup_dir "${CMAKE_CURRENT_BINARY_DIR}/generated/shadow-startup")
+set(_shadow_startup_header "${_shadow_startup_dir}/shadow_startup_under_test.h")
+add_custom_command(OUTPUT "${_shadow_startup_header}"
+    COMMAND "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
+        "-DOUTPUT_DIRECTORY=${_shadow_startup_dir}" -P
+        "${PROJECT_SOURCE_DIR}/tests/extract_sps_followups.cmake"
+    DEPENDS src/Features/LightLimitFix/ShadowCulling.cpp tests/extract_source_region.cmake
+        tests/extract_sps_followups.cmake
+    VERBATIM)
+target_sources(sps_followups_policy_test PRIVATE "${_shadow_startup_header}")
+target_include_directories(sps_followups_policy_test PRIVATE "${_shadow_startup_dir}")

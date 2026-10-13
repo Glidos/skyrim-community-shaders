@@ -4,6 +4,7 @@
 #include "Globals.h"
 #include "GpuPass.h"
 #include "InverseSquareLighting.h"
+#include "LightLimitFix/ShadowCulling.h"
 #include "LightLimitFix/VRHookPolicy.h"
 #include "LinearLighting.h"
 #include "LocationContext.h"
@@ -697,6 +698,7 @@ namespace
 
 	void SanitizeSettings(LightLimitFix::Settings& a_settings)
 	{
+		LightLimitFixDetail::ShadowCulling::Validate(a_settings.ShadowCulling);
 		a_settings.LightsVisualisationMode = std::min(a_settings.LightsVisualisationMode, kLightsVisualisationModeMax);
 		a_settings.ContactShadowQuality = std::min(a_settings.ContactShadowQuality, kContactShadowQualityMax);
 		a_settings.ContactShadowClusterBudget = std::clamp(a_settings.ContactShadowClusterBudget, kContactShadowClusterBudgetMin, kContactShadowClusterBudgetMax);
@@ -1069,6 +1071,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	ContactShadowClusterBudget,
 	ParticleContactShadowBudget,
 	StrictContactShadowBudget,
+	ShadowCulling,
 	EnableLightsVisualisation,
 	LightsVisualisationMode)
 void LightLimitFix::DrawSettings()
@@ -1078,8 +1081,12 @@ void LightLimitFix::DrawSettings()
 												   { "placed", "Placed lights", "Choose lighting from supported objects.", "Lighting from placed objects", true, true, nullptr, nullptr, nullptr, globals::features::inverseSquareLighting.loaded },
 												   { "shadows", "Shadows", "Refine contact shadows after choosing your lights.", "Contact-shadow quality", true, true, "Refine light interaction" },
 												   { "effects", "Heat distortion", "Refine heat distortion around lights.", "Refraction around lights", true, true, nullptr },
+												   { "performance", "Performance", "Reduce distant shadow-map work.", "Optional shadow culling", true, true, nullptr },
 												   { "diagnostics", "Diagnostics", "Inspect light counts and diagnostic views.", "Light counts and buffer views", true, false, nullptr },
 											   });
+
+	if (page.Is("performance"))
+		LightLimitFixDetail::ShadowCulling::DrawSettings(settings.ShadowCulling, true);
 
 	{
 		// Heat warp / refraction strength (moved from Advanced Settings)
@@ -1300,6 +1307,7 @@ void LightLimitFix::DrawPerformanceSettings(bool a_advanced)
 		SetContactShadowsEnabled(contactShadows);
 	Util::Widgets::Checkbox("Interiors Only", &settings.ContactShadowsInteriorsOnly);
 
+	LightLimitFixDetail::ShadowCulling::DrawSettings(settings.ShadowCulling, a_advanced);
 	if (!a_advanced) {
 		return;
 	}
@@ -1527,6 +1535,7 @@ void LightLimitFix::SetupRenderTargetResources()
 
 void LightLimitFix::Reset()
 {
+	LightLimitFixDetail::ShadowCulling::Update(settings.ShadowCulling, loaded && !globals::state->IsFeatureDisabled(GetShortName()));
 	effectLightValidationCache.clear();
 	// Frame and load resets release retained lights outside the engine's queue lock.
 	sceneLightSnapshots.clear();
@@ -3082,6 +3091,7 @@ void LightLimitFix::Hooks::InstallVREffectShaderLightGuards()
 
 void LightLimitFix::PostPostLoad()
 {
+	LightLimitFixDetail::ShadowCulling::Install();
 	globals::features::llf::particleLights.GetConfigs();
 	particleLightsReferences.reserve(static_cast<std::size_t>(MAX_LIGHTS) * 4u);
 	queuedParticleEmitters.reserve(static_cast<std::size_t>(MAX_LIGHTS) * 2u);

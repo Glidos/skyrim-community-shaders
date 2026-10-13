@@ -10,7 +10,7 @@
 namespace TextureStreamingPolicy
 {
 	constexpr std::uint64_t MiB = 1024ull * 1024;
-	constexpr std::uint64_t MaximumPayloadBytes = 64 * MiB;
+	constexpr std::uint64_t MaximumPayloadBytes = 128 * MiB;
 	constexpr std::uint64_t RestorationCacheBytes = 512 * MiB;
 	constexpr std::uint64_t SystemMemoryReserveBytes = 512 * MiB;
 	constexpr std::uint32_t MinimumEdge = 256;

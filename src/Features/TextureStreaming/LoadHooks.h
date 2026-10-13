@@ -23,6 +23,10 @@ namespace StreamingTextures::LoadHooks
 	void Install();
 	/** Update load-time policy without accessing render-thread records from loader threads. */
 	void Configure(bool enabled, const Modes& modes, const Options& options, const Categories& categories, std::uint32_t maximumDrop);
+	/** Set independent preview-owner bits; reduced loads resume only after every owner clears. */
+	void SetPreviewActive(bool active, std::uint32_t sourceMask = 1);
+	/** Inspect the combined preview guard without locking the size catalog. */
+	bool IsPreviewActive();
 	/** Reserve bookkeeping before changing a DDS loader request; other mods' caps retain precedence. */
 	std::optional<ReducedLoad> Prepare(ID3D11Device* device, std::uint64_t originalMaximum);
 	/** Attach a successful reduced load to its source's creation scope. */

@@ -37,8 +37,8 @@ if(NOT _compatibility_found)
 endif()
 
 foreach(_bridge_contract IN ITEMS
-    "ServiceFoundation value({ ServiceName, 1, 1, 15 })"
-    "{ \"minor\", 1 }, { \"schemaRevision\", 15 }"
+    "ServiceFoundation value({ ServiceName, 1, 1, 16 })"
+    "{ \"minor\", 1 }, { \"schemaRevision\", 16 }"
     "PresetCompatibility::ToJson(PresetCompatibility::GetPublished())"
 )
     string(FIND "${_bridge}" "${_bridge_contract}" _bridge_position)
@@ -76,4 +76,26 @@ string(JSON policy_revision GET "${policy}" runtimeSettingsContract revision)
 string(REGEX MATCH "kSettingsContractRevision = ([0-9]+)" revision_match "${compatibility_header}")
 if(NOT "${CMAKE_MATCH_1}" STREQUAL "${policy_revision}")
     message(FATAL_ERROR "Preset generator and runtime settings revisions disagree")
+endif()
+
+string(JSON _shadow_type GET "${_descriptor}" inputSchema properties shadowCulling type)
+string(JSON _shadow_extra GET "${_descriptor}" inputSchema properties shadowCulling additionalProperties)
+if(NOT _shadow_type STREQUAL "object" OR _shadow_extra)
+    message(FATAL_ERROR "Shadow-culling requests must use a strict partial object")
+endif()
+foreach(_field IN ITEMS sun torch actors interiorTorches)
+    string(JSON _field_type GET "${_descriptor}" inputSchema properties shadowCulling properties ${_field} type)
+    if(NOT _field_type STREQUAL "boolean")
+        message(FATAL_ERROR "Shadow-culling switch is not boolean: ${_field}")
+    endif()
+endforeach()
+foreach(_field IN ITEMS available spsConflict active previewActive)
+    string(JSON _field_type GET "${_descriptor}" outputSchema properties result properties ${_field} type)
+    if(NOT _field_type STREQUAL "boolean")
+        message(FATAL_ERROR "Shadow/preview status is not exposed: ${_field}")
+    endif()
+endforeach()
+string(JSON _payload GET "${_descriptor}" outputSchema properties result properties maximumPayloadMiB const)
+if(NOT _payload EQUAL 128)
+    message(FATAL_ERROR "The bounded 8K payload limit is missing from DevBench")
 endif()

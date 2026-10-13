@@ -8,7 +8,9 @@
 #include "TextureStreaming/Diagnostics.h"
 #include "TextureStreaming/GeometryDemand.h"
 #include "TextureStreaming/LoadHooks.h"
+#include "TextureStreaming/Preview.h"
 #include "TextureStreaming/RestorationCache.h"
+#include "TextureStreaming/RestorationPriority.h"
 #include "TextureStreaming/Settings.h"
 #include "TextureStreaming/TextureData.h"
 #include "Utils/Game.h"
@@ -408,7 +410,9 @@ struct TextureStreaming::State
 		D3D11_SHADER_RESOURCE_VIEW_DESC view{};
 		std::array<std::uint64_t, Policy::MaximumDrop + 1> bytes{};
 		StreamingTextures::ConsumerInventory<Consumer> consumers;
-		std::uint64_t stableSince = 0, retryAfter = 0;
+		std::uint64_t stableSince = 0, retryAfter = 0, restorationWaitingSince = 0;
+		double restorationUrgency = 0;
+		bool previewProtected = false;
 		std::uint32_t drop = 0, desired = 0;
 		bool protectedConsumer = false, sourceValidated = false;
 #ifdef DEVBENCH_BRIDGE_ENABLED
@@ -482,6 +486,7 @@ struct TextureStreaming::State
 	std::string detail = "Disabled";
 	Memory::Snapshot memory;
 
+	void SuspendPreviewReductions(const char* reason);
 	void ObserveTexture(RE::NiSourceTexture* source, RE::BSGeometry* geometry, bool eligible, std::uint32_t requiredCategories);
 	void Defer(Block reason, const Record& record)
 	{
@@ -496,6 +501,12 @@ struct TextureStreaming::State
 		(void)record;
 #endif
 	}
+	std::vector<RE::NiPointer<RE::NiAVObject>> previewRoots, previewFrontier;
+	std::unordered_set<RE::NiAVObject*> previewVisited;
+	std::uint64_t nextPreviewScanMs = 0;
+	bool previewActive = false;
+	void ScanPreviews();
+	void ProtectPreviewTexture(RE::NiSourceTexture* texture);
 	void Scan();
 	void Prune();
 	void AdoptLoads();
@@ -506,7 +517,7 @@ struct TextureStreaming::State
 	}
 	bool ReductionRequested() const noexcept;
 	void UpdateConfigurationDetail();
-	void Select();
+	void Select(bool previewOnly = false);
 	void ServiceTransaction();
 	void CancelTransaction();
 	void Publish(Record& record, Transaction& work);
@@ -714,6 +725,107 @@ void TextureStreaming::State::ObserveTexture(RE::NiSourceTexture* source, RE::BS
 		record.protectedConsumer = true;
 }
 
+void TextureStreaming::State::SuspendPreviewReductions(const char* reason)
+{
+	const bool report = enabled;
+	enabled = false;
+	StreamingTextures::LoadHooks::Configure(false, modes, options, categories, maximumDrop);
+	for (const auto id : reducedRecords)
+		if (auto found = records.find(id); found != records.end()) {
+			found->second.previewProtected = found->second.protectedConsumer = true;
+			StreamingTextures::LoadHooks::Forget(found->second.path);
+		}
+	if (report)
+		Fail(reason);
+}
+
+void TextureStreaming::State::ProtectPreviewTexture(RE::NiSourceTexture* texture)
+{
+	if (!texture || !texture->rendererTexture)
+		return;
+	const auto* name = texture->name.c_str();
+	if (name && *name)
+		StreamingTextures::LoadHooks::Forget(StreamingTextures::NormalizeTexturePath(name));
+	StreamingTextures::Origin origin;
+	auto* resource = texture->rendererTexture->texture;
+	if (!StreamingTextures::ReadOrigin(resource, origin))
+		return;
+	origin.protectedConsumer = true;
+	if (FAILED(StreamingTextures::WriteOrigin(resource, origin))) {
+		enabled = false;
+		StreamingTextures::LoadHooks::Configure(false, modes, options, categories, maximumDrop);
+		Fail("Could not protect a preview texture; distance streaming suspended");
+	}
+	if (const auto found = records.find(origin.serial); found != records.end()) {
+		found->second.previewProtected = true;
+		found->second.protectedConsumer = true;
+	}
+}
+
+void TextureStreaming::State::ScanPreviews()
+{
+	auto preview = StreamingTextures::Preview::Roots();
+	if (!preview.complete)
+		SuspendPreviewReductions("Preview inventory exceeds the bounded scan; distance streaming suspended");
+	auto roots = std::move(preview.roots);
+	previewActive = !roots.empty() || StreamingTextures::Preview::Active();
+	if (roots != previewRoots) {
+		previewRoots = std::move(roots);
+		previewFrontier.clear();
+		previewVisited.clear();
+		nextPreviewScanMs = 0;
+	}
+	if (previewRoots.empty())
+		return;
+	const auto now = GetTickCount64();
+	if (previewFrontier.empty()) {
+		if (now < nextPreviewScanMs)
+			return;
+		previewFrontier = previewRoots;
+		previewVisited.clear();
+	}
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(400);
+	for (unsigned count = 0; !previewFrontier.empty() && count < 512 && std::chrono::steady_clock::now() < deadline; ++count) {
+		auto object = std::move(previewFrontier.back());
+		previewFrontier.pop_back();
+		if (!object || !previewVisited.insert(object.get()).second)
+			continue;
+		if (auto* geometry = object->AsGeometry())
+			if (auto* property = geometry->GetGeometryRuntimeData().shaderProperty.get()) {
+				struct Visitor final : RE::BSShaderProperty::ForEachVisitor
+				{
+					State& state;
+					explicit Visitor(State& value) : state(value) {}
+					std::uint32_t Accept(RE::NiSourceTexture* texture) override
+					{
+						state.ProtectPreviewTexture(texture);
+						return 1;
+					}
+				} visitor(*this);
+				property->ForEachTexture(visitor);
+			}
+		if (auto* branch = object->AsNode())
+			for (const auto& child : branch->GetChildren())
+				if (child) {
+					if (previewFrontier.size() >= maximumFrontier) {
+						SuspendPreviewReductions("Preview exceeds the bounded scan; distance streaming suspended");
+						previewFrontier.clear();
+						nextPreviewScanMs = now + 10000;
+						return;
+					}
+					previewFrontier.push_back(child);
+				}
+		if (previewVisited.size() >= 20000) {
+			SuspendPreviewReductions("Preview exceeds the bounded scan; distance streaming suspended");
+			previewFrontier.clear();
+			nextPreviewScanMs = now + 10000;
+			return;
+		}
+	}
+	if (previewFrontier.empty())
+		nextPreviewScanMs = now + 250;
+}
+
 void TextureStreaming::State::Scan()
 {
 	if (frontier.empty()) {
@@ -734,7 +846,7 @@ void TextureStreaming::State::Scan()
 		if (!node.object || !visited.insert(node.object.get()).second)
 			continue;
 		++diagnostics.nodesVisited;
-		if (auto* reference = node.object->GetUserData()) {
+		if (auto* reference = Util::GetOwnUserData(node.object.get())) {
 			auto* base = reference->GetBaseObject();
 			node.staticOwner = base && (base->GetFormType() == RE::FormType::Static || base->GetFormType() == RE::FormType::Land);
 			node.protectedHierarchy |= !node.staticOwner;
@@ -825,6 +937,11 @@ std::uint32_t TextureStreaming::State::Demand(Record& record)
 		++terrainInventoryDiagnostics.demandChecks;
 #endif
 	record.distanceDrop = 0;
+	record.restorationUrgency = 1;
+	if (record.previewProtected) {
+		record.restorationUrgency = 64;
+		return 0;
+	}
 	record.consumers.Promote(completeScan);
 	if (!enabled)
 		return 0;
@@ -865,6 +982,7 @@ std::uint32_t TextureStreaming::State::Demand(Record& record)
 #endif
 		required = std::max(required, edge);
 	}
+	record.restorationUrgency = required / std::max(1u, std::max(record.full.Width, record.full.Height) >> record.drop);
 	const auto drop = Policy::DesiredDrop(std::max(record.full.Width, record.full.Height), record.full.MipLevels, required, maximumDrop,
 		std::min(record.full.Width, record.full.Height));
 	const auto desired = std::max(drop, Policy::CappedDrop(record.full.Width, record.full.Height, record.full.MipLevels, options.maximumSize));
@@ -899,22 +1017,25 @@ bool TextureStreaming::State::ReductionRequested() const noexcept
 	return enabled && (modes.continuous || (modes.onPressure && pressure.conserving));
 }
 
-void TextureStreaming::State::Select()
+void TextureStreaming::State::Select(bool previewOnly)
 {
 	if (reading || transaction || !memory.Fresh(GetTickCount64())) {
 		diagnostics.Defer(reading ? Block::ReaderPending : transaction ? (transaction->published ? Block::RetirementPending : Block::UploadPending) :
 																		 Block::StaleBudget);
 		return;
 	}
-	std::uint64_t selected = 0, largestSaving = 0;
-	bool selectedRefill = false, selectedRequired = false;
+	std::uint64_t selected = 0;
+	bool selectedRefill = false;
+	StreamingTextures::RestorationPriority selectedPriority;
 	const auto now = GetTickCount64();
 	const auto consider = [&](std::uint64_t id, Record& record) {
+		if (previewOnly && !record.previewProtected)
+			return;
 		if (record.source->rendererTexture != record.engine || record.engine->texture != record.current) {
 			Defer(Block::SourceChanged, record);
 			return;
 		}
-		if (record.loadLifetime && !completeScan && enabled)
+		if (record.loadLifetime && !completeScan && enabled && !record.previewProtected)
 			return;
 		const auto demanded = Demand(record);
 		const auto target = Target(record, demanded);
@@ -930,8 +1051,16 @@ void TextureStreaming::State::Select()
 			record.desired = target;
 			record.stableSince = now;
 		}
-		if (record.drop == target)
+		if (record.drop == target) {
+			record.restorationWaitingSince = 0;
 			return;
+		}
+		if (target < record.drop) {
+			if (!record.restorationWaitingSince)
+				record.restorationWaitingSince = now;
+		} else {
+			record.restorationWaitingSince = 0;
+		}
 		if (now < record.retryAfter) {
 			Defer(Block::RetryBackoff, record);
 			return;
@@ -970,13 +1099,14 @@ void TextureStreaming::State::Select()
 			return;
 		}
 		const auto saving = record.bytes[record.drop] - std::min(record.bytes[record.drop], record.bytes[target]);
-		const auto rank = refill ? (required ? 2 : 1) : 0;
-		const auto selectedRank = selectedRefill ? (selectedRequired ? 2 : 1) : 0;
-		if (!selected || rank > selectedRank || (rank == selectedRank && saving > largestSaving)) {
+		const StreamingTextures::RestorationPriority priority{ refill ? (record.previewProtected ? 3u : required ? 2u :
+																												   1u) :
+																		0u,
+			record.restorationUrgency, record.restorationWaitingSince, saving, id };
+		if (!selected || priority.BetterThan(selectedPriority, now)) {
 			selected = id;
 			selectedRefill = refill;
-			selectedRequired = required;
-			largestSaving = saving;
+			selectedPriority = priority;
 		}
 	};
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(400);
@@ -1295,6 +1425,7 @@ void TextureStreaming::State::Tick()
 	if (!owner)
 		return;
 	AdoptLoads();
+	ScanPreviews();
 	memory = Memory::Get().SampleStreaming(globals::d3d::device);
 	const bool transition = globals::features::upscaling.IsTextureStreamingTransitionActive();
 	memory.priorityWork |= transition;
@@ -1334,8 +1465,12 @@ void TextureStreaming::State::Tick()
 	UpdatePressureDiagnostics(now);
 	if (blocked) {
 		diagnostics.Defer(loading ? Block::WorldLoading : Block::Transition);
-		CancelTransaction();
+		const bool previewWork = transaction && records.contains(transaction->payload.request.serial) && records.at(transaction->payload.request.serial).previewProtected;
+		if (transition || !previewWork)
+			CancelTransaction();
 		ServiceTransaction();
+		if (loading && !transition && previewActive)
+			Select(true);
 		Prune();
 		detail = loading ? "Waiting for world loading" : "Waiting for render-scale or NR transition";
 		return;
@@ -1428,6 +1563,7 @@ void TextureStreaming::PostPostLoad()
 		originHookReady.store(result.error == NO_ERROR, std::memory_order_release);
 		if (result.error == NO_ERROR)
 			StreamingTextures::LoadHooks::Install();
+		StreamingTextures::Preview::Install();
 		if (result.error != NO_ERROR)
 			logger::error("[TextureStreaming] DDS provenance hook failed ({}); streaming unavailable", result.error);
 	} catch (const std::exception& error) {
@@ -1577,6 +1713,7 @@ nlohmann::json TextureStreaming::GetStatus() const
 		{ "diagnostics", DiagnosticStatus(state->diagnostics) },
 		{ "demand", { { "eyeCount", state->demand.eyeCount }, { "sourceFrame", state->demand.frame },
 						{ "sampledAtMs", state->demand.sampledAtMs }, { "mipBias", state->demand.mipBias } } },
+		{ "previewActive", state->previewActive }, { "maximumPayloadMiB", Policy::MaximumPayloadBytes / Policy::MiB },
 		{ "inventory", { { "scan", state->scan }, { "completeScan", state->completeScan }, { "frontierNodes", state->frontier.size() },
 						   { "desiredShrinks", desiredShrinks }, { "desiredRestores", desiredRestores } } },
 		{ "pressureEpisode", { { "active", state->pressureEpisode.active }, { "startedAtMs", state->pressureEpisode.startedAtMs },

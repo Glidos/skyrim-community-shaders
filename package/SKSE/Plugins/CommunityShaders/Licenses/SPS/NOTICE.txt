@@ -8,16 +8,22 @@ Source: https://github.com/dnai92/skyrimPerformanceSolution
 CSX texture streaming was developed with reference to SPS. The reference
 covers distance-based demand, GPU copies of lower mip levels, a restoration
 RAM buffer, adjustable VRAM reserve, remembered load sizes and a size cap.
+Preview protection and urgency-ranked restoration also reference SPS.
 
 SPS's src/TextureStream.cpp also documents the DDS-loader ABI and its
 SE/AE/VR locations (75721, 77533, 0xDD2B60), and the texture-creation slot
 of BSShaderResourceManager (0xD0 / 8 = 0x1A). These integration details are
 acknowledged at the corresponding CSX hook sites.
 
+CSX shadow culling adapts the sun-angle and point-light magnification
+policy from SPS src/ShadowCulling.cpp, modified on 2026-10-14. CSX adds
+retained camera snapshots, stereo checks, actor-root distance protection
+and independent Light Limit Fix settings.
+
 CSX has its own streaming policy, stereo demand calculation, validated DDS
 reader, bounded restoration cache, remembered-size format, upload and GPU
-retirement code. SPS implementation files, binaries and assets are not
-bundled.
+retirement code. SPS binaries and assets are not bundled. The adapted
+shadow policy is marked at its CSX source location.
 
 SPS is GPL-3.0-or-later with the additional permissions in EXCEPTIONS.md.
 The upstream LICENSE and EXCEPTIONS.md are included here unchanged for the
