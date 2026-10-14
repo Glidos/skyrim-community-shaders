@@ -10,6 +10,7 @@
 
 #include "Features/LightLimitFix.h"
 #include "Features/LightLimitFix/ParticleLights.h"
+#include "Features/VR.h"
 #include "Fonts.h"
 #include "Globals.h"
 #include "Plugin.h"
