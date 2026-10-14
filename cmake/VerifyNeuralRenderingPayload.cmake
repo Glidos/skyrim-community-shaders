@@ -12,6 +12,8 @@ set(_nr_shader_files
     ColorPrepareCS.hlsl
     ColorReconstructCS.hlsl
     ModelResolutionCommon.hlsli
+    ModelResolutionCoverageCS.hlsl
+    ModelResolutionStorage.hlsli
     ModelResolutionPrepareCS.hlsl
     ModelResolutionReconstructCS.hlsl)
 file(GLOB_RECURSE _nr_entries LIST_DIRECTORIES TRUE
