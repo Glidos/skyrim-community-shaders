@@ -2,6 +2,9 @@
 
 #include "ModelResolutionPolicy.h"
 #include "Renderer.h"
+#ifdef DEVBENCH_BRIDGE_ENABLED
+#	include "PackedCropDiagnostics.h"
+#endif
 
 #include <array>
 #include <limits>
@@ -41,6 +44,13 @@ namespace NeuralRendering
 			std::size_t count = 0;
 		};
 
+		/** Freeze capacity before memory admission; speculative upgrades preserve the working policy. */
+		void PlanPackedCrops(std::span<RendererApplyArgs>, bool speculative = false) noexcept;
+		/** Resolve optional shaders before native memory admission; device errors remain fatal. */
+		bool PreparePacking(std::span<const RendererApplyArgs>, HRESULT&);
+		[[nodiscard]] bool PackingAvailable() const noexcept { return SUCCEEDED(packingFailure_); }
+		[[nodiscard]] HRESULT PackingFailure() const noexcept { return packingFailure_; }
+
 		/** One reconstruction boundary handles either independent model scale or area restriction. */
 		static bool Required(const RendererApplyArgs& args
 #ifdef DEVBENCH_BRIDGE_ENABLED
@@ -77,9 +87,19 @@ namespace NeuralRendering
 #ifdef DEVBENCH_BRIDGE_ENABLED
 		/** Explicit inspection samples the last coverage guard without waits or gameplay polling. */
 		nlohmann::json GetPackedCoverageDiagnostics();
+		/** Render-owner access to opt-in CPU allocation-transition evidence. */
+		PackedCropDiagnostics& CropDiagnostics() noexcept { return cropDiagnostics_; }
 #endif
 
 	private:
+		struct CropPlanning
+		{
+			PackedCropCapacityState state{};
+			UpscalingDLSS::Extent source{}, model{}, guide{};
+			std::optional<RenderingMode> mode;
+		};
+		// CPU policy survives resource retirement without retaining any GPU memory.
+		std::array<CropPlanning, kLogicalFeatureSlotCount> cropPlanning_{};
 		bool EnsureShaders(ID3D11Device*, HRESULT&);
 		bool EnsureCoverage(ID3D11Device*, HRESULT&);
 		bool EnsureSelectionShader(bool guarded, HRESULT&);
@@ -88,6 +108,7 @@ namespace NeuralRendering
 		void DispatchReconstruction(std::span<const RendererApplyArgs>, const Batch&);
 #ifdef DEVBENCH_BRIDGE_ENABLED
 		void ServiceCoverageInspection(ID3D11DeviceContext*);
+		PackedCropDiagnostics cropDiagnostics_;
 #endif
 		std::shared_ptr<CoverageWork> coverage_;
 		Microsoft::WRL::ComPtr<ID3D11ComputeShader> coverageShader_, guardedReconstruct_;
@@ -98,5 +119,6 @@ namespace NeuralRendering
 		Microsoft::WRL::ComPtr<ID3D11ComputeShader> prepare_, reconstruct_, selection_, guardedSelection_;
 		Microsoft::WRL::ComPtr<ID3D11Buffer> constants_;
 		bool compileFailed_ = false;
+		HRESULT packingFailure_ = S_OK;
 	};
 }

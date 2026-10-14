@@ -5303,6 +5303,7 @@ Optional: select FOV + TAA for further performance savings (not compatible with 
 		a_args.computeSubrect = {};
 		a_args.roi.reset();
 		a_args.packedCrops = {};
+		a_args.packedCropsEnabled = false;
 #ifdef DEVBENCH_BRIDGE_ENABLED
 		a_args.packedCropPlanning = {};
 #endif
@@ -5335,6 +5336,8 @@ Optional: select FOV + TAA for further performance savings (not compatible with 
 		a_args.computeSubrect = result.computeSubrect;
 		a_args.roi = result.roi;
 		a_args.packedCrops = result.packedCrops;
+		a_args.packedCropsEnabled = characterSettings.packedCrops &&
+		                            characterSettings.cropMode == static_cast<std::uint32_t>(NeuralRendering::CharacterCropMode::Cropped);
 #ifdef DEVBENCH_BRIDGE_ENABLED
 		a_args.packedCropPlanning = result.packedCropPlanning;
 #endif

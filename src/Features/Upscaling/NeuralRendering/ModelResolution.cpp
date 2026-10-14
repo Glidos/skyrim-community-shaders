@@ -328,19 +328,8 @@ namespace NeuralRendering
 			       args.computeSubrect.IsValid() ? args.computeSubrect :
 			                                       BuildCenteredComputeSubrect(args.outputWidth, args.outputHeight, args.tuning.singleSubrectScale);
 		}
-		std::optional<ModelResolutionGeometry> Geometry(const RendererApplyArgs& args
-#ifdef DEVBENCH_BRIDGE_ENABLED
-			,
-			PackedCropAdmissionDiagnostics* diagnostics = nullptr
-#endif
-		)
+		std::optional<ModelResolutionGeometry> UnpackedGeometry(const RendererApplyArgs& args)
 		{
-#ifdef DEVBENCH_BRIDGE_ENABLED
-			if (diagnostics && args.packedCrops.count >= 2) {
-				diagnostics->stage = PackedCropStage::ModelProjection;
-				diagnostics->reason = PackedCropReason::InvalidModelGeometry;
-			}
-#endif
 			if (!args.centralArea.Valid())
 				return std::nullopt;
 			auto geometry = BuildModelResolutionGeometry(args.viewportCrop, { args.outputWidth, args.outputHeight }, SourceRegion(args),
@@ -354,6 +343,23 @@ namespace NeuralRendering
 					geometry->modelRegion = IntersectComputeSubrect(geometry->modelRegion, context);
 				}
 			}
+			return geometry;
+		}
+
+		std::optional<ModelResolutionGeometry> Geometry(const RendererApplyArgs& args
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			,
+			PackedCropAdmissionDiagnostics* diagnostics = nullptr
+#endif
+		)
+		{
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			if (diagnostics && args.packedCrops.count >= 2) {
+				diagnostics->stage = PackedCropStage::ModelProjection;
+				diagnostics->reason = PackedCropReason::InvalidModelGeometry;
+			}
+#endif
+			auto geometry = UnpackedGeometry(args);
 #ifdef DEVBENCH_BRIDGE_ENABLED
 			if (geometry && diagnostics && args.packedCrops.count >= 2) {
 				diagnostics->modelAreasAvailable = true;
@@ -363,48 +369,36 @@ namespace NeuralRendering
 #endif
 			if (geometry && args.packedCrops.count >= 2 && args.characterVisualIsolation && args.renderingMode &&
 				(*args.renderingMode == RenderingMode::FullResolution || *args.renderingMode == RenderingMode::ReducedResolution)) {
-				const auto unpackedGeometry = *geometry;
-				geometry->packedCrops = BuildPackedCropLayout(args.packedCrops, geometry->sourceSize, geometry->modelSize, SourceRegion(args)
+				if (args.packedCropPlan && args.packedCropCapacity == args.packedCropPlan->layout.extent && args.packedCropPlan->Matches(args.packedCrops, geometry->sourceSize, geometry->modelSize, SourceRegion(args), geometry->modelRegion.Area())) {
+					geometry->packedCrops = args.packedCropPlan->layout;
 #ifdef DEVBENCH_BRIDGE_ENABLED
-																															   ,
-					diagnostics
+					if (diagnostics && args.packedCropPlanDiagnostics)
+						*diagnostics = *args.packedCropPlanDiagnostics;
 #endif
-				);
-				const auto atlasArea = std::uint64_t(geometry->packedCrops.extent.width) * geometry->packedCrops.extent.height;
-				if (atlasArea * 4u > unpackedGeometry.modelRegion.Area() * 3u) {
-					geometry->packedCrops = {};
+				} else if (!args.packedCropCapacity || args.packedCropCapacity->IsValid()) {
+					geometry->packedCrops = BuildPackedCropLayout(args.packedCrops, geometry->sourceSize, geometry->modelSize, SourceRegion(args)
+#ifdef DEVBENCH_BRIDGE_ENABLED
+																																   ,
+						diagnostics
+#endif
+						,
+						{ .capacity = args.packedCropCapacity.value_or(UpscalingDLSS::Extent{}), .baselinePixels = geometry->modelRegion.Area() });
+				}
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				if (diagnostics && args.packedCropCapacity) {
+					diagnostics->capacity = args.packedCropCapacityDiagnostics;
+					if (!args.packedCropCapacity->IsValid()) {
+						diagnostics->stage = PackedCropStage::AreaAdmission;
+						diagnostics->reason = args.packedCropCapacityDiagnostics.reason;
+					}
+				}
+#endif
+				if (geometry->packedCrops.count) {
+					// Layout changes alter evaluated work, never native creation/storage capacity.
+					const auto size = geometry->packedCrops.extent;
+					geometry->modelRegion = { 0, 0, size.width, size.height };
 #ifdef DEVBENCH_BRIDGE_ENABLED
 					if (diagnostics) {
-						diagnostics->stage = PackedCropStage::AreaAdmission;
-						diagnostics->reason = PackedCropReason::InsufficientAreaSaving;
-					}
-#endif
-				}
-				if (geometry->packedCrops.count) {
-					const auto unpacked = geometry->modelSize;
-					geometry->modelSize = geometry->packedCrops.extent;
-					const auto size = geometry->modelSize;
-					geometry->modelGuideSize = {
-						static_cast<std::uint32_t>((std::uint64_t(size.width) * geometry->modelGuideSize.width + unpacked.width - 1u) / unpacked.width),
-						static_cast<std::uint32_t>((std::uint64_t(size.height) * geometry->modelGuideSize.height + unpacked.height - 1u) / unpacked.height)
-					};
-					geometry->nativeCrop = UpscalingDLSS::ViewportCrop::Identity(geometry->modelGuideSize.width, geometry->modelGuideSize.height, size.width, size.height);
-					geometry->modelRegion = { 0, 0, size.width, size.height };
-					geometry->motionNormalization[0] *= static_cast<float>(unpacked.width) / size.width;
-					geometry->motionNormalization[1] *= static_cast<float>(unpacked.height) / size.height;
-					// Rounding must not change the feature type in only one member of a stereo pair.
-					if (ResolveFeatureUpscaling(geometry->modelGuideSize.width, geometry->modelGuideSize.height, size.width, size.height) !=
-						ResolveFeatureUpscaling(unpackedGeometry.modelGuideSize.width, unpackedGeometry.modelGuideSize.height, unpacked.width, unpacked.height)) {
-						*geometry = unpackedGeometry;
-#ifdef DEVBENCH_BRIDGE_ENABLED
-						if (diagnostics) {
-							diagnostics->stage = PackedCropStage::ProviderCompatibility;
-							diagnostics->reason = PackedCropReason::ProviderTypeChanged;
-						}
-#endif
-					}
-#ifdef DEVBENCH_BRIDGE_ENABLED
-					else if (diagnostics) {
 						diagnostics->stage = PackedCropStage::Admitted;
 						diagnostics->reason = PackedCropReason::Admitted;
 					}
@@ -547,6 +541,150 @@ namespace NeuralRendering
 		return true;
 	}
 
+	void ModelResolution::PlanPackedCrops(std::span<RendererApplyArgs> args, bool speculative) noexcept
+	{
+		for (auto& input : args) {
+			input.packedCropCapacity.reset();
+			input.packedCropPlan.reset();
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			input.packedCropPlanDiagnostics.reset();
+#endif
+			if (input.featureSlot >= cropPlanning_.size() || input.modelResolutionHistory)
+				continue;
+			std::optional<CropPlanning> tentative;
+			if (speculative)
+				tentative = cropPlanning_[input.featureSlot];
+			auto& planning = tentative ? *tentative : cropPlanning_[input.featureSlot];
+			if (!input.packedCrops.count
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				&& !cropDiagnostics_.Enabled()
+#endif
+			) {
+				planning.state = { .requiredFrames = planning.state.active ? kPackedCropRecoveryFrames : planning.state.requiredFrames };
+				if (!PackingAvailable())
+					input.packedCropsEnabled = false;
+				continue;
+			}
+			const auto geometry = UnpackedGeometry(input);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			std::optional<PackedCropObservation> observation;
+			std::optional<PackedCropAdmissionDiagnostics> retainedRejection;
+			if (!speculative && cropDiagnostics_.Enabled()) {
+				observation.emplace();
+				observation->frame = input.frameId;
+				observation->sourceFrame = input.sourceWorldFrame;
+				observation->slot = input.featureSlot;
+				observation->generation = input.generation;
+				observation->sourceTransaction = input.executionContext.sourceTransactionId;
+				observation->requested = input.packedCropsEnabled;
+				observation->sources = input.packedCrops;
+				observation->planning = input.packedCropPlanning;
+				observation->reason = input.packedCropPlanning.reason;
+				observation->available = SourceRegion(input);
+				if (geometry) {
+					observation->source = geometry->sourceSize;
+					observation->model = geometry->modelSize;
+					observation->guide = geometry->modelGuideSize;
+					observation->baselinePixels = geometry->modelRegion.Area();
+					observation->geometryChanged = planning.source != geometry->sourceSize || planning.model != geometry->modelSize ||
+					                               planning.guide != geometry->modelGuideSize || planning.mode != input.renderingMode;
+				}
+			}
+			const PackedCropObservationScope captureTransition{ cropDiagnostics_, observation, planning.state, retainedRejection };
+#endif
+			if (!geometry) {
+				planning = {};
+				continue;
+			}
+			if (planning.source != geometry->sourceSize || planning.model != geometry->modelSize ||
+				planning.guide != geometry->modelGuideSize || planning.mode != input.renderingMode)
+				planning = { {}, geometry->sourceSize, geometry->modelSize, geometry->modelGuideSize, input.renderingMode };
+			if (!PackingAvailable()) {
+				input.packedCrops = {};
+				input.packedCropsEnabled = false;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				input.packedCropPlanning.reason = PackedCropReason::ShadersUnavailable;
+				if (observation)
+					observation->reason = PackedCropReason::ShadersUnavailable;
+#endif
+			}
+			if (!input.packedCrops.count || !input.characterVisualIsolation ||
+				(input.renderingMode != RenderingMode::FullResolution && input.renderingMode != RenderingMode::ReducedResolution)) {
+				planning.state = { .requiredFrames = planning.state.active ? kPackedCropRecoveryFrames : planning.state.requiredFrames };
+				continue;
+			}
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			PackedCropAdmissionDiagnostics diagnostics;
+#endif
+			const auto layout = ResolvePackedCropLayout(input.packedCrops, geometry->sourceSize, geometry->modelSize,
+				SourceRegion(input), geometry->modelRegion.Area(), input.frameId, planning.state
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				,
+				&diagnostics, observation ? &retainedRejection : nullptr
+#endif
+			);
+			input.packedCropCapacity = layout.extent;
+			input.packedCropPlan = PackedCropPlan{ input.packedCrops, geometry->sourceSize, geometry->modelSize,
+				SourceRegion(input), geometry->modelRegion.Area(), layout };
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			input.packedCropCapacityDiagnostics = { diagnostics.reason, planning.state.capacity, planning.state.stableFrames, planning.state.requiredFrames };
+			const auto attribute = [&](auto& value) {
+				value.frame = input.frameId;
+				value.sourceFrame = input.sourceWorldFrame;
+				value.generation = input.generation;
+				value.modelResolutionPercent = input.modelResolutionPercent;
+				value.baselineSourcePixels = input.computeSubrect.Area();
+				value.planning = input.packedCropPlanning;
+			};
+			attribute(diagnostics);
+			diagnostics.capacity = input.packedCropCapacityDiagnostics;
+			diagnostics.modelAreasAvailable = true;
+			diagnostics.effectiveBaselineModelPixels = geometry->modelRegion.Area();
+			input.packedCropPlanDiagnostics = diagnostics;
+			if (observation)
+				observation->reason = retainedRejection ? retainedRejection->reason : diagnostics.reason;
+			if (retainedRejection)
+				attribute(*retainedRejection);
+#endif
+		}
+	}
+
+	bool ModelResolution::PreparePacking(std::span<const RendererApplyArgs> args, HRESULT& result)
+	{
+		result = E_INVALIDARG;
+		if (args.empty())
+			return false;
+		const bool requested = std::ranges::any_of(args, [](const auto& input) { return input.packedCropsEnabled; });
+		const bool selected = std::ranges::any_of(args, [](const auto& input) { return input.modelOutputSelection.has_value(); });
+		// Warm transactions need no extra texture inspection or device-health sampling.
+		if (device_.Get() == args.front().device && prepare_ && reconstruct_ && constants_ &&
+			(!requested || !PackingAvailable() || (coverage_ && coverageShader_ && guardedReconstruct_ && (!selected || (selection_ && guardedSelection_))))) {
+			result = S_OK;
+			return true;
+		}
+		if (!ValidBatchLayout(args) || !ValidateSelectedOutputs(args) || !EnsureShaders(args.front().device, result))
+			return false;
+		if (requested && PackingAvailable()) {
+			if (selected && !EnsureSelectionShader(false, result))
+				return false;
+			try {
+				if (!EnsureCoverage(args.front().device, result) || (selected && !EnsureSelectionShader(true, result)))
+					packingFailure_ = FAILED(result) ? result : E_FAIL;
+			} catch (const std::bad_alloc&) {
+				packingFailure_ = E_OUTOFMEMORY;
+			} catch (const std::exception&) {
+				packingFailure_ = E_FAIL;
+			}
+			if (!PackingAvailable()) {
+				result = args.front().device->GetDeviceRemovedReason();
+				if (FAILED(result))
+					return false;
+			}
+		}
+		result = S_OK;
+		return true;
+	}
+
 	bool ModelResolution::Required(const RendererApplyArgs& args
 #ifdef DEVBENCH_BRIDGE_ENABLED
 		,
@@ -628,6 +766,12 @@ namespace NeuralRendering
 			input.centralArea.Active() ? input.centralArea : CentralArea{}, geometry->packedCrops };
 		adapted.centralArea = {};
 		adapted.packedCrops = {};
+		adapted.packedCropsEnabled = false;
+		adapted.packedCropCapacity.reset();
+		adapted.packedCropPlan.reset();
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		adapted.packedCropPlanDiagnostics.reset();
+#endif
 		adapted.guideWidth = geometry->modelGuideSize.width;
 		adapted.guideHeight = geometry->modelGuideSize.height;
 		adapted.featureUpscaling = *projectedUpscaling;
@@ -811,8 +955,16 @@ namespace NeuralRendering
 		const bool sharedTargets = !targets.empty();
 		if (sharedTargets && !ValidateTargets(args, targets))
 			return false;
-		if (!EnsureShaders(args.front().device, result))
+		if (!PreparePacking(args, result))
 			return false;
+		if (!PackingAvailable() && std::ranges::any_of(args, [](const auto& input) { return input.packedCrops.count != 0; })) {
+			std::array<RendererApplyArgs, kMaximumRegionEvaluations> fallback{};
+			std::ranges::copy(args, fallback.begin());
+			auto working = std::span(fallback.data(), args.size());
+			PlanPackedCrops(working);
+			return Prepare(working, batch, result, targets);
+		}
+		const bool selected = std::ranges::any_of(args, [](const auto& input) { return input.modelOutputSelection.has_value(); });
 		batch.device = args.front().device;
 		batch.context = args.front().context;
 		try {
@@ -916,7 +1068,6 @@ namespace NeuralRendering
 			result = E_OUTOFMEMORY;
 			return false;
 		}
-		const bool selected = std::ranges::any_of(args, [](const auto& input) { return input.modelOutputSelection.has_value(); });
 		if (selected && !EnsureSelectionShader(batch.packedCoverage != nullptr, result))
 			return false;
 		batch.reconstructionShader = selected ? (batch.packedCoverage ? guardedSelection_ : selection_) :
@@ -1046,6 +1197,7 @@ namespace NeuralRendering
 		selection_.Reset();
 		guardedSelection_.Reset();
 		compileFailed_ = false;
+		packingFailure_ = S_OK;
 	}
 	void ModelResolution::Reset() noexcept
 	{
@@ -1061,7 +1213,7 @@ namespace NeuralRendering
 	void ModelResolution::ReleaseUnscaledSlots(std::span<const RendererApplyArgs> args) noexcept
 	{
 		// A mixed packed/unpacked pair still needs both private reconstruction targets.
-		if (std::ranges::any_of(args, [](const auto& value) { return Required(value); }))
+		if (std::ranges::any_of(args, [](const auto& value) { return value.packedCropsEnabled || Required(value); }))
 			return;
 		for (const auto& input : args)
 			ReleaseSlot(input.featureSlot);

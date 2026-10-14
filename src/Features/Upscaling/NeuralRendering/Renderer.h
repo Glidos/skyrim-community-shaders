@@ -249,9 +249,16 @@ namespace NeuralRendering
 		std::uint32_t modelResolutionPercent = 100;
 		bool pressureResolutionEnabled = false;
 		bool parallelEyes = false;
+		/** Keep model preparation resident while moving actors alternate atlas and single ROI. */
+		bool packedCropsEnabled = false;
 		PackedCropSources packedCrops{};
+		/** Frozen before admission: empty capacity selects the ordinary single-region path. */
+		std::optional<UpscalingDLSS::Extent> packedCropCapacity;
+		std::optional<PackedCropPlan> packedCropPlan;
 #ifdef DEVBENCH_BRIDGE_ENABLED
 		PackedCropPlanningDiagnostics packedCropPlanning{};
+		PackedCropCapacityDiagnostics packedCropCapacityDiagnostics{};
+		std::optional<PackedCropAdmissionDiagnostics> packedCropPlanDiagnostics;
 #endif
 		CentralArea centralArea{};
 		/** Original sampling basis retained by independently scaled temporal inputs. */
@@ -367,6 +374,10 @@ namespace NeuralRendering
 		bool SimulateMemoryPressure(std::uint32_t a_durationMilliseconds, bool a_conservationOnly = false);
 		/** Retains the bounded opt-in native lifetime history, including its first failure. */
 		[[nodiscard]] LifetimeSnapshot GetLifetimeDiagnostics() const;
+		/** Session-only CPU transition capture, independent of profiling and full frame evidence. */
+		void ConfigurePackedCropDiagnostics(std::optional<bool> enabled, bool clear);
+		/** Retain the first rejected atlas and same-frame native rebuild costs until explicitly cleared. */
+		[[nodiscard]] nlohmann::json GetPackedCropDiagnostics() const;
 		/** Read-only allocation/lease accounting; native provider byte sizes remain unknown. */
 		[[nodiscard]] nlohmann::json GetSourceTransportDiagnostics() const;
 #endif

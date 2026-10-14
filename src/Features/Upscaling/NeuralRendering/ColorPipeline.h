@@ -5,6 +5,7 @@
 #include "ComputeSubrect.h"
 #include "ExposureCapture.h"
 #include "Utils/PassTimingCapture.h"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -115,8 +116,11 @@ namespace NeuralRendering::Color
 		Observation observation{};
 		/** Whether both retained colour buffers can serve this input. */
 		[[nodiscard]] bool Fits(const ComputeSubrect&, DXGI_FORMAT) const noexcept;
-		/** Allocation dimensions for a validated input rectangle. */
-		[[nodiscard]] static std::array<std::uint32_t, 2> AllocationExtent(const ComputeSubrect&) noexcept;
+		/** Replacement dimensions retain both axes until pressure retirement. */
+		[[nodiscard]] static constexpr std::array<std::uint32_t, 2> AllocationExtent(const ComputeSubrect& roi, std::array<std::uint32_t, 2> retained = {}) noexcept
+		{
+			return { std::max((roi.width + 63u) & ~63u, retained[0]), std::max((roi.height + 63u) & ~63u, retained[1]) };
+		}
 		void Abandon() noexcept;
 	};
 	class Pipeline

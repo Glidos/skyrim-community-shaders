@@ -126,6 +126,32 @@ namespace NeuralRendering
 			std::chrono::steady_clock::time_point started_;
 		};
 
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		class PackedCropCpuTimer
+		{
+		public:
+			PackedCropCpuTimer(PackedCropDiagnostics& diagnostics, std::uint64_t sequence,
+				std::optional<std::uint64_t> PackedCropRebuildTimings::* field) :
+				diagnostics_(diagnostics), sequence_(sequence), field_(field),
+				started_(sequence ? DiagnosticNow() : std::chrono::steady_clock::time_point{}) {}
+			~PackedCropCpuTimer() { Stop(); }
+			void Stop() noexcept
+			{
+				if (!sequence_)
+					return;
+				const auto elapsed = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(DiagnosticNow() - started_).count());
+				diagnostics_.Update(sequence_, [&](auto& timings) { timings.*field_ = (timings.*field_).value_or(0) + elapsed; });
+				sequence_ = 0;
+			}
+
+		private:
+			PackedCropDiagnostics& diagnostics_;
+			std::uint64_t sequence_;
+			std::optional<std::uint64_t> PackedCropRebuildTimings::* field_;
+			std::chrono::steady_clock::time_point started_;
+		};
+#endif
+
 		[[nodiscard]] constexpr bool IsSourceWorldFrameContinuous(
 			std::uint32_t a_previous,
 			std::uint32_t a_current) noexcept
@@ -982,6 +1008,9 @@ namespace NeuralRendering
 		bool actorProtectionCompileFailed_ = false;
 		bool PrepareActorProtection(const RendererApplyArgs&, Slot&);
 		RendererSnapshot snapshot_{};
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		std::uint64_t diagnosticSourceTransaction_ = 0;
+#endif
 		bool runtimeReady_ = false;
 		bool runtimeTouched_ = false;
 		bool failureLatched_ = false;
@@ -1537,6 +1566,7 @@ namespace NeuralRendering
 			snapshot_.modelSharedInputs = false;
 #ifdef DEVBENCH_BRIDGE_ENABLED
 			snapshot_.modelOutputSelected = false;
+			diagnosticSourceTransaction_ = a_args.executionContext.sourceTransactionId;
 #endif
 #ifdef DEVBENCH_BRIDGE_ENABLED
 			snapshot_.packedCropLayout = a_args.modelResolutionHistory ? a_args.modelResolutionHistory->packedCrops : PackedCropLayout{};
@@ -2153,6 +2183,7 @@ namespace NeuralRendering
 
 	void Renderer::State::PrepareMemoryResolutionLocked(std::span<RendererApplyArgs> args)
 	{
+		const SKSE::stl::scope_exit planCrops([&] { modelResolution_.PlanPackedCrops(args, resolutionRestoration_.active); });
 		resolutionRestoration_ = {};
 		if (args.empty())
 			return;
@@ -2213,6 +2244,7 @@ namespace NeuralRendering
 		resolutionLatches_[route].percent = workingPercent;
 		for (auto& arg : args)
 			arg.modelResolutionPercent = workingPercent;
+		modelResolution_.PlanPackedCrops(args);
 		snapshot_.effectiveModelResolutionPercent = workingPercent;
 		resolutionRestoration_ = {};
 		logger::info("[DLSSNR][Memory] Retaining working NR at {}%; restoration replacement lacks headroom", workingPercent);
@@ -2387,7 +2419,9 @@ namespace NeuralRendering
 			}
 			const auto& roi = resource.roi.inferenceContext;
 			if (colorConfiguration_.Enabled() && (replacing || !slot.colorWork.Fits(roi, resource.output.desc.Format))) {
-				const auto [width, height] = Color::Work::AllocationExtent(roi);
+				const auto retained = replacing ? std::array<std::uint32_t, 2>{} :
+				                                  std::array{ slot.colorWork.capacityWidth, slot.colorWork.capacityHeight };
+				const auto [width, height] = Color::Work::AllocationExtent(roi, retained);
 				if (!append(resource.output.desc.Format, { width, height }) || !append(resource.output.desc.Format, { width, height }))
 					return std::nullopt;
 			}
@@ -2630,7 +2664,17 @@ namespace NeuralRendering
 #endif
 		ExecutionCpuTimer retirementTimer(a_evidence, &ExecutionSnapshot::resourceRetirementCpuMicroseconds);
 		activeStage_ = RendererStage::ResourceRetirement;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		auto& cropDiagnostics = modelResolution_.CropDiagnostics();
+		const auto cropEvent = cropDiagnostics.CostEvent(a_slot, snapshot_.frameId, snapshot_.sourceWorldFrame, snapshot_.generation, diagnosticSourceTransaction_);
+		PackedCropCpuTimer cropRetirement(cropDiagnostics, cropEvent, &PackedCropRebuildTimings::retirementMicroseconds);
+		PackedCropCpuTimer cropDrain(cropDiagnostics, cropEvent, &PackedCropRebuildTimings::gpuDrainMicroseconds);
+#endif
 		const bool idle = interop_.WaitForIdle(a_evidence);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		cropDrain.Stop();
+		cropDiagnostics.Update(cropEvent, [&](auto& timings) { timings.gpuDrainSucceeded = idle; });
+#endif
 		if (!idle) {
 			return FailLocked(
 				RendererStage::ResourceRetirement,
@@ -2642,7 +2686,15 @@ namespace NeuralRendering
 		}
 		// Preserve completed measurements before releasing their slot-owned readbacks.
 		colorPipeline_.Poll(context_.Get(), slot.colorWork);
-		if (!Runtime::Instance().ResetFeature(a_slot)) {
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		PackedCropCpuTimer cropRelease(cropDiagnostics, cropEvent, &PackedCropRebuildTimings::releaseMicroseconds);
+#endif
+		const bool released = Runtime::Instance().ResetFeature(a_slot);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		cropRelease.Stop();
+		cropDiagnostics.Update(cropEvent, [&](auto& timings) { timings.releaseSucceeded = released; });
+#endif
+		if (!released) {
 			return FailLocked(
 				RendererStage::ResourceRetirement,
 				E_FAIL,
@@ -2698,6 +2750,12 @@ namespace NeuralRendering
 		}
 
 		activeStage_ = RendererStage::ResourceCreation;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		auto& cropDiagnostics = modelResolution_.CropDiagnostics();
+		const auto cropEvent = cropDiagnostics.CostEvent(a_slot, snapshot_.frameId, snapshot_.sourceWorldFrame, snapshot_.generation, diagnosticSourceTransaction_);
+		PackedCropCpuTimer cropAllocation(cropDiagnostics, cropEvent, &PackedCropRebuildTimings::sharedAllocationMicroseconds);
+		cropDiagnostics.Update(cropEvent, [](auto& timings) { timings.sharedAllocationSucceeded = false; });
+#endif
 		Slot replacement;
 		const auto prefix = std::format("NeuralRendering::Slot{}::", a_slot);
 		const auto colorDesc = MakeSharedDescription(
@@ -2762,6 +2820,9 @@ namespace NeuralRendering
 		replacement.resourceKey = a_resources.resourceKey;
 		replacement.resourcesValid = true;
 		slot = std::move(replacement);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		cropDiagnostics.Update(cropEvent, [](auto& timings) { timings.sharedAllocationSucceeded = true; });
+#endif
 		Increment(snapshot_.counters.resourceRebuilds);
 		snapshot_.lastCompletedStage = RendererStage::ResourceCreation;
 		return true;
@@ -3109,6 +3170,22 @@ namespace NeuralRendering
 			return false;
 		if (failureLatched_ || quarantined_)
 			return ApplyRegionBatchLocked(args, outcome);
+		SetRequestTelemetryLocked(args.front());
+		const bool packingWasAvailable = modelResolution_.PackingAvailable();
+		HRESULT preparationResult = S_OK;
+		if (!modelResolution_.PreparePacking(args, preparationResult))
+			return FailLocked(preparationResult == E_INVALIDARG ? RendererStage::Validation : RendererStage::ResourceCreation,
+				preparationResult, "NR model shader preparation failed", args.front().featureSlot, preparationResult != E_INVALIDARG);
+		std::array<RendererApplyArgs, kEyeCount> fallback{};
+		if (!modelResolution_.PackingAvailable()) {
+			if (packingWasAvailable)
+				logger::warn("[DLSSNR] Multi-Crop shaders unavailable (0x{:08X}); retaining single-region NR until shader reset",
+					static_cast<std::uint32_t>(modelResolution_.PackingFailure()));
+			std::ranges::copy(args, fallback.begin());
+			auto working = std::span(fallback.data(), args.size());
+			modelResolution_.PlanPackedCrops(working, resolutionRestoration_.active);
+			args = working;
+		}
 		const auto& first = args.front();
 		// A backend identity change retires its slots; staged proxies survive that reset.
 		const bool stableBackend = !device_ || (SameIdentity(device_.Get(), first.device) && SameIdentity(context_.Get(), first.context));
@@ -3529,9 +3606,21 @@ namespace NeuralRendering
 						"NR encoding/proxy experiment requires floating-point processing resources", a_args[index].featureSlot, false);
 				const auto oldBaseline = slots[index]->colorWork.baseline.resource.Get();
 				HRESULT colorResult = S_OK;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				auto& cropDiagnostics = modelResolution_.CropDiagnostics();
+				const auto& input = a_args[index];
+				const auto colorEvent = !slots[index]->colorWork.Fits(resources[index].roi.inferenceContext, resources[index].output.desc.Format) ?
+				                            cropDiagnostics.CostEvent(input.featureSlot, input.frameId, input.sourceWorldFrame, input.generation, input.executionContext.sourceTransactionId) :
+				                            0;
+				PackedCropCpuTimer colorAllocation(cropDiagnostics, colorEvent, &PackedCropRebuildTimings::colorAllocationMicroseconds);
+#endif
 				const bool colorReady = colorPipeline_.Ensure(a_args[index].device, slots[index]->colorWork,
 					resources[index].roi.inferenceContext, resources[index].output.desc.Format,
 					colorConfiguration_.experiments.diagnostics, colorResult);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				colorAllocation.Stop();
+				cropDiagnostics.Update(colorEvent, [&](auto& timings) { timings.colorAllocationSucceeded = colorReady; });
+#endif
 				if (execution)
 					execution->Update([&](auto& evidence) {
 						auto& region = evidence.regions[index];
@@ -3879,6 +3968,10 @@ namespace NeuralRendering
 				Increment(snapshot_.counters.discontinuousHistoryResets);
 			bool evaluationAttempted = false;
 			RuntimeExecutionEvidence runtimeEvidence{};
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			auto& cropDiagnostics = modelResolution_.CropDiagnostics();
+			const auto cropEvent = cropDiagnostics.Pending(args.featureSlot, args.frameId, args.sourceWorldFrame, args.generation, args.executionContext.sourceTransactionId);
+#endif
 			// Runtime diagnostics can throw after evaluation; preserve the actual call outcome.
 			const SKSE::stl::scope_exit retainRuntimeEvidence([&]() noexcept {
 #ifdef DEVBENCH_BRIDGE_ENABLED
@@ -3889,6 +3982,12 @@ namespace NeuralRendering
 					region.evaluateAttempted = runtimeEvidence.evaluateAttempted;
 					region.evaluateSucceeded = runtimeEvidence.evaluateSucceeded;
 				}
+				cropDiagnostics.Update(cropEvent, [&](auto& timings) {
+					timings.nativeCreateMicroseconds = runtimeEvidence.createCpuMicroseconds;
+					timings.nativeEvaluateMicroseconds = runtimeEvidence.evaluateCpuMicroseconds;
+					if (runtimeEvidence.createAttempted)
+						timings.nativeCreateSucceeded = runtimeEvidence.createSucceeded;
+				});
 #endif
 				if (execution)
 					execution->Update([&](auto& evidence) {
@@ -3914,13 +4013,18 @@ namespace NeuralRendering
 				effectiveReset,
 				&evaluationAttempted,
 #ifdef DEVBENCH_BRIDGE_ENABLED
-				execution || lifetime.enabled ? &runtimeEvidence : nullptr,
+				execution || lifetime.enabled || cropEvent ? &runtimeEvidence : nullptr,
 #else
 				execution ? &runtimeEvidence : nullptr,
 #endif
 				&interop_,
 				static_cast<std::uint32_t>(index), args.providerBlending);
 			if (evaluationAttempted) {
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				cropDiagnostics.RecordEvaluation(args.featureSlot,
+					args.modelResolutionHistory && args.modelResolutionHistory->packedCrops.count != 0,
+					nativeEvaluated, resources[index].roi.inferenceContext.Area());
+#endif
 				Increment(snapshot_.counters.featureEvaluations);
 				a_outcome.evaluationAttemptedFeatureSlotMask |= 1u << args.featureSlot;
 			}
@@ -4860,6 +4964,7 @@ namespace NeuralRendering
 			{ "modelResolutionPrivateLogicalBytes", modelBytes },
 			{ "packedCoverageGuard", state_->modelResolution_.GetPackedCoverageDiagnostics() },
 			{ "packedCropAdmission", std::move(admission) },
+			{ "packedCropDiagnostics", PackedCropDiagnosticsJson(state_->modelResolution_.CropDiagnostics()) },
 			{ "activeTransportLogicalBytes", activeBytes }, { "cachedOnlyTransportLogicalBytes", cachedBytes },
 			{ "activePrivateColorLogicalBytes", activeColorBytes }, { "cachedPrivateColorLogicalBytes", cachedColorBytes },
 			{ "leaseOnlyRetainedLogicalBytes", retiredLeaseBytes }, { "leaseCount", leases.size() }, { "logicalBytesKnown", bytesKnown },
@@ -4870,6 +4975,18 @@ namespace NeuralRendering
 			{ "abandonedOwnershipBytes", nullptr }, { "abandonedOwnershipPresent", state_->quarantined_ },
 			{ "recovery", "explicit_nr_reset_after_successful_both_api_retirement_or_new_process" },
 			{ "resources", textures }, { "slots", slots } };
+	}
+
+	void Renderer::ConfigurePackedCropDiagnostics(std::optional<bool> enabled, bool clear)
+	{
+		std::scoped_lock lock(state_->mutex_);
+		state_->modelResolution_.CropDiagnostics().Configure(enabled, clear);
+	}
+
+	nlohmann::json Renderer::GetPackedCropDiagnostics() const
+	{
+		std::scoped_lock lock(state_->mutex_);
+		return PackedCropDiagnosticsJson(state_->modelResolution_.CropDiagnostics());
 	}
 
 	LifetimeSnapshot Renderer::GetLifetimeDiagnostics() const

@@ -32,6 +32,8 @@ namespace AdapterCompiler
 	ID3D11Device* device = nullptr;
 	unsigned calls = 0;
 	bool vr = false;
+	bool failPacking = false;
+	unsigned packingAttempts = 0;
 }
 
 // Substitute only engine compilation/profiling; the adapter and GPU work are production code.
@@ -39,6 +41,11 @@ ID3D11DeviceChild* Util::CompileShader(const wchar_t* path,
 	const std::vector<std::pair<const char*, const char*>>& options, const char* target, const char* entry, ShaderCompileTiming*)
 {
 	++AdapterCompiler::calls;
+	if (std::filesystem::path(path).filename() == L"ModelResolutionCoverageCS.hlsl") {
+		++AdapterCompiler::packingAttempts;
+		if (AdapterCompiler::failPacking)
+			return nullptr;
+	}
 	const auto shaderPath = std::filesystem::path("features/Neural Rendering/Shaders/Upscaling/NeuralRendering") /
 	                        std::filesystem::path(path).filename();
 	PackageIncludes includes("package/Shaders", "features/Neural Rendering/Shaders");
@@ -901,10 +908,10 @@ namespace
 		provider.packedCrops = { { ComputeSubrect{ 0, 0, 64, 64 }, ComputeSubrect{ 1984, 0, 64, 64 } }, 2 };
 		admission = {};
 		Require(ModelResolution::Project(provider, projectedCentral, &admission) &&
-					!projectedCentral.modelResolutionHistory->packedCrops.count &&
-					admission.reason == PackedCropReason::ProviderTypeChanged && admission.stage == PackedCropStage::ProviderCompatibility &&
-					admission.candidateAreaAvailable,
-			"Rounded guide geometry concealed the provider compatibility rejection");
+					projectedCentral.modelResolutionHistory->packedCrops.count && projectedCentral.featureUpscaling &&
+					projectedCentral.guideWidth == 2047 && projectedCentral.outputWidth == 2048 &&
+					admission.reason == PackedCropReason::Admitted && admission.candidateAreaAvailable,
+			"Atlas changed near-unity native creation geometry or feature type");
 #endif
 		constexpr Size source{ 1025, 519 };
 		constexpr ComputeSubrect owned{ 8, 8, 1009, 503 };
@@ -960,6 +967,7 @@ namespace
 						input.reset = mode == RenderingMode::ReducedResolution;
 						input.characterVisualIsolation = input.providerBlending = true;
 						input.packedCrops = crops;
+						input.packedCropsEnabled = true;
 						input.controlMask = mask.texture;
 						input.controlMaskWidth = source[0];
 						input.controlMaskHeight = source[1];
@@ -968,6 +976,13 @@ namespace
 						Require(ModelResolution::Required(input), "Packed 100% input bypassed atlas preparation");
 					}
 					ModelResolution adapter;
+					for (unsigned frame = 1; frame <= kPackedCropAdmissionFrames; ++frame) {
+						for (auto& eye : args) eye.frameId = frame;
+						adapter.PlanPackedCrops(args);
+						Require(args[0].packedCropCapacity && args[0].packedCropCapacity->IsValid() == (frame == kPackedCropAdmissionFrames),
+							"Production atlas planning skipped the admission window");
+					}
+
 					ModelResolution::Batch batch;
 					HRESULT result = S_OK;
 					std::array<ModelResolution::Targets, 2> targets{};
@@ -987,8 +1002,37 @@ namespace
 					const auto prepare = [&](ModelResolution::Batch& prepared) {
 						return adapter.Prepare(args, prepared, result, sharedTargets ? std::span<const ModelResolution::Targets>(targets) : std::span<const ModelResolution::Targets>{});
 					};
+					const auto packedArgs = args;
+					if (mode == RenderingMode::ReducedResolution && percent == 100 && !sharedTargets) {
+						ModelResolution degraded;
+						AdapterCompiler::failPacking = true;
+						const auto attempts = AdapterCompiler::packingAttempts;
+						Require(degraded.PreparePacking(args, result) && !degraded.PackingAvailable() && SUCCEEDED(result),
+							"Optional packing shader failure disabled ordinary NR");
+						ModelResolution::Batch fallback;
+						Require(degraded.Prepare(args, fallback, result) && !fallback.arguments[0].modelResolutionHistory->packedCrops.count,
+							"Unavailable packing shader did not use single-region preparation");
+						Require(degraded.PreparePacking(args, result) && AdapterCompiler::packingAttempts == attempts + 1,
+							"Failed optional shader was recompiled every frame");
+						AdapterCompiler::failPacking = false;
+						degraded.InvalidateShaders();
+						Require(degraded.PreparePacking(args, result) && degraded.PackingAvailable(),
+							"Explicit shader invalidation did not rearm packing");
+					}
+					for (auto& input : args) input.packedCrops = {};
+					ModelResolution::Batch single;
 					const auto bytes = adapter.AdditionalBytes(args, sharedTargets);
-					Require(bytes && *bytes && prepare(batch), "Packed preparation failed");
+					Require(bytes && *bytes && prepare(single), "Initial single-region preparation failed");
+					const auto compileCount = AdapterCompiler::calls;
+					args = packedArgs;
+					if (sharedTargets)
+						for (auto& target : targets) context->ClearUnorderedAccessViewFloat(target.color.uav.Get(), sentinel.data());
+					Require(adapter.AdditionalBytes(args, sharedTargets) == 0 && prepare(batch) && AdapterCompiler::calls == compileCount,
+						"First atlas admission allocated or compiled on a moving-actor frame");
+					for (unsigned eye = 0; eye < 2; ++eye)
+						Require(batch.targets[eye].color.resource == single.targets[eye].color.resource &&
+									batch.arguments[eye].viewportCrop == single.arguments[eye].viewportCrop,
+							"First atlas admission replaced single-region capacity");
 					Require(adapter.AdditionalBytes(args, sharedTargets) == 0 && adapter.RetainedBytes(0).value() + adapter.RetainedBytes(1).value() == *bytes,
 						"Packed allocation reuse or replacement-peak accounting changed");
 					if (sharedTargets) {
@@ -1019,6 +1063,11 @@ namespace
 						}
 						for (unsigned y = 0; y < size[1]; ++y)
 							for (unsigned x = 0; x < size[0]; ++x) {
+								if (!contains(projected.computeSubrect, float(x), float(y))) {
+									if (sharedTargets)
+										Require(pixels[y * size[0] + x] == sentinel, "Atlas touched unused backing pixels");
+									continue;
+								}
 								unsigned tile = 0;
 								while (tile < layout.count && !contains(layout.tiles[tile].packed, float(x), float(y))) ++tile;
 								const auto index = y * size[0] + x;
@@ -1032,9 +1081,12 @@ namespace
 						context->UpdateSubresource(projected.colorOutput, 0, nullptr, pixels.data(), size[0] * sizeof(Pixel), 0);
 						const auto sampledDepth = Texture(batch.targets[eye].depth, guideSize).Read<float>(device, context);
 						const auto sampledMotion = Texture(batch.targets[eye].motion, guideSize).Read<Motion>(device, context);
+						const auto validGuides = MapComputeSubrect(projected.computeSubrect, size[0], size[1], guideSize[0], guideSize[1]);
 						const Motion normal{ 0.002f * layout.unpackedExtent.width / size[0], -0.004f * layout.unpackedExtent.height / size[1] };
 						for (unsigned y = 0; y < guideSize[1]; ++y)
 							for (unsigned x = 0; x < guideSize[0]; ++x) {
+								if (!contains(validGuides, float(x), float(y)))
+									continue;
 								const float px = (x + 0.5f) * size[0] / guideSize[0], py = (y + 0.5f) * size[1] / guideSize[1];
 								unsigned tile = 0;
 								while (tile < layout.count && !contains(layout.tiles[tile].packed, px, py)) ++tile;
@@ -1109,6 +1161,59 @@ namespace
 						const auto pixels = outputs[eye].Read<Pixel>(device, context);
 						Near(pixels[200 * source[0] + 192][0], colors[eye][200 * source[0] + 192][0] + 0.1f, "A previous coverage miss permanently suppressed NR");
 					}
+					const auto transitionArgs = args;
+					for (unsigned step = 0; step < 20; ++step) {
+						args = transitionArgs;
+						for (unsigned eye = 0; eye < 2; ++eye) {
+							if (step % 4 == 0 || (step % 4 == 1 && eye == 1))
+								args[eye].packedCrops = {};
+							if (step % 4 == 3)
+								args[eye].packedCropCapacity->width += kPackedCropAlignment;
+							Require(ModelResolution::Required(args[eye]) == (percent != 100 || args[eye].packedCrops.count != 0),
+								"Unpacked identity-scale fallback performed unnecessary model preparation");
+						}
+						ModelResolution::Batch transition;
+						Require(adapter.AdditionalBytes(args, sharedTargets) == 0 && prepare(transition) && AdapterCompiler::calls == compileCount,
+							"Atlas/single/resize transition allocated or compiled");
+						for (unsigned eye = 0; eye < 2; ++eye) {
+							const auto& current = transition.arguments[eye];
+							const auto& previous = batch.arguments[eye];
+							Require(transition.targets[eye].color.resource == batch.targets[eye].color.resource &&
+										transition.targets[eye].depth.resource == batch.targets[eye].depth.resource &&
+										transition.targets[eye].motion.resource == batch.targets[eye].motion.resource &&
+										transition.targets[eye].output.resource == batch.targets[eye].output.resource &&
+										current.controlMask == previous.controlMask && current.viewportCrop == previous.viewportCrop &&
+										current.featureUpscaling == previous.featureUpscaling,
+								"Moving actors replaced a model/guide/mask allocation or native creation contract");
+							Require(bool(current.modelResolutionHistory->packedCrops.count) == bool(args[eye].packedCrops.count),
+								"Transition stress did not exercise its requested atlas/single path");
+							if (step % 4 != 2 && !(step % 4 == 1 && eye == 0))
+								Require(current.modelResolutionHistory != previous.modelResolutionHistory,
+									"Layout transition preserved incompatible temporal identity");
+						}
+						adapter.ReleaseUnscaledSlots(args);
+						Require(adapter.AdditionalBytes(args, sharedTargets) == 0, "Fallback retired resident preparation");
+					}
+					args = transitionArgs;
+					const auto originalSources = args[0].packedCrops;
+					for (unsigned step = 0; step < 8; ++step) {
+						for (auto& eye : args) ++eye.frameId;
+						args[0].packedCrops.regions[0].width = crops.regions[0].width - (step % 2 ? 0u : 8u);
+						args[0].packedCrops.regions[1].height = crops.regions[1].height - (step % 2 ? 0u : 8u);
+						adapter.PlanPackedCrops(args);
+						ModelResolution::Batch moving;
+						Require(adapter.AdditionalBytes(args, sharedTargets) == 0 && prepare(moving) &&
+									moving.targets[0].color.resource == batch.targets[0].color.resource &&
+									moving.targets[1].color.resource == batch.targets[1].color.resource,
+							"Changing actor extents within capacity rebuilt model textures");
+						Require(moving.arguments[0].outputWidth == batch.arguments[0].outputWidth && moving.arguments[0].outputHeight == batch.arguments[0].outputHeight &&
+									moving.arguments[0].guideWidth == batch.arguments[0].guideWidth && moving.arguments[0].guideHeight == batch.arguments[0].guideHeight,
+							"Retained atlas changed native model dimensions");
+						if (step % 2 == 0)
+							Require(moving.arguments[0].modelResolutionHistory != batch.arguments[0].modelResolutionHistory,
+								"Changed mappings lost history reset while reusing capacity");
+					}
+					args[0].packedCrops = originalSources;
 					const auto identity = batch.arguments[0].modelResolutionHistory;
 					if (percent == 100) {
 						const auto original = args[0];
@@ -1120,11 +1225,11 @@ namespace
 							"Changed source coordinates must invalidate history without rebuilding equal atlas capacity");
 						args[0] = original;
 						args[0].packedCrops = {};
-						Require(!ModelResolution::Required(args[0]) && adapter.Prepare(args, moved, result) &&
+						Require(!ModelResolution::Required(args[0]) && ModelResolution::Required(args[1]) && prepare(moved) &&
 									!moved.arguments[0].modelResolutionHistory->packedCrops.count && moved.arguments[1].modelResolutionHistory->packedCrops.count,
 							"A one-eye packing fallback must retain a complete stereo transaction");
 						adapter.ReleaseUnscaledSlots(args);
-						Require(adapter.AdditionalBytes(args) == 0, "An unpacked stereo peer reallocated every frame while packing was active");
+						Require(adapter.AdditionalBytes(args, sharedTargets) == 0, "An unpacked stereo peer reallocated every frame while packing was active");
 						args[0] = original;
 						args[0].characterVisualIsolation = false;
 						Require(!ModelResolution::Required(args[0]), "Ordinary-scene input was packed without actor-only coverage");
@@ -1133,7 +1238,10 @@ namespace
 							args[0].guideWidth = source[0] - 1;
 							args[0].guideHeight = source[1];
 							args[0].viewportCrop = UpscalingDLSS::ViewportCrop::Identity(source[0] - 1, source[1], source[0], source[1]);
-							Require(!ModelResolution::Required(args[0]), "Rounding allowed packing to change only one eye model type");
+							RendererApplyArgs nearUnity;
+							Require(ModelResolution::Project(args[0], nearUnity) && nearUnity.featureUpscaling &&
+										nearUnity.guideWidth == source[0] - 1 && nearUnity.outputWidth == source[0],
+								"Packed projection changed near-unity provider type");
 							args[0] = original;
 						}
 					}
@@ -1142,6 +1250,110 @@ namespace
 					Require(ModelResolution::Project(args[0], reordered) && reordered.modelResolutionHistory != identity,
 						"Tile order was omitted from temporal identity");
 				}
+		}
+	}
+
+	void CheckPackedPlanning()
+	{
+		using namespace NeuralRendering;
+		for (auto mode : { RenderingMode::FullResolution, RenderingMode::ReducedResolution }) {
+			RendererApplyArgs input;
+			input.colorWidth = input.outputWidth = 2048;
+			input.colorHeight = input.outputHeight = 1024;
+			input.guideWidth = mode == RenderingMode::FullResolution ? 1024 : 2048;
+			input.guideHeight = mode == RenderingMode::FullResolution ? 512 : 1024;
+			input.featureUpscaling = mode == RenderingMode::FullResolution;
+			input.reset = mode == RenderingMode::ReducedResolution;
+			input.viewportCrop = UpscalingDLSS::ViewportCrop::Identity(input.guideWidth, input.guideHeight, input.outputWidth, input.outputHeight);
+			input.computeSubrect = { 0, 0, 2048, 1024 };
+			input.renderingMode = mode;
+			input.characterVisualIsolation = true;
+			input.packedCrops = { { ComputeSubrect{ 32, 32, 137, 185 }, ComputeSubrect{ 1500, 200, 137, 185 } }, 2 };
+			ModelResolution planner;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			planner.CropDiagnostics().Configure(true, true);
+#endif
+			const auto plan = [&] { planner.PlanPackedCrops(std::span(&input, 1)); };
+			RendererApplyArgs proxy;
+			for (input.frameId = 1; input.frameId <= kPackedCropAdmissionFrames; ++input.frameId) plan();
+			Require(ModelResolution::Project(input, proxy) && proxy.modelResolutionHistory->packedCrops.count == 2,
+				"Settled production planning did not admit packing");
+			const auto capacity = input.packedCropCapacity;
+			Require(input.packedCropPlan && input.packedCropPlan->layout == proxy.modelResolutionHistory->packedCrops,
+				"Projection did not use the frozen admission plan");
+			const auto projectedHistory = proxy.modelResolutionHistory;
+			RendererApplyArgs changed = input;
+			changed.packedCrops.regions[0].baseX += 8;
+			Require(ModelResolution::Project(changed, proxy) && proxy.modelResolutionHistory != projectedHistory,
+				"Changed source mappings reused a stale frozen plan");
+			planner.Reset();
+			plan();
+			Require(input.packedCropCapacity == capacity, "GPU retirement erased the CPU capacity policy");
+			const auto crops = input.packedCrops;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			Require(planner.CropDiagnostics().Total() == 2, "Admission/reset lost the initial or active transition");
+			input.packedCropPlanning.reason = PackedCropReason::CropDisabled;
+#endif
+			input.packedCrops = {};
+			++input.frameId;
+			plan();
+			Require(!ModelResolution::Required(input), "Disabled packing retained model preparation at 100 percent");
+			input.packedCrops = crops;
+			for (unsigned i = 1; i <= kPackedCropRecoveryFrames; ++i) {
+				++input.frameId;
+				plan();
+				Require(input.packedCropCapacity->IsValid() == (i == kPackedCropRecoveryFrames), "Empty selection bypassed recovery hysteresis");
+			}
+			++input.frameId;
+			input.modelResolutionPercent = 75;
+			planner.PlanPackedCrops(std::span(&input, 1), true);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			Require(planner.CropDiagnostics().Total() == 4 && !planner.CropDiagnostics().FirstRejection(),
+				"Disabled or speculative planning created false rejection evidence");
+#endif
+			input.modelResolutionPercent = 100;
+			plan();
+			Require(input.packedCropCapacity == capacity && ModelResolution::Project(input, proxy) && proxy.modelResolutionHistory->packedCrops.count,
+				"Rejected speculative resolution destroyed the working atlas capacity");
+			++input.frameId;
+			input.modelResolutionPercent = 75;
+			plan();
+			Require(input.packedCropCapacity && !input.packedCropCapacity->IsValid() && ModelResolution::Project(input, proxy) &&
+						proxy.outputWidth == 1536 && proxy.outputHeight == 768 && !proxy.modelResolutionHistory->packedCrops.count,
+				"A pressure resolution change reused an incompatible atlas plan");
+			const auto first = input.packedCropCapacity;
+			plan();
+			Require(input.packedCropCapacity == first, "Same-frame retry advanced capacity admission");
+			for (unsigned i = 1; i < kPackedCropAdmissionFrames; ++i) {
+				++input.frameId;
+				plan();
+			}
+			Require(ModelResolution::Project(input, proxy) && proxy.modelResolutionHistory->packedCrops.count == 2 &&
+						proxy.modelResolutionHistory->percent == 75,
+				"New-resolution capacity never became usable");
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			Require(planner.CropDiagnostics().Total() == 6 && !planner.CropDiagnostics().FirstRejection(),
+				"Resolution changes were misclassified as atlas rejection");
+			const auto previousCapacity = input.packedCropCapacity;
+			input.sourceWorldFrame = 987;
+			input.generation = 123;
+			input.executionContext.sourceTransactionId = 456;
+			input.packedCrops.regions[0] = { 0, 0, 1000, 900 };
+			++input.frameId;
+			plan();
+			const auto& firstRejection = planner.CropDiagnostics().FirstRejection();
+			Require(firstRejection && firstRejection->retainedRejection && firstRejection->previous &&
+						firstRejection->previous->sources == crops && firstRejection->current.sources == input.packedCrops &&
+						firstRejection->previous->state.capacity == *previousCapacity &&
+						firstRejection->retainedRejection->capacity.capacity == *previousCapacity &&
+						firstRejection->current.reason == firstRejection->retainedRejection->reason &&
+						firstRejection->current.reason != PackedCropReason::CapacitySettling &&
+						firstRejection->current.sourceTransaction == 456 &&
+						planner.CropDiagnostics().Pending(input.featureSlot, input.frameId, 987, 123, 456) == firstRejection->sequence,
+				"Planner lost the first retained-capacity failure or its before/after ownership");
+			planner.Reset();
+			Require(planner.CropDiagnostics().FirstRejection().has_value(), "Resource reset erased first rejection evidence");
+#endif
 		}
 	}
 
@@ -1510,6 +1722,7 @@ namespace
 			arg.controlMaskHeight = source[1];
 			arg.tuning.useAutoMask = false;
 			arg.packedCrops = crops;
+			arg.packedCropsEnabled = true;
 			std::array args{ arg, arg };
 			args[1].featureSlot = 1;
 			args[1].colorInput = rightInput.texture.Get();
@@ -1566,6 +1779,27 @@ namespace
 					}
 				if (missingEye < 0)
 					Require(observed[80 * source[0] + 64] != baseline[80 * source[0] + 64], "Valid packed selection never applied NR");
+			}
+			if (missingEye < 0) {
+				const auto compiled = AdapterCompiler::calls;
+				for (unsigned step = 0; step < 8; ++step) {
+					for (auto& eye : args) eye.packedCrops = step % 2 ? crops : PackedCropSources{};
+					ModelResolution::Batch switched;
+					Require(fused.AdditionalBytes(args) == 0 && fused.Prepare(args, switched, result) && AdapterCompiler::calls == compiled,
+						"Fused atlas/single selection compiled or reallocated on transition");
+					SetNativeResidual<Pixel>(device, context, switched);
+					Require(fused.Reconstruct(args, switched, result), "Fused transition reconstruction failed");
+					fused.Commit(args, switched);
+					for (unsigned eye = 0; eye < 2; ++eye) {
+						Require(switched.targets[eye].color.resource == fusedBatch.targets[eye].color.resource,
+							"Fused transition replaced native input storage");
+						const auto pixels = selected[eye].Read<Pixel>(device, context);
+						const auto reference = legacySelected[eye].Read<Pixel>(device, context);
+						for (std::size_t i = 0; i < pixels.size(); ++i)
+							for (unsigned channel = 0; channel < 4; ++channel)
+								Near(pixels[i][channel], reference[i][channel], "Fused transition changed selection or read stale atlas pixels");
+					}
+				}
 			}
 		}
 	}
@@ -1696,6 +1930,13 @@ int main()
 		ComPtr<ID3D11DeviceContext> context;
 		Check(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &device, nullptr, &context));
 		AdapterCompiler::device = device.Get();
+		CheckPackedPlanning();
+		constexpr NeuralRendering::ComputeSubrect tall{ 0, 0, 640, 448 }, wide{ 0, 0, 1600, 384 };
+		constexpr auto tallCapacity = NeuralRendering::Color::Work::AllocationExtent(tall);
+		constexpr auto grownCapacity = NeuralRendering::Color::Work::AllocationExtent(wide, tallCapacity);
+		static_assert(grownCapacity[0] == 1600 && grownCapacity[1] == 448);
+		static_assert(NeuralRendering::Color::Work::AllocationExtent(tall, grownCapacity) == grownCapacity);
+		static_assert(NeuralRendering::Color::Work::AllocationExtent(wide)[1] == 384);
 		for (bool vr : { false, true }) {
 			AdapterCompiler::vr = vr;
 			CheckAdapter(device.Get(), context.Get());

@@ -325,11 +325,6 @@ namespace NeuralRendering::Color
 		       capacityHeight >= roi.height && format == requestedFormat;
 	}
 
-	std::array<std::uint32_t, 2> Work::AllocationExtent(const ComputeSubrect& roi) noexcept
-	{
-		return { (roi.width + 63u) & ~63u, (roi.height + 63u) & ~63u };
-	}
-
 	bool Pipeline::Ensure(ID3D11Device* device, Work& work, const ComputeSubrect& roi, DXGI_FORMAT format, bool diagnostics, HRESULT& allocationResult)
 	{
 		allocationResult = E_INVALIDARG;
@@ -360,7 +355,8 @@ namespace NeuralRendering::Color
 		}
 		if (!work.Fits(roi, format)) {
 			Texture baseline, result;
-			const auto [width, height] = Work::AllocationExtent(roi);
+			// Keep both axes until explicit pressure retirement; wide/tall crops may alternate.
+			const auto [width, height] = Work::AllocationExtent(roi, { work.capacityWidth, work.capacityHeight });
 			if (!CreateTexture(device, baseline, width, height, format, false, allocationResult) || !CreateTexture(device, result, width, height, format, true, allocationResult))
 				return false;
 			work.baseline = std::move(baseline);

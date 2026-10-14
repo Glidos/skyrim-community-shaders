@@ -181,8 +181,34 @@ namespace
 		tuning.intensity = 1.7f;
 		Require(run(warm, 2, layout) && evaluations.back().at("DLSSNR.Reset") == 0 && creates.size() == created, "tuning recreated or repeated first-use reset");
 		Require(evaluations.back().at("DLSSNR.Intensity") == std::bit_cast<std::uint32_t>(1.7f), "cached feature lost live tuning");
+		for (bool upscale : { false, true }) {
+			Runtime moving;
+			const UpscalingDLSS::Extent backing{ 2048, 1024 }, guides = upscale ? UpscalingDLSS::Extent{ 1365, 683 } : backing;
+			const auto demand = [&](ComputeSubrect region) {
+				return BuildNativeEvaluationLayout(backing, guides, backing, backing, region,
+					{ true, float(guides.width), float(guides.height) }, upscale);
+			};
+			for (unsigned eye = 0; eye < 2; ++eye)
+				Require(run(moving, eye, demand({ 240, 80, 1600, 880 }), &resource, true), "Single ROI creation failed");
+			const auto initialCreates = creates.size();
+			for (unsigned frame = 0; frame < 32; ++frame) {
+				for (unsigned eye = 0; eye < 2; ++eye) {
+					const auto rect = (frame + eye) % 2 ? ComputeSubrect{ 0, 0, 640 + (frame % 3) * 64, 512 } :
+					                                      ComputeSubrect{ 240 + frame, 80, 1500, 880 };
+					const auto projected = demand(rect);
+					Require(run(moving, eye, projected, &resource, true) && creates.size() == initialCreates,
+						"Moving single/atlas rectangles recreated a native feature");
+					Require(evaluations.back().at("DLSSNR.OutputSubrectWidth") == rect.width &&
+								evaluations.back().at("DLSSNR.OutputSubrectBaseX") == rect.baseX &&
+								evaluations.back().at("DLSSNR.DepthSubrectWidth") == projected.depth.valid.width &&
+								evaluations.back().at("DLSSNR.UIAlphaSubrectHeight") == rect.height,
+						"Retained native feature ignored changed valid rectangles");
+				}
+			}
+		}
+		const auto createsAfterTransitions = creates.size();
 		auto changed = BuildNativeEvaluationLayout({ 640, 192 }, { 640, 192 }, { 640, 192 }, {}, { 0, 0, 640, 192 }, { true, 640.f, 192.f }, false);
-		Require(!warm.PrepareFeature(&commands, 2, changed) && creates.size() == created && warm.featureHandles_[2], "live incompatible feature was replaced");
+		Require(!warm.PrepareFeature(&commands, 2, changed) && creates.size() == createsAfterTransitions && warm.featureHandles_[2], "live incompatible feature was replaced");
 		Runtime failed;
 		providerCreateResult = 1;
 		Require(!failed.PrepareFeature(&commands, 2, layout) && failed.featureHandles_[2] && !failed.featureConfigurations_[2].valid, "failed non-null handle was lost or advertised reusable");

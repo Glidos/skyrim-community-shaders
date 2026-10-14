@@ -332,14 +332,14 @@ class MemoryRecoveryContracts(unittest.TestCase):
             self.assertTrue(f"result = device->{operation}(" in allocation)
         self.assertTrue("return SUCCEEDED(result)" in allocation)
         ensure = body(PIPELINE, "bool Pipeline::Ensure(")
-        self.assertTrue("Work::AllocationExtent(roi)" in ensure)
+        self.assertTrue("Work::AllocationExtent(roi, { work.capacityWidth, work.capacityHeight })" in ensure)
         self.assertTrue("work.Fits(roi, format)" in ensure)
         self.assertTrue("format, false, allocationResult)" in ensure)
         self.assertTrue("format, true, allocationResult)" in ensure)
         self.assertTrue("RendererStage::ResourceCreation, colorResult" in RENDERER)
         estimate = body(RENDERER, "std::optional<std::uint64_t> Renderer::State::EstimateAdditionalMemoryLocked(")
         self.assertTrue("replacingBackend || !slot.resourcesValid" in estimate)
-        self.assertTrue("Color::Work::AllocationExtent(roi)" in estimate)
+        self.assertTrue("Color::Work::AllocationExtent(roi, retained)" in estimate)
         self.assertTrue("slot.colorWork.Fits(roi, resource.output.desc.Format)" in estimate)
 
     def test_device_change_and_reset_invalidate_monitoring(self):

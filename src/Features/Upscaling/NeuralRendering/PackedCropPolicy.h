@@ -6,6 +6,7 @@
 
 #include <array>
 #include <limits>
+#include <optional>
 #include <span>
 #include <tuple>
 #include <vector>
@@ -46,6 +47,41 @@ namespace NeuralRendering
 		bool operator==(const PackedCropLayout&) const = default;
 	};
 
+	/** Evaluated canvas capacity reserves empty space within the single-region backing. */
+	struct PackedCropLayoutRequest
+	{
+		UpscalingDLSS::Extent capacity{}, minimumCapacity{};
+		std::uint64_t baselinePixels = std::numeric_limits<std::uint64_t>::max();
+		bool reserveCapacity = false;
+	};
+	inline constexpr std::uint32_t kPackedCropCapacityQuantum = 64;
+	inline constexpr std::uint32_t kPackedCropAdmissionFrames = 8;
+	inline constexpr std::uint32_t kPackedCropRecoveryFrames = 16;
+
+	/** CPU-only admission history; retaining this state retains no GPU allocations. */
+	struct PackedCropCapacityState
+	{
+		UpscalingDLSS::Extent capacity{};
+		std::uint32_t stableFrames = 0, requiredFrames = kPackedCropAdmissionFrames;
+		std::uint32_t lastFrame = 0;
+		bool observed = false, active = false;
+	};
+
+	/** One source-matched layout is reused by projection, accounting and preparation. */
+	struct PackedCropPlan
+	{
+		PackedCropSources sources{};
+		UpscalingDLSS::Extent source{}, model{};
+		ComputeSubrect available{};
+		std::uint64_t baselinePixels = 0;
+		PackedCropLayout layout{};
+		bool Matches(const PackedCropSources& crops, UpscalingDLSS::Extent sourceSize, UpscalingDLSS::Extent modelSize,
+			const ComputeSubrect& region, std::uint64_t baseline) const noexcept
+		{
+			return sources == crops && source == sourceSize && model == modelSize && available == region && baselinePixels == baseline;
+		}
+	};
+
 #ifdef DEVBENCH_BRIDGE_ENABLED
 	/** CPU decisions are captured at admission, independently of GPU coverage. */
 	enum class PackedCropReason
@@ -72,6 +108,8 @@ namespace NeuralRendering
 		InsufficientAreaSaving,
 		ProviderTypeChanged,
 		InvalidProjection,
+		CapacitySettling,
+		ShadersUnavailable,
 		Admitted
 	};
 	enum class PackedCropStage
@@ -95,9 +133,17 @@ namespace NeuralRendering
 		ComputeSubrect available{};
 	};
 
+	struct PackedCropCapacityDiagnostics
+	{
+		PackedCropReason reason = PackedCropReason::NotExamined;
+		UpscalingDLSS::Extent capacity{};
+		std::uint32_t stableFrames = 0, requiredFrames = 0;
+	};
+
 	struct PackedCropAdmissionDiagnostics
 	{
 		PackedCropPlanningDiagnostics planning{};
+		PackedCropCapacityDiagnostics capacity{};
 		PackedCropStage stage = PackedCropStage::SourcePlanning;
 		PackedCropReason reason = PackedCropReason::NotExamined;
 		std::uint32_t frame = std::numeric_limits<std::uint32_t>::max(), sourceFrame = std::numeric_limits<std::uint32_t>::max();
@@ -301,7 +347,8 @@ namespace NeuralRendering
 		,
 		PackedCropAdmissionDiagnostics* diagnostics = nullptr
 #endif
-		) noexcept
+		,
+		PackedCropLayoutRequest request = {}) noexcept
 	{
 #ifdef DEVBENCH_BRIDGE_ENABLED
 		if (diagnostics) {
@@ -321,7 +368,10 @@ namespace NeuralRendering
 		if (sources.count < 2 || sources.count > kMaximumPackedCrops ||
 			!available.Fits(sourceSize.width, sourceSize.height) || sourceSize.width > kMaximumNeuralImageDimension ||
 			sourceSize.height > kMaximumNeuralImageDimension || !modelSize.IsValid() ||
-			modelSize.width > kMaximumNeuralImageDimension || modelSize.height > kMaximumNeuralImageDimension) {
+			modelSize.width > kMaximumNeuralImageDimension || modelSize.height > kMaximumNeuralImageDimension ||
+			request.capacity.width > kMaximumNeuralImageDimension || request.capacity.height > kMaximumNeuralImageDimension ||
+			request.minimumCapacity.width > kMaximumNeuralImageDimension || request.minimumCapacity.height > kMaximumNeuralImageDimension ||
+			((request.capacity.width == 0) != (request.capacity.height == 0))) {
 #ifdef DEVBENCH_BRIDGE_ENABLED
 			return reject(sources.count < 2 || sources.count > kMaximumPackedCrops ? PackedCropReason::InvalidCropCount : PackedCropReason::InvalidSourceBounds);
 #else
@@ -356,10 +406,11 @@ namespace NeuralRendering
 #endif
 			}
 		}
-		const auto baseline = MapComputeSubrect(available, sourceSize.width, sourceSize.height, modelSize.width, modelSize.height).Area();
+		const auto layoutBaseline = MapComputeSubrect(available, sourceSize.width, sourceSize.height, modelSize.width, modelSize.height).Area();
+		const auto baseline = std::min(request.baselinePixels, layoutBaseline);
 #ifdef DEVBENCH_BRIDGE_ENABLED
 		if (diagnostics)
-			diagnostics->layoutBaselineModelPixels = baseline;
+			diagnostics->layoutBaselineModelPixels = layoutBaseline;
 #endif
 		const auto align = [](std::uint32_t value) { return (value + kPackedCropAlignment - 1u) / kPackedCropAlignment * kPackedCropAlignment; };
 		for (bool vertical : { false, true }) {
@@ -382,17 +433,27 @@ namespace NeuralRendering
 				// Native minimum dimensions do not require a halo around every source crop.
 				layout.extent.width = std::max(layout.extent.width, kMinimumExperimentalContextExtent);
 				layout.extent.height = std::max(layout.extent.height, kMinimumExperimentalContextExtent);
+				if (request.capacity.IsValid()) {
+					if (layout.extent.width > request.capacity.width || layout.extent.height > request.capacity.height)
+						continue;
+					layout.extent = request.capacity;
+				} else if (request.reserveCapacity) {
+					const auto reserve = [](std::uint32_t size, std::uint32_t minimum) {
+						return (std::max(size, minimum) + kPackedCropCapacityQuantum - 1u) / kPackedCropCapacityQuantum * kPackedCropCapacityQuantum;
+					};
+					layout.extent = { reserve(layout.extent.width, request.minimumCapacity.width), reserve(layout.extent.height, request.minimumCapacity.height) };
+				}
 				const auto area = static_cast<std::uint64_t>(layout.extent.width) * layout.extent.height;
 				const auto bestArea = static_cast<std::uint64_t>(best.extent.width) * best.extent.height;
 #ifdef DEVBENCH_BRIDGE_ENABLED
-				if (diagnostics && layout.extent.width <= kMaximumNeuralImageDimension && layout.extent.height <= kMaximumNeuralImageDimension &&
+				if (diagnostics && layout.extent.width <= modelSize.width && layout.extent.height <= modelSize.height &&
 					(!diagnostics->candidateAreaAvailable || area < diagnostics->candidateModelPixels)) {
 					diagnostics->candidateAreaAvailable = true;
 					diagnostics->candidateModelPixels = area;
 					diagnostics->candidateExtent = layout.extent;
 				}
 #endif
-				if (layout.extent.width <= kMaximumNeuralImageDimension && layout.extent.height <= kMaximumNeuralImageDimension &&
+				if (layout.extent.width <= modelSize.width && layout.extent.height <= modelSize.height &&
 					area * 4u <= baseline * 3u && (!best.count || area < bestArea))
 					best = layout;
 			}
@@ -405,5 +466,74 @@ namespace NeuralRendering
 		}
 #endif
 		return best;
+	}
+
+	/** Repack within retained capacity; unstable layouts use the ordinary single-region path. */
+	inline PackedCropLayout ResolvePackedCropLayout(const PackedCropSources& sources, UpscalingDLSS::Extent sourceSize,
+		UpscalingDLSS::Extent modelSize, const ComputeSubrect& available, std::uint64_t baselinePixels,
+		std::uint32_t frame, PackedCropCapacityState& state
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		,
+		PackedCropAdmissionDiagnostics* diagnostics = nullptr,
+		std::optional<PackedCropAdmissionDiagnostics>* retainedRejection = nullptr
+#endif
+		) noexcept
+	{
+		const bool newFrame = !state.observed || frame != state.lastFrame;
+		if (state.observed && newFrame && frame - state.lastFrame != 1u)
+			state.stableFrames = 0;
+		state.lastFrame = frame;
+		state.observed = true;
+		const auto build = [&](PackedCropLayoutRequest request) {
+			request.baselinePixels = baselinePixels;
+			return BuildPackedCropLayout(sources, sourceSize, modelSize, available
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				,
+				diagnostics
+#endif
+				,
+				request);
+		};
+		auto layout = state.capacity.IsValid() ? build({ .capacity = state.capacity }) : PackedCropLayout{};
+		if (state.active) {
+			if (layout.count)
+				return layout;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			if (retainedRejection && diagnostics) {
+				*retainedRejection = *diagnostics;
+				(*retainedRejection)->capacity = { diagnostics->reason, state.capacity, state.stableFrames, state.requiredFrames };
+				(*retainedRejection)->modelAreasAvailable = true;
+				(*retainedRejection)->effectiveBaselineModelPixels = diagnostics->layoutBaselineModelPixels ?
+				                                                         std::min(baselinePixels, diagnostics->layoutBaselineModelPixels) :
+				                                                         baselinePixels;
+			}
+#endif
+			state.active = false;
+			state.stableFrames = 0;
+			state.requiredFrames = kPackedCropRecoveryFrames;
+		}
+		if (!layout.count) {
+			layout = build({ .minimumCapacity = state.capacity, .reserveCapacity = true });
+			// A smaller viable envelope can be considered only through the full settling window.
+			if (!layout.count && state.capacity.IsValid())
+				layout = build({ .reserveCapacity = true });
+			state.capacity = layout.extent;
+			state.stableFrames = 0;
+		}
+		if (!layout.count)
+			return {};
+		if (newFrame && state.stableFrames < state.requiredFrames)
+			++state.stableFrames;
+		if (state.stableFrames >= state.requiredFrames) {
+			state.active = true;
+			return layout;
+		}
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		if (diagnostics) {
+			diagnostics->stage = PackedCropStage::AreaAdmission;
+			diagnostics->reason = PackedCropReason::CapacitySettling;
+		}
+#endif
+		return {};
 	}
 }
