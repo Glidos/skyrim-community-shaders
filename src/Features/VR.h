@@ -263,7 +263,7 @@ public:
 		bool EnableDynamicCubemapVisibilityThrottle = false;
 
 		// VR Menu Overlay positioning settings
-		bool UnlockMenuPositionAndSize = false;         ///< Allow custom desktop and headset menu placement
+		bool UnlockMenuPositionAndSize = false;         ///< Allow edits to desktop and headset menu placement
 		float VRMenuScale = Config::kDefaultMenuScale;  ///< Scale factor for overlay UI (1.5-2.0)
 		int VRMenuPositioningMethod = 1;                ///< 0 = HMD relative, 1 = Fixed world position
 
@@ -422,11 +422,11 @@ public:
 
 	void UpdateVROverlayPosition();
 	bool UseFixedWorldMenuPositioning() const;
-	/** Return the locked or saved headset presentation mode. */
+	/** Return the saved headset presentation mode or the status-overlay mode. */
 	[[nodiscard]] Settings::OverlayAttachMode GetEffectiveMenuAttachMode() const;
 	/** Return the controller selected for the effective headset presentation. */
 	[[nodiscard]] ControllerDevice GetEffectiveMenuAttachController() const;
-	/** Return the locked default or saved custom headset menu scale. */
+	/** Return the saved menu scale or the status-overlay default. */
 	[[nodiscard]] float GetEffectiveMenuScale() const;
 	/** Compensate HMD overlay dimensions for distance, preserving apparent size. */
 	[[nodiscard]] float GetEffectiveHMDMenuScale() const;
@@ -436,11 +436,11 @@ public:
 	void ResetMenuLayout();
 	/** Beam visibility follows tracked hands independently of menu intersections. */
 	[[nodiscard]] bool ShouldShowWandBeam(ControllerDevice a_controller) const;
-	/** Return the locked or saved HMD-relative offset. */
+	/** Return the saved HMD-relative offset or the status-overlay default. */
 	[[nodiscard]] Vector3 GetEffectiveHMDMenuOffset() const;
 	/** Return the controller-relative offset for the effective presentation. */
 	[[nodiscard]] Vector3 GetEffectiveControllerMenuOffset() const;
-	/** @brief Enables or restores the safe lock for desktop and headset menu placement. */
+	/** Allow or prevent placement edits without changing saved values or the anchor. */
 	void SetMenuLayoutUnlocked(bool a_unlocked);
 	void UpdateVROverlayControllerPosition();
 
@@ -495,7 +495,8 @@ public:
 	[[nodiscard]] ImVec4 GetWandPointerColor(ControllerDevice a_controller = ControllerDevice::Both) const;
 	/** Matching cursor core colour for the same idle or pressed pointer state. */
 	[[nodiscard]] ImVec4 GetWandPointerDotColor() const;
-	void UpdateOverlayMenuStateFromInput();
+	/** Dispatch a newly pressed menu shortcut once; consume its activating event. */
+	bool UpdateOverlayMenuStateFromInput(bool a_allowActivation);
 	/** Tests a binding against the current physical controller states. */
 	bool IsControllerComboPressed(const std::vector<ButtonCombo>& a_combos) const;
 	/** Latches every input event; only a fresh press may activate the binding. */
@@ -646,7 +647,6 @@ public:
 		Matrix m = Matrix::Identity;
 		bool initialized = false;
 	} fixedWorldOverlayPosition;
-	OverlayWorldPosition savedUnlockedFixedWorldOverlayPosition;  ///< Custom anchor retained while the recoverable lock is active
 	bool fixedWorldOverlayReanchorRequested = true;
 
 	struct OverlayDragState
@@ -695,6 +695,7 @@ public:
 		NeuralRenderingToggle
 	};
 
+	std::array<bool, 4> menuBindingHeld{};
 	bool neuralRenderingToggleHeld = false;
 	bool isCapturingCombo = false;
 	ComboType currentComboType = ComboType::None;

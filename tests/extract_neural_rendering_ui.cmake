@@ -72,7 +72,7 @@ file(WRITE "${OUTPUT_DIRECTORY}/neural_rendering_ui_under_test.h"
 
 extract("src/Features/VR/Input.cpp"
     "bool VR::IsControllerComboPressed("
-    "void VR::UpdateOverlayMenuStateFromInput()" controller_toggle)
+    "void VR::ProcessVREvents(" controller_toggle)
 extract("src/Features/VR/Input.cpp"
     "void VR::ProcessVREvents("
     "void VR::ProcessVRButtonEvent(" controller_events)

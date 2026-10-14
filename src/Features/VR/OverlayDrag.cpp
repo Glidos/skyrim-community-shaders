@@ -463,49 +463,38 @@ void VR::RequestFixedWorldMenuReanchor()
 
 void VR::UpdateFixedWorldPositioning(const Matrix& a_hmdWorld)
 {
-	if (!UseFixedWorldMenuPositioning())
+	if (!UseFixedWorldMenuPositioning() ||
+		(fixedWorldOverlayPosition.initialized && !fixedWorldOverlayReanchorRequested))
 		return;
 
 	const Vector3 hmdPosition = a_hmdWorld.Translation();
 	if (!IsFiniteVector(hmdPosition))
 		return;
-	if (!fixedWorldOverlayPosition.initialized || fixedWorldOverlayReanchorRequested) {
-		// Reanchoring uses bounded depth at eye height, without accumulating drag offsets.
-		Vector3 hmdBackward{ a_hmdWorld._31, 0.0f, a_hmdWorld._33 };
+	// Reanchoring uses bounded depth at eye height, without accumulating drag offsets.
+	Vector3 hmdBackward{ a_hmdWorld._31, 0.0f, a_hmdWorld._33 };
+	if (!IsFiniteVector(hmdBackward))
+		return;
+	if (hmdBackward.LengthSquared() < 1e-6f) {
+		// Looking vertically still retains heading through the headset right axis.
+		hmdBackward = Vector3{ a_hmdWorld._11, 0.0f, a_hmdWorld._13 }.Cross(Vector3::UnitY);
 		if (!IsFiniteVector(hmdBackward) || hmdBackward.LengthSquared() < 1e-6f)
-			hmdBackward = Vector3::UnitZ;
-		else
-			hmdBackward.Normalize();
-		Vector3 hmdRight = Vector3::UnitY.Cross(hmdBackward);
-		if (hmdRight.LengthSquared() < 1e-6f)
-			hmdRight = Vector3::UnitX;
-		else
-			hmdRight.Normalize();
-
-		const float depth = GetEffectiveHMDMenuOffset().z;
-		const Vector3 anchor{
-			hmdPosition.x + hmdRight.x * Config::kDefaultHMDOffsetX + hmdBackward.x * depth,
-			hmdPosition.y,
-			hmdPosition.z + hmdRight.z * Config::kDefaultHMDOffsetX + hmdBackward.z * depth,
-		};
-		Matrix transform;
-		if (!MakeVerticalFacingTransform(anchor, hmdPosition, transform))
 			return;
-
-		fixedWorldOverlayPosition.m = transform;
-		fixedWorldOverlayPosition.initialized = true;
-		fixedWorldOverlayReanchorRequested = false;
-		return;
 	}
+	hmdBackward.Normalize();
 
-	if (!VRMenuPositioningPolicy::ShouldTrackHMDYaw(settings.UnlockMenuPositionAndSize))
+	const float depth = GetEffectiveHMDMenuOffset().z;
+	const Vector3 anchor{
+		hmdPosition.x + hmdBackward.x * depth,
+		hmdPosition.y,
+		hmdPosition.z + hmdBackward.z * depth,
+	};
+	Matrix transform;
+	if (!MakeVerticalFacingTransform(anchor, hmdPosition, transform))
 		return;
 
-	// Preserve the anchor exactly; only yaw the vertical panel toward the HMD.
-	const Vector3 anchor = fixedWorldOverlayPosition.m.Translation();
-	Matrix facingTransform;
-	if (MakeVerticalFacingTransform(anchor, hmdPosition, facingTransform))
-		fixedWorldOverlayPosition.m = facingTransform;
+	fixedWorldOverlayPosition.m = transform;
+	fixedWorldOverlayPosition.initialized = true;
+	fixedWorldOverlayReanchorRequested = false;
 }
 
 void VR::UpdateFixedWorldPositioning()

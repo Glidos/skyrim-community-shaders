@@ -1871,13 +1871,13 @@ void TextureStreaming::DrawSettings()
 		Util::Text::WrappedWarning(streamingConflictWarning);
 	else if (!available)
 		Util::Text::WrappedWarning("Texture streaming is unavailable because texture source tracking could not start. Restart the game to try again.");
+	const auto settingsAvailabilityGuard = Util::DisableGuard(!available || !enabled);
 	MenuUI::SettingsPage page("TextureStreaming", {
 													  { "quality", "Texture detail", "Set VRAM reserve and texture detail.", "Streaming controls", true, true, nullptr, nullptr, nullptr, available && enabled },
 													  { "categories", "Coverage", "Optional texture types.", "Additional coverage", true, false, nullptr, nullptr, nullptr, available && enabled },
 													  { "status", "Status", "Current streaming activity.", "Activity and capacity", true, true, nullptr },
 												  });
 	if (page.Is("quality")) {
-		const auto disabled = Util::DisableGuard(!available || !enabled);
 		const auto previousModes = modes;
 		const auto previousOptions = options;
 		const auto previousMaximum = maximum;
@@ -1912,7 +1912,6 @@ void TextureStreaming::DrawSettings()
 			Configure(enabled, maximum, std::nullopt, modes, options);
 	}
 	if (page.Is("categories")) {
-		const auto disabled = Util::DisableGuard(!available || !enabled);
 		const auto previous = categories;
 		const std::array choices{
 			MenuUI::ToggleChoice{ "Landscape", &categories.landscapeStatics, "Landscape-folder textures used by ordinary static meshes." },

@@ -62,8 +62,8 @@ namespace
 		const bool headsetPointer = globals::game::isVR && globals::features::vr.IsMenuPointerInHeadset();
 		const bool useOpenCompositeStableHeader = openComposite && !useSteamVRWindowControls;
 #include "menu_resize_flags_under_test.h"
-		ImGui::SetNextWindowPos(layout.position, lockVRMenuToCanvas ? ImGuiCond_Always : ImGuiCond_FirstUseEver);
-		ImGui::SetNextWindowSize(layout.size, lockVRMenuToCanvas ? ImGuiCond_Always : ImGuiCond_FirstUseEver);
+		ImGui::SetNextWindowPos(layout.position, ImGuiCond_FirstUseEver);
+		ImGui::SetNextWindowSize(layout.size, ImGuiCond_FirstUseEver);
 		ImGui::Begin("CommunityShaders", nullptr, windowFlags);
 		auto* window = ImGui::GetCurrentWindow();
 		ImGui::TextUnformatted("Settings header");

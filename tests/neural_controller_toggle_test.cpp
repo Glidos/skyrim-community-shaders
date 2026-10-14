@@ -42,6 +42,10 @@ namespace RE
 	{
 		constexpr unsigned kButton = 0, kThumbstick = 1;
 	}
+	struct TweenMenu
+	{
+		static constexpr const char* MENU_NAME = "TweenMenu";
+	};
 	struct BSOpenVRControllerDevice
 	{
 		struct Keys
@@ -70,8 +74,19 @@ namespace globals
 {
 	struct Menu
 	{
-		bool IsEnabled = true, overlayVisible = false;
-		bool IsMenuSessionOpen() { return IsEnabled; }
+		bool IsEnabled = true, overlayVisible = false, editorOpen = false;
+		unsigned opens = 0, closes = 0;
+		bool IsMenuSessionOpen() { return IsEnabled || editorOpen; }
+		void OpenMenu(bool)
+		{
+			IsEnabled = true;
+			++opens;
+		}
+		void CloseMenu()
+		{
+			IsEnabled = editorOpen = false;
+			++closes;
+		}
 	} menuInstance;
 	auto* menu = &menuInstance;
 	struct State
@@ -83,7 +98,8 @@ namespace globals
 	{
 		struct UI
 		{
-			bool IsMenuOpen(const char*) { return false; }
+			bool tweenOpen = false;
+			bool IsMenuOpen(const char*) { return tweenOpen; }
 		} uiInstance;
 		auto* ui = &uiInstance;
 	}
@@ -104,12 +120,16 @@ struct VR
 {
 	struct Settings
 	{
-		std::vector<ButtonCombo> VRNeuralRenderingToggleKeys;
+		std::vector<ButtonCombo> VRNeuralRenderingToggleKeys, VRMenuOpenKeys, VRMenuCloseKeys, VROverlayOpenKeys, VROverlayCloseKeys;
 		bool VRMenuControllerDiagnosticsTestMode = false;
 	} settings;
 	std::array<RE::ButtonState, 64> primaryControllerState{}, secondaryControllerState{};
 	bool lastKnownLeftHandedMode = false;
 	bool isCapturingCombo = false, neuralRenderingToggleHeld = false;
+	std::array<bool, 4> menuBindingHeld{};
+	bool canOpenFromWorld = true;
+	bool CanOpenMenuFromWorld() const { return canOpenFromWorld; }
+	bool UpdateOverlayMenuStateFromInput(bool);
 	bool ocuPointerAvailable = false;
 	unsigned pointerRefreshes = 0, wandResets = 0;
 	void RefreshOCUPointerState() { ++pointerRefreshes; }
@@ -205,4 +225,36 @@ int main()
 	vr.ocuPointerAvailable = true;
 	events({});
 	require(count == 7 && vr.pointerRefreshes == refreshes + 2 && rawReleaseChecks == releases + 1);
+	// Fast taps, shared open/close chords, and menu transitions are processed per edge.
+	const auto grip = RE::BSOpenVRControllerDevice::Keys::kGrip;
+	const auto xa = RE::BSOpenVRControllerDevice::Keys::kXA;
+	const auto by = RE::BSOpenVRControllerDevice::Keys::kBY;
+	auto& menu = globals::menuInstance;
+	menu.IsEnabled = false;
+	vr.settings.VRNeuralRenderingToggleKeys.clear();
+	vr.settings.VRMenuOpenKeys = { { ControllerDevice::Primary, xa }, { ControllerDevice::Primary, by } };
+	vr.settings.VRMenuCloseKeys = vr.settings.VRMenuOpenKeys;
+	events({ { 0, xa, 0, true, true }, { 0, by, 0, true, true }, { 0, xa, 0, false, false }, { 0, by, 0, false, false } });
+	require(menu.opens == 1 && menu.IsEnabled && menu.closes == 0);
+	events({ { 0, xa, 0, true, true }, { 0, by, 0, true, true }, { 0, xa, 0, true, false }, { 0, by, 0, true, false } });
+	require(menu.opens == 1 && !menu.IsEnabled && menu.closes == 1);
+	events({ { 0, grip, 0, true, true }, { 0, xa, 0, true, false } });
+	require(menu.opens == 1 && menu.closes == 1);
+	events({ { 0, xa, 0, false, false }, { 0, by, 0, false, false } });
+	vr.canOpenFromWorld = false;
+	events({ { 0, xa, 0, true, true }, { 0, by, 0, true, true } });
+	require(menu.opens == 1);
+	globals::game::uiInstance.tweenOpen = true;
+	events({ { 0, by, 0, false, false }, { 0, by, 0, true, true } });
+	require(menu.opens == 2 && menu.IsEnabled);
+	vr.isCapturingCombo = true;
+	events({ { 0, by, 0, false, false }, { 0, by, 0, true, true } });
+	vr.isCapturingCombo = false;
+	events({ { 0, by, 0, true, false } });
+	require(menu.closes == 1);
+	events({ { 0, by, 0, false, false } });
+	menu.IsEnabled = false;
+	menu.editorOpen = true;
+	events({ { 0, by, 0, true, true } });
+	require(menu.closes == 2 && !menu.IsMenuSessionOpen());
 }

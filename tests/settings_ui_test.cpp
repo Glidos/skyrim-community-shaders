@@ -251,6 +251,17 @@ struct PerformanceTuningRenderer
 };
 namespace Util
 {
+	namespace Text
+	{
+		void WrappedWarning(const char* text)
+		{
+			if (ImGui::GetCurrentContext()->CurrentItemFlags & ImGuiItemFlags_Disabled)
+				throw std::runtime_error("SPS warning must remain readable outside the disabled controls");
+			ImGui::PushStyleColor(ImGuiCol_Text, globals::menu->GetTheme().StatusPalette.Warning);
+			ImGui::TextWrapped("%s", text);
+			ImGui::PopStyleColor();
+		}
+	}
 	bool HoverTooltipWrapper() { return false; }
 	std::map<std::string, ImRect> controls;
 	std::map<std::string, ImGuiHoveredFlags> tooltipFlags;

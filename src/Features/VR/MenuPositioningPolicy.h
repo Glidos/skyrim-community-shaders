@@ -21,12 +21,6 @@ namespace VRMenuPositioningPolicy
 		return a_scale * std::sqrt(a_distance / a_referenceDistance);
 	}
 
-	template <class T>
-	constexpr T SelectEffectiveValue(bool a_layoutUnlocked, T a_savedValue, T a_lockedValue)
-	{
-		return a_layoutUnlocked ? a_savedValue : a_lockedValue;
-	}
-
 	constexpr bool UseFixedWorld(int a_positioningMethod)
 	{
 		return a_positioningMethod == 1;
@@ -42,13 +36,4 @@ namespace VRMenuPositioningPolicy
 		return a_layoutUnlocked && a_dragEnabled;
 	}
 
-	constexpr bool ShouldReanchorOnOpen(bool a_layoutUnlocked)
-	{
-		return !a_layoutUnlocked;
-	}
-
-	constexpr bool ShouldTrackHMDYaw(bool a_layoutUnlocked)
-	{
-		return !a_layoutUnlocked;
-	}
 }

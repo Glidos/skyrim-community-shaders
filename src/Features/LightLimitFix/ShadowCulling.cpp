@@ -253,13 +253,17 @@ namespace LightLimitFixDetail::ShadowCulling
 	}
 	void DrawSettings(Settings& settings, bool advanced)
 	{
-		ImGui::SeparatorText("Shadow culling");
-		ImGui::TextWrapped("Native shadow maps; independent of contact shadows.");
-		auto disabled = Util::DisableGuard(!available.load());
+		const bool unavailable = conflict || !available.load();
+		{
+			const auto disabled = Util::DisableGuard(unavailable);
+			ImGui::SeparatorText("Shadow culling");
+		}
 		if (conflict)
-			ImGui::TextWrapped("SPS owns shadow culling. Disable SPS and restart to use CSX native culling.");
+			Util::Text::WrappedWarning("SPS owns shadow culling. Disable SPS and restart to use CSX native culling.");
 		else if (!failure.empty())
 			ImGui::TextWrapped("Native shadow culling is unavailable: %s", failure.c_str());
+		const auto disabled = Util::DisableGuard(unavailable);
+		ImGui::TextWrapped("Native shadow maps; independent of contact shadows.");
 		Util::Widgets::Checkbox("Sun shadows", &settings.sun);
 		Util::AddTooltip("Skip tiny distant sun-shadow casters. Both VR eyes and long shadows near the horizon remain protected.");
 		ImGui::Spacing();

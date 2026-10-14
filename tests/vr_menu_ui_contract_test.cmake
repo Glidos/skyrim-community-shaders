@@ -60,16 +60,10 @@ assert_section_contains(
     "effective headset scale policy"
 )
 assert_section_contains(
-    "void VR::SetMenuLayoutUnlocked(bool a_unlocked)"
-    "void VR::UpdateVROverlayPosition()"
-    "savedUnlockedFixedWorldOverlayPosition = fixedWorldOverlayPosition"
-    "menu layout relock transition"
-)
-assert_section_contains(
-    "void VR::SetMenuLayoutUnlocked(bool a_unlocked)"
-    "void VR::UpdateVROverlayPosition()"
-    "fixedWorldOverlayPosition = savedUnlockedFixedWorldOverlayPosition"
-    "menu layout unlock transition"
+    "void DrawHeadsetMenuSettings()\n\t{"
+    "void DrawMenuSettings()\n\t{"
+    "Util::DisableGuard placementLocked(!settings.UnlockMenuPositionAndSize)"
+    "placement edit lock"
 )
 
 foreach(_required_behavior IN ITEMS

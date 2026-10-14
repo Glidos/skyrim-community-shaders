@@ -305,94 +305,41 @@ void VR::UpdateNeuralRenderingToggleFromInput(bool a_allowActivation)
 	neuralRenderingToggleHeld = pressed;
 }
 
-void VR::UpdateOverlayMenuStateFromInput()
+bool VR::UpdateOverlayMenuStateFromInput(bool a_allowActivation)
 {
-	if (this->isCapturingCombo) {
-		if (globals::menu && !globals::menu->IsMenuSessionOpen()) {
-			ResetMenuInputRuntimeState();
-		}
-		return;
-	}
+	const std::array<bool, 4> pressed{
+		IsControllerComboPressed(settings.VRMenuOpenKeys),
+		IsControllerComboPressed(settings.VRMenuCloseKeys),
+		IsControllerComboPressed(settings.VROverlayOpenKeys),
+		IsControllerComboPressed(settings.VROverlayCloseKeys)
+	};
+	const auto previous = menuBindingHeld;
+	menuBindingHeld = pressed;
+	if (!globals::menu || isCapturingCombo || settings.VRMenuControllerDiagnosticsTestMode || !a_allowActivation)
+		return false;
 
-	if (globals::menu == nullptr)
-		return;
-
-	bool& isEnabled = globals::menu->IsEnabled;
-	bool& overlayEnabled = globals::menu->overlayVisible;
-	bool& testMode = settings.VRMenuControllerDiagnosticsTestMode;
+	const auto newlyPressed = [&](size_t index) { return pressed[index] && !previous[index]; };
 	const bool menuSessionOpen = globals::menu->IsMenuSessionOpen();
-
-	if (testMode) {
-		if (!isEnabled) {
-			ResetMenuInputRuntimeState();
-			return;
-		}
-		return;
+	const bool canOpen = CanOpenMenuFromWorld() || (globals::state && globals::state->isMainMenuOpen) ||
+	                     (globals::game::ui && globals::game::ui->IsMenuOpen(RE::TweenMenu::MENU_NAME));
+	// Shared open/close bindings fire once, even if several device events share a frame.
+	if (newlyPressed(0) && !menuSessionOpen && canOpen) {
+		globals::menu->OpenMenu(true);
+		return true;
 	}
-
-	bool uiMenusOpen = globals::state->isMainMenuOpen ||
-	                   (globals::game::ui && globals::game::ui->IsMenuOpen(RE::TweenMenu::MENU_NAME));
-
-	const bool menuOpenPressed = IsControllerComboPressed(settings.VRMenuOpenKeys);
-	const bool menuClosePressed = IsControllerComboPressed(settings.VRMenuCloseKeys);
-	const bool overlayOpenPressed = IsControllerComboPressed(settings.VROverlayOpenKeys);
-	const bool overlayClosePressed = IsControllerComboPressed(settings.VROverlayCloseKeys);
-	const bool canOpenMenuFromWorld = CanOpenMenuFromWorld();
-	const bool canUseMenuBindings = uiMenusOpen || menuSessionOpen || canOpenMenuFromWorld || globals::menu->HasClosedMenuOverlay();
-
-	bool inValidMenuState =
-		uiMenusOpen ||
-		menuSessionOpen ||
-		overlayEnabled ||
-		(canUseMenuBindings && (menuOpenPressed || menuClosePressed)) ||
-		overlayOpenPressed ||
-		overlayClosePressed;
-
-	if (!inValidMenuState)
-		return;
-
-	struct MenuStateMapping
-	{
-		std::function<bool()> condition;
-		std::function<void()> action;
-	};
-
-	std::vector<MenuStateMapping> mappings = {
-		// Open CSX menu when closed
-		{ [&]() {
-			 return menuOpenPressed && !isEnabled && canUseMenuBindings;
-		 },
-			[&]() {
-				globals::menu->OpenMenu(true);
-			} },
-
-		// Close CSX menu when open
-		{ [&]() {
-			 return menuClosePressed && menuSessionOpen;
-		 },
-			[&]() {
-				globals::menu->CloseMenu();
-			} },
-
-		// Open VR overlay when closed
-		{ [&]() {
-			 return overlayOpenPressed && !overlayEnabled;
-		 },
-			[&]() { overlayEnabled = true; } },
-
-		// Close VR overlay when open
-		{ [&]() {
-			 return overlayClosePressed && overlayEnabled;
-		 },
-			[&]() { overlayEnabled = false; } }
-	};
-
-	for (const auto& mapping : mappings) {
-		if (mapping.condition()) {
-			mapping.action();
-			break;
-		}
+	if (newlyPressed(1) && menuSessionOpen) {
+		globals::menu->CloseMenu();
+		return true;
 	}
+	if (newlyPressed(2) && !globals::menu->overlayVisible) {
+		globals::menu->overlayVisible = true;
+		return true;
+	}
+	if (newlyPressed(3) && globals::menu->overlayVisible) {
+		globals::menu->overlayVisible = false;
+		return true;
+	}
+	return false;
 }
 
 void VR::ProcessVREvents(std::vector<Menu::KeyEvent>& vrEvents)
@@ -409,6 +356,7 @@ void VR::ProcessVREvents(std::vector<Menu::KeyEvent>& vrEvents)
 		ResetWandPointingRuntimeState();
 		gBlockRawTriggerUntilRelease.fill(true);
 		neuralRenderingToggleHeld = false;
+		menuBindingHeld = {};
 		primaryControllerState = {};
 		secondaryControllerState = {};
 	}
@@ -438,18 +386,23 @@ void VR::ProcessVREvents(std::vector<Menu::KeyEvent>& vrEvents)
 			{ "A/X", RE::BSOpenVRControllerDevice::IsAButton, RE::BSOpenVRControllerDevice::Keys::kXA },
 			{ "B/Y", RE::BSOpenVRControllerDevice::IsBButton, RE::BSOpenVRControllerDevice::Keys::kBY },
 		};
-		for (const auto& desc : kVRButtons) {
-			if (event.keyCode == desc.keyCode) {
-				RE::ButtonState* state = isPrimary ? &primaryControllerState[desc.keyCode] : isSecondary ? &secondaryControllerState[desc.keyCode] :
-				                                                                                           nullptr;
-				if (state) {
-					state->OnEvent(event.IsPressed(), nowSecs);
+		if (event.eventType == RE::INPUT_EVENT_TYPE::kButton) {
+			for (const auto& desc : kVRButtons) {
+				if (event.keyCode == desc.keyCode) {
+					RE::ButtonState* state = isPrimary ? &primaryControllerState[desc.keyCode] : isSecondary ? &secondaryControllerState[desc.keyCode] :
+					                                                                                           nullptr;
+					if (state) {
+						state->OnEvent(event.IsPressed(), nowSecs);
+					}
+					break;
 				}
-				break;
 			}
 		}
 		// Consume every edge before a later event in this queue can release it.
-		UpdateNeuralRenderingToggleFromInput(event.eventType == RE::INPUT_EVENT_TYPE::kButton && event.IsDown());
+		const bool allowActivation = event.eventType == RE::INPUT_EVENT_TYPE::kButton && event.IsDown();
+		UpdateNeuralRenderingToggleFromInput(allowActivation);
+		if (UpdateOverlayMenuStateFromInput(allowActivation))
+			continue;
 		switch (event.eventType) {
 		case RE::INPUT_EVENT_TYPE::kButton:
 			ProcessVRButtonEvent(event);
@@ -798,9 +751,15 @@ void VR::ResetMenuInputRuntimeState()
 	settings.VRMenuControllerDiagnosticsTestMode = false;
 	overlayDragState = {};
 	ResetWandPointingRuntimeState();
-	primaryControllerState = {};
-	secondaryControllerState = {};
+	// Physical chord state survives UI resets; only device events release held buttons.
 	ReleaseMenuImGuiInputState();
+	for (const bool secondary : { false, true }) {
+		const auto mappings = GetVRInputMappings(secondary);
+		auto* previous = secondary ? gPrevSecondaryVRInputStates : gPrevPrimaryVRInputStates;
+		const auto& physical = secondary ? secondaryControllerState : primaryControllerState;
+		for (size_t index = 0; index < mappings.size(); ++index)
+			previous[index] = physical[mappings[index].keyCode].isPressed;
+	}
 }
 
 void VR::ProcessControllerInputForWandPointingPath(bool testMode, float mouseDeadzone, ImGuiIO& io)

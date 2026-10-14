@@ -546,12 +546,12 @@ void VR::RestoreDefaultSettings()
 
 	overlayDragState = OverlayDragState{};
 	fixedWorldOverlayPosition = OverlayWorldPosition{};
-	savedUnlockedFixedWorldOverlayPosition = OverlayWorldPosition{};
 	fixedWorldOverlayReanchorRequested = true;
 	wandState = WandIntersectionState{};
 	autoHideOverlayStartTimeSecs = 0.0;
 	primaryControllerState = {};
 	secondaryControllerState = {};
+	menuBindingHeld = {};
 	menuOpenCombo = {};
 	menuCloseCombo = {};
 	savedPlayerWorldPos = {};
@@ -1033,8 +1033,7 @@ bool VR::ShouldUseInSceneOverlay() const
 bool VR::CanOpenMenuFromWorld() const
 {
 	return openVRInfo.isCompatible &&
-	       !ShouldUseInSceneOverlay() &&
-	       openVRInfo.hasOverlayInterface &&
+	       (ShouldUseInSceneOverlay() || openVRInfo.hasOverlayInterface) &&
 	       GetEffectiveMenuAttachMode() != AttachMode::None;
 }
 
@@ -1073,7 +1072,7 @@ void VR::DrawOverlay()
 	ImGui::TextUnformatted("How to Use VR CSX:");
 	ImGui::Separator();
 	if (CanOpenMenuFromWorld()) {
-		ImGui::TextWrapped("CSX settings bindings work during gameplay and menus with this SteamVR overlay path.");
+		ImGui::TextWrapped("CSX settings bindings work during gameplay and menus.");
 	} else {
 		ImGui::TextWrapped("Open the Skyrim Main Menu or Tween Menu before using the CSX settings bindings.");
 	}
@@ -1585,7 +1584,7 @@ namespace
 		}
 
 		if (vr.CanOpenMenuFromWorld()) {
-			ImGui::TextWrapped("CSX settings menu (available during gameplay and menus with the current SteamVR overlay path):");
+			ImGui::TextWrapped("CSX settings menu (available during gameplay and menus):");
 		} else {
 			ImGui::TextWrapped("CSX settings menu (open from the Skyrim Main Menu or Tween Menu):");
 		}
@@ -1780,7 +1779,7 @@ namespace
 		if (Util::Widgets::Checkbox("Unlock Menu Position and Size", &layoutUnlocked))
 			vr.SetMenuLayoutUnlocked(layoutUnlocked);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::TextWrapped("Unlock desktop move/resize/docking with the mouse, and saved HMD placement/grip dragging. Relocking keeps saved HMD settings.");
+			ImGui::TextWrapped("Allow changes to menu placement and size. Uncheck to protect the current values and position; nothing is reset.");
 		}
 	}
 
@@ -1796,9 +1795,8 @@ namespace
 				return;
 			}
 
-			if (!settings.UnlockMenuPositionAndSize) {
-				ImGui::TextWrapped("The headset menu opens 2.25 metres ahead at eye height. It remains vertical and turns to face you.");
-			} else {
+			{
+				Util::DisableGuard placementLocked(!settings.UnlockMenuPositionAndSize);
 				const bool showOnHMD = settings.attachMode == VR::Settings::OverlayAttachMode::HMDOnly ||
 				                       settings.attachMode == VR::Settings::OverlayAttachMode::Both;
 				if (showOnHMD) {
@@ -2407,7 +2405,7 @@ namespace
 			const char* description;
 		};
 		const std::array<VRKeyBindingConfig, 5> keyBindingConfigs = {
-			VRKeyBindingConfig{ "Open CSX Menu", &settings.VRMenuOpenKeys, VR::ComboType::MenuOpen, "Open CSX settings from Main or Tween; also during gameplay with the SteamVR overlay path." },
+			VRKeyBindingConfig{ "Open CSX Menu", &settings.VRMenuOpenKeys, VR::ComboType::MenuOpen, "Open CSX settings during gameplay or menus when headset presentation is enabled." },
 			VRKeyBindingConfig{ "Close CSX Menu", &settings.VRMenuCloseKeys, VR::ComboType::MenuClose, "Close CSX settings while its VR menu session is open." },
 			VRKeyBindingConfig{ "Show Performance Overlay", &settings.VROverlayOpenKeys, VR::ComboType::OverlayOpen, "Show the standalone performance panel during gameplay or menus." },
 			VRKeyBindingConfig{ "Hide Performance Overlay", &settings.VROverlayCloseKeys, VR::ComboType::OverlayClose, "Hide the standalone performance panel during gameplay or menus." },
@@ -2420,7 +2418,7 @@ namespace
 
 		ImGui::TextWrapped("CSX settings bindings open the menu from Skyrim Main or Tween Menu.");
 		if (vr.CanOpenMenuFromWorld()) {
-			ImGui::TextWrapped("This SteamVR overlay path also permits opening settings during gameplay.");
+			ImGui::TextWrapped("The active headset presentation also permits opening settings during gameplay.");
 		}
 		ImGui::TextWrapped("Performance Overlay bindings work during gameplay and menus, independently of CSX settings.");
 		ImGui::TextDisabled("Unbound actions are disabled. Save settings to persist binding changes.");
@@ -2965,15 +2963,7 @@ bool VR::UseFixedWorldMenuPositioning() const
 	if (IsClosedMenuStatusOverlayActive())
 		return false;
 
-	// Fixed-world mode uses OpenVR's standing tracking space, which is already
-	// available at the Skyrim main menu. The first valid HMD pose establishes a
-	// recoverable anchor; subsequent updates preserve translation and change yaw
-	// only, so the menu faces the player without following the headset.
-	const int positioningMethod = VRMenuPositioningPolicy::SelectEffectiveValue(
-		settings.UnlockMenuPositionAndSize,
-		settings.VRMenuPositioningMethod,
-		1);
-	return VRMenuPositioningPolicy::UseFixedWorld(positioningMethod);
+	return VRMenuPositioningPolicy::UseFixedWorld(settings.VRMenuPositioningMethod);
 }
 
 VR::Settings::OverlayAttachMode VR::GetEffectiveMenuAttachMode() const
@@ -2981,10 +2971,7 @@ VR::Settings::OverlayAttachMode VR::GetEffectiveMenuAttachMode() const
 	if (IsClosedMenuStatusOverlayActive())
 		return Settings::OverlayAttachMode::HMDOnly;
 
-	return VRMenuPositioningPolicy::SelectEffectiveValue(
-		settings.UnlockMenuPositionAndSize,
-		settings.attachMode,
-		Settings::OverlayAttachMode::HMDOnly);
+	return settings.attachMode;
 }
 
 ControllerDevice VR::GetEffectiveMenuAttachController() const
@@ -2997,10 +2984,7 @@ float VR::GetEffectiveMenuScale() const
 	if (IsClosedMenuStatusOverlayActive())
 		return Config::kDefaultMenuScale;
 
-	return VRMenuPositioningPolicy::SelectEffectiveValue(
-		settings.UnlockMenuPositionAndSize,
-		settings.VRMenuScale,
-		Config::kDefaultMenuScale);
+	return settings.VRMenuScale;
 }
 
 float VR::GetEffectiveHMDMenuScale() const
@@ -3032,7 +3016,6 @@ void VR::ResetMenuLayout()
 	settings.VRMenuControllerOffsetY = defaults.VRMenuControllerOffsetY;
 	settings.VRMenuControllerOffsetZ = defaults.VRMenuControllerOffsetZ;
 	fixedWorldOverlayPosition = {};
-	savedUnlockedFixedWorldOverlayPosition = {};
 	SetFixedOverlayToCurrentHMD();
 	InvalidatePresentedMenuSurfaces();
 	ResetMenuInputRuntimeState();
@@ -3052,11 +3035,8 @@ Vector3 VR::GetEffectiveHMDMenuOffset() const
 		};
 	}
 
-	return VRMenuPositioningPolicy::SelectEffectiveValue(
-		settings.UnlockMenuPositionAndSize,
-		Vector3{ settings.VRMenuOffsetX, settings.VRMenuOffsetY,
-			-VRMenuPositioningPolicy::SanitizeDistance(-settings.VRMenuOffsetZ) },
-		Vector3{ Config::kDefaultHMDOffsetX, Config::kDefaultHMDOffsetY, Config::kDefaultHMDOffsetZ });
+	return Vector3{ settings.VRMenuOffsetX, settings.VRMenuOffsetY,
+		-VRMenuPositioningPolicy::SanitizeDistance(-settings.VRMenuOffsetZ) };
 }
 
 Vector3 VR::GetEffectiveControllerMenuOffset() const
@@ -3073,29 +3053,8 @@ void VR::SetMenuLayoutUnlocked(bool a_unlocked)
 	if (settings.UnlockMenuPositionAndSize == a_unlocked)
 		return;
 
-	const bool preserveUnlockedFixedWorldPosition =
-		settings.UnlockMenuPositionAndSize &&
-		UseFixedWorldMenuPositioning() &&
-		fixedWorldOverlayPosition.initialized;
-	if (!a_unlocked && preserveUnlockedFixedWorldPosition)
-		savedUnlockedFixedWorldOverlayPosition = fixedWorldOverlayPosition;
-
 	settings.UnlockMenuPositionAndSize = a_unlocked;
-	if (a_unlocked) {
-		settings.EnableDragToReposition = true;
-		if (UseFixedWorldMenuPositioning() && savedUnlockedFixedWorldOverlayPosition.initialized) {
-			fixedWorldOverlayPosition = savedUnlockedFixedWorldOverlayPosition;
-			fixedWorldOverlayReanchorRequested = false;
-		}
-	}
-	settings.ClampToValidRanges();
-	overlayDragState = {};
-	InvalidatePresentedMenuSurfaces();
 	ResetMenuInputRuntimeState();
-
-	if (!a_unlocked) {
-		SetFixedOverlayToCurrentHMD();
-	}
 }
 
 void VR::UpdateVROverlayPosition()
@@ -3847,11 +3806,10 @@ void VR::SubmitOverlayFrame()
 
 	UpdateMenuDesktopWindowManagement(menuJustOpened);
 
-	// Locked mode re-anchors on every open. If no HMD pose is available yet, the
-	// first render pose completes the pending request.
+	// Each new menu session starts in front of the current view.
+	// The anchor remains fixed until an explicit placement edit or another open.
 	const auto attachMode = GetEffectiveMenuAttachMode();
 	if (menuJustOpened &&
-		VRMenuPositioningPolicy::ShouldReanchorOnOpen(settings.UnlockMenuPositionAndSize) &&
 		UseFixedWorldMenuPositioning() &&
 		(attachMode == AttachMode::HMDOnly || attachMode == AttachMode::Both)) {
 		SetFixedOverlayToCurrentHMD();

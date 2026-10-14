@@ -28,21 +28,72 @@ namespace globals
 	}
 }
 
+enum class ControllerDevice
+{
+	Primary,
+	Secondary,
+	Both
+};
 struct VR
 {
 	struct Config
 	{
+#include "vr_menu_defaults_under_test.h"
 #include "vr_menu_scale_under_test.h"
 	};
 	struct Settings
 	{
 #include "vr_menu_path_under_test.h"
 		MenuOverlayPath menuOverlayPath = MenuOverlayPath::Auto;
+		enum class OverlayAttachMode
+		{
+			HMDOnly,
+			ControllerOnly,
+			Both,
+			None
+		};
+		OverlayAttachMode attachMode = OverlayAttachMode::HMDOnly;
+		ControllerDevice VRMenuAttachController = ControllerDevice::Secondary;
+		int VRMenuPositioningMethod = 1;
+		bool UnlockMenuPositionAndSize = false, EnableDragToReposition = false;
+		float VRMenuScale = 1.75f, VRMenuOffsetX = .1f, VRMenuOffsetY = -.2f, VRMenuOffsetZ = -2.75f;
+		float VRMenuControllerOffsetX = .2f, VRMenuControllerOffsetY = .3f, VRMenuControllerOffsetZ = .4f;
 	} settings;
 	VRDetection::OpenVRDetectionResult openVRInfo;
 	bool ShouldUseInSceneOverlay() const;
+	bool CanOpenMenuFromWorld() const;
+	bool statusOnly = false;
+	bool IsClosedMenuStatusOverlayActive() const { return statusOnly; }
+	bool UseFixedWorldMenuPositioning() const;
+	Settings::OverlayAttachMode GetEffectiveMenuAttachMode() const;
+	ControllerDevice GetEffectiveMenuAttachController() const;
+	float GetEffectiveMenuScale() const;
+	float GetEffectiveHMDMenuScale() const;
+	Vector3 GetEffectiveHMDMenuOffset() const;
+	Vector3 GetEffectiveControllerMenuOffset() const;
+	void SetMenuLayoutUnlocked(bool);
+	void RequestFixedWorldMenuReanchor();
+	void UpdateFixedWorldPositioning(const Matrix&);
+	unsigned inputResets = 0;
+	void ResetMenuInputRuntimeState() { ++inputResets; }
+	struct
+	{
+		Matrix m = Matrix::Identity;
+		bool initialized = false;
+	} fixedWorldOverlayPosition;
+	bool fixedWorldOverlayReanchorRequested = true;
 };
+using AttachMode = VR::Settings::OverlayAttachMode;
+#include "vr_menu_effective_under_test.h"
+#include "vr_menu_layout_lock_under_test.h"
+#include "vr_menu_offsets_under_test.h"
 #include "vr_menu_route_under_test.h"
+#include "vr_menu_world_admission_under_test.h"
+namespace
+{
+#include "vr_menu_fixed_helpers_under_test.h"
+}
+#include "vr_menu_fixed_update_under_test.h"
 
 namespace
 {
@@ -54,6 +105,8 @@ namespace
 	{
 		VR vr;
 		vr.openVRInfo = { .isCompatible = true, .hasOverlayInterface = true, .runtimeType = runtime };
+		if (!vr.CanOpenMenuFromWorld())
+			return false;
 		// Auto keeps one runtime path through startup, world loads and return to the main menu.
 		for (const bool mainMenu : { false, true, true, false, true, false }) {
 			globals::stateValue.isMainMenuOpen = mainMenu;
@@ -61,7 +114,7 @@ namespace
 				return false;
 		}
 		vr.settings.menuOverlayPath = VR::Settings::MenuOverlayPath::InScene;
-		if (!vr.ShouldUseInSceneOverlay())
+		if (!vr.ShouldUseInSceneOverlay() || !vr.CanOpenMenuFromWorld())
 			return false;
 		globals::features::renderDoc.active = true;
 		if (vr.ShouldUseInSceneOverlay() != (runtime != VRDetection::RuntimeType::SteamVR))
@@ -72,7 +125,7 @@ namespace
 			return false;
 		vr.settings.menuOverlayPath = VR::Settings::MenuOverlayPath::Auto;
 		vr.openVRInfo.hasOverlayInterface = false;
-		if (!vr.ShouldUseInSceneOverlay())
+		if (!vr.ShouldUseInSceneOverlay() || !vr.CanOpenMenuFromWorld())
 			return false;
 		vr.openVRInfo.isCompatible = false;
 		return !vr.ShouldUseInSceneOverlay();
@@ -134,6 +187,40 @@ int main()
 {
 	unsigned failures = 0;
 	unsigned surfaces = 0;
+	VR placement;
+	for (const float yaw : { -2.5f, -.8f, 0.0f, 1.6f, 3.0f }) {
+		Matrix pose = Matrix::CreateFromYawPitchRoll(yaw, .2f, -.1f);
+		pose.Translation(Vector3(1, 1.7f, 2));
+		placement.RequestFixedWorldMenuReanchor();
+		placement.UpdateFixedWorldPositioning(pose);
+		const auto anchor = placement.fixedWorldOverlayPosition.m;
+		Vector3 direction = pose.Backward();
+		direction.y = 0;
+		direction.Normalize();
+		if (!placement.fixedWorldOverlayPosition.initialized ||
+			(anchor.Translation() - (pose.Translation() - direction * 2.75f)).Length() > 1e-5f)
+			++failures;
+		for (const bool unlocked : { true, false, true, false }) {
+			placement.SetMenuLayoutUnlocked(unlocked);
+			Matrix moved = Matrix::CreateFromYawPitchRoll(yaw + 1, .4f, .2f);
+			moved.Translation(Vector3(4, 1.5f, 3));
+			placement.UpdateFixedWorldPositioning(moved);
+			if (placement.fixedWorldOverlayPosition.m != anchor ||
+				placement.GetEffectiveMenuScale() != 1.75f || placement.GetEffectiveHMDMenuOffset() != Vector3(.1f, -.2f, -2.75f) ||
+				placement.settings.EnableDragToReposition || !placement.UseFixedWorldMenuPositioning())
+				++failures;
+		}
+	}
+	placement.settings.VRMenuPositioningMethod = 0;
+	placement.settings.attachMode = VR::Settings::OverlayAttachMode::Both;
+	placement.SetMenuLayoutUnlocked(false);
+	if (placement.UseFixedWorldMenuPositioning() || placement.GetEffectiveMenuAttachMode() != VR::Settings::OverlayAttachMode::Both)
+		++failures;
+	placement.statusOnly = true;
+	if (placement.GetEffectiveMenuScale() != VR::Config::kDefaultMenuScale ||
+		placement.GetEffectiveMenuAttachMode() != VR::Settings::OverlayAttachMode::HMDOnly)
+		++failures;
+
 	for (const auto runtime : { VRDetection::RuntimeType::SteamVR, VRDetection::RuntimeType::OpenComposite, VRDetection::RuntimeType::Unknown }) {
 		if (!CoversRoutes(runtime)) {
 			std::cout << "route mismatch for runtime=" << static_cast<int>(runtime) << '\n';

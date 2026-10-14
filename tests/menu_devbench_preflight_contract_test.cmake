@@ -158,7 +158,7 @@ foreach(_required_behavior IN ITEMS
     "{ \"persisted\", false }"
     "{ \"promptRequired\", true }"
     "{ \"menuLayoutUnlocked\", vr.settings.UnlockMenuPositionAndSize }"
-    "{ \"savedUnlockedFixedWorldPositionInitialized\", vr.savedUnlockedFixedWorldOverlayPosition.initialized }"
+    "{ \"fixedWorldMenuReanchorPending\", vr.fixedWorldOverlayReanchorRequested }"
     "{ \"menuScale\", vr.GetEffectiveMenuScale() }"
     "{ \"savedMenuScale\", vr.settings.VRMenuScale }"
     "globals::features::vr.SetMenuLayoutUnlocked(enabled)"
