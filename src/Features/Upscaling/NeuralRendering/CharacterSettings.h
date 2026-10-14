@@ -48,6 +48,13 @@ namespace NeuralRendering
 		Count,
 	};
 
+	/** Only authored modes are conservatively enclosed by material occupancy. */
+	[[nodiscard]] constexpr bool UsesAuthoredMask(CharacterMaskTestMode mode) noexcept
+	{
+		return mode == CharacterMaskTestMode::Authored ||
+		       mode == CharacterMaskTestMode::AuthoredWithoutVisibilityDepth;
+	}
+
 	/** Authoritative outcome after the Feature 18 execution boundary. */
 	enum class CharacterFeature18Disposition : std::uint32_t
 	{
@@ -92,7 +99,7 @@ namespace NeuralRendering
 		inline constexpr float kDefaultFocusScale = 0.75f;
 		inline constexpr std::uint32_t kDefaultMinimumFacePixelSize = 64;
 		inline constexpr auto kDefaultCropMode = static_cast<std::uint32_t>(CharacterCropMode::Cropped);
-		inline constexpr float kDefaultRoiMargin = 0.25f;
+		inline constexpr float kDefaultRoiMargin = 0.025f;
 		inline constexpr std::uint32_t kDefaultRoiHoldFrames = 3;
 		inline constexpr bool kDefaultDepthAwareFeather = false;
 		inline constexpr bool kDefaultVisibilityDepthTest = true;
@@ -130,6 +137,7 @@ namespace NeuralRendering
 		bool enabled = CharacterPolicy::kDefaultEnabled;
 		bool sceneStrengthsEnabled = false;
 		bool providerBlending = false;
+		bool packedCrops = true;
 		bool humans = true;
 		bool otherHumanoids = true;
 		bool creatures = true;
@@ -194,6 +202,7 @@ namespace NeuralRendering
 			settings.focusScale = 1.0f;
 			settings.minimumFacePixelSize = 1;
 			settings.adaptiveRoiSelection = false;
+			settings.packedCrops = false;
 			settings.cropMode = static_cast<std::uint32_t>(CharacterCropMode::Uncropped);
 			settings.roiMargin = 0.0f;
 			settings.roiHoldFrames = 0;

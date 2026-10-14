@@ -1,5 +1,9 @@
 #include "ModelResolution.h"
 #include "ComputeStateGuard.h"
+#ifdef DEVBENCH_BRIDGE_ENABLED
+#	include "CharacterMaskReadback.h"
+#	include <nlohmann/json.hpp>
+#endif
 #include "GpuPass.h"
 #include "Utils/ComIdentity.h"
 #include "Utils/ResourceName.h"
@@ -11,6 +15,7 @@
 #include <new>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace NeuralRendering
 {
@@ -28,8 +33,14 @@ namespace NeuralRendering
 			float centralScale = 1.0f, centralHorizontalScale = 1.0f, centralFeather = 0.0f;
 			std::uint32_t centralActive = 0;
 			std::array<float, 2> centralOffset{}, finalOutputSize{};
+			std::uint32_t packedCount = 0, packedCoverageGuard = 0;
+			std::array<std::uint32_t, 2> unpackedSize{};
+			std::array<PackedCropLayout::Tile, kMaximumPackedCrops> packedTiles{};
+			std::uint32_t selectionMode = 0, outputStorageFormat = 0, selectedOutput = 0, selectionPadding = 0;
+			std::array<float, 4> selectionBounds{};
 		};
-		static_assert(sizeof(Constants) == 112);
+		static_assert(sizeof(Constants) == 352);
+		static_assert(sizeof(PackedCropLayout::Tile) == 48);
 
 		bool ReadDescription(ID3D11Resource* resource, D3D11_TEXTURE2D_DESC& desc)
 		{
@@ -38,6 +49,25 @@ namespace NeuralRendering
 				return false;
 			texture->GetDesc(&desc);
 			return desc.ArraySize == 1 && desc.MipLevels == 1 && desc.SampleDesc.Count == 1;
+		}
+
+		bool ValidSelectionView(const RendererApplyArgs& input, UpscalingDLSS::Extent size, ID3D11ShaderResourceView* selection)
+		{
+			if (!selection)
+				return false;
+			ComPtr<ID3D11Resource> resource;
+			selection->GetResource(&resource);
+			if (!resource)
+				return false;
+			D3D11_TEXTURE2D_DESC desc{};
+			D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+			selection->GetDesc(&view);
+			ComPtr<ID3D11Device> owner;
+			resource->GetDevice(&owner);
+			return ReadDescription(resource.Get(), desc) && desc.Width == size.width && desc.Height == size.height &&
+			       Util::SameIdentity(owner.Get(), input.device) && view.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2D &&
+			       view.Texture2D.MostDetailedMip == 0 && view.Texture2D.MipLevels == 1 &&
+			       (view.Format == DXGI_FORMAT_R8_UNORM || view.Format == DXGI_FORMAT_R32_FLOAT);
 		}
 
 		bool CreateTexture(ID3D11Device* device, Color::Texture& texture, UpscalingDLSS::Extent extent,
@@ -95,11 +125,6 @@ namespace NeuralRendering
 			}
 		}
 
-		bool HasActorInputs(const RendererApplyArgs& input) noexcept
-		{
-			return input.controlMask || input.actorSelection || input.providerBlending || input.characterVisualIsolation;
-		}
-
 		bool ValidBatchLayout(std::span<const RendererApplyArgs> args) noexcept
 		{
 			if (args.empty() || args.size() > kMaximumRegionEvaluations || !args.front().device || !args.front().context)
@@ -116,18 +141,77 @@ namespace NeuralRendering
 			return true;
 		}
 
+		bool ValidateSelectedOutputs(std::span<const RendererApplyArgs> args)
+		{
+			for (std::size_t index = 0; index < args.size(); ++index) {
+				const auto& input = args[index];
+				if (!input.modelOutputSelection)
+					continue;
+				const auto& selection = *input.modelOutputSelection;
+				ComPtr<ID3D11Resource> destination;
+				if (!selection.destination || input.renderingMode != RenderingMode::ReducedResolution)
+					return false;
+				selection.destination->GetResource(&destination);
+				D3D11_TEXTURE2D_DESC desc{};
+				D3D11_UNORDERED_ACCESS_VIEW_DESC view{};
+				selection.destination->GetDesc(&view);
+				ComPtr<ID3D11Device> owner;
+				if (!destination || !Util::SameIdentity(destination.Get(), input.colorOutput) ||
+					!ReadDescription(destination.Get(), desc) || desc.Width != input.outputWidth || desc.Height != input.outputHeight ||
+					desc.Usage != D3D11_USAGE_DEFAULT || view.Format != desc.Format ||
+					view.ViewDimension != D3D11_UAV_DIMENSION_TEXTURE2D || view.Texture2D.MipSlice != 0)
+					return false;
+				destination->GetDevice(&owner);
+				if (!Util::SameIdentity(owner.Get(), input.device))
+					return false;
+				switch (desc.Format) {
+				case DXGI_FORMAT_R32G32B32A32_FLOAT:
+				case DXGI_FORMAT_R16G16B16A16_FLOAT:
+				case DXGI_FORMAT_R11G11B10_FLOAT:
+				case DXGI_FORMAT_R8G8B8A8_UNORM:
+				case DXGI_FORMAT_R10G10B10A2_UNORM:
+				case DXGI_FORMAT_R16G16B16A16_UNORM:
+					break;
+				default:
+					return false;
+				}
+				if (input.characterVisualIsolation && !selection.mask)
+					return false;
+				if (selection.providerBlending != input.providerBlending)
+					return false;
+				if (selection.mask && (!selection.maskSupport.Fits(input.outputWidth, input.outputHeight) ||
+										  !ValidSelectionView(input, { input.outputWidth, input.outputHeight }, selection.mask.Get())))
+					return false;
+				if (selection.providerBlending && (!selection.mask || !input.providerBlending))
+					return false;
+				for (std::size_t other = 0; other < args.size(); ++other) {
+					const auto& source = args[other];
+					ComPtr<ID3D11Resource> actorMask, outputMask;
+					if (source.actorSelection)
+						source.actorSelection->GetResource(&actorMask);
+					if (source.modelOutputSelection && source.modelOutputSelection->mask)
+						source.modelOutputSelection->mask->GetResource(&outputMask);
+					for (auto* resource : { source.colorInput, source.depthGuide, source.motionVectors,
+							 source.controlMask.Get(), actorMask.Get(), outputMask.Get() })
+						if (resource && Util::SameIdentity(destination.Get(), resource))
+							return false;
+					if (other != index && Util::SameIdentity(destination.Get(), source.colorOutput))
+						return false;
+				}
+			}
+			return true;
+		}
+
 		struct AllocationKey
 		{
 			UpscalingDLSS::Extent sourceSize{}, modelSize{}, modelGuideSize{};
 			DXGI_FORMAT colorFormat = DXGI_FORMAT_UNKNOWN, outputFormat = DXGI_FORMAT_UNKNOWN, motionFormat = DXGI_FORMAT_UNKNOWN;
-			bool hasMask = false, sharedTargets = false;
+			bool hasMask = false, sharedTargets = false, selectedOutput = false;
 
 			bool operator==(const AllocationKey&) const = default;
 
 			static std::optional<AllocationKey> Read(const RendererApplyArgs& input, const RendererApplyArgs& projected, bool sharedTargets = false)
 			{
-				if (sharedTargets && HasActorInputs(input))
-					return std::nullopt;
 				D3D11_TEXTURE2D_DESC color{}, output{}, motion{};
 				if (!ReadDescription(input.colorInput, color) || !ReadDescription(input.colorOutput, output) ||
 					!ReadDescription(input.motionVectors, motion) ||
@@ -136,14 +220,18 @@ namespace NeuralRendering
 					motion.Width != input.guideWidth || motion.Height != input.guideHeight)
 					return std::nullopt;
 				return AllocationKey{ { input.outputWidth, input.outputHeight }, { projected.outputWidth, projected.outputHeight }, { projected.guideWidth, projected.guideHeight },
-					color.Format, output.Format, motion.Format, input.controlMask != nullptr, sharedTargets };
+					color.Format, output.Format, motion.Format, input.controlMask != nullptr, sharedTargets, input.modelOutputSelection.has_value() };
 			}
 
 			std::optional<std::uint64_t> Bytes() const noexcept
 			{
-				const auto fullOutput = LogicalTextureBytes(outputFormat, sourceSize.width, sourceSize.height);
-				if (sharedTargets)
-					return fullOutput;
+				const auto fullOutput = selectedOutput ? std::optional<std::uint64_t>{ 0 } :
+				                                         LogicalTextureBytes(outputFormat, sourceSize.width, sourceSize.height);
+				if (sharedTargets) {
+					// Positive selection stays private while native protection stores its inverse.
+					const auto maskBytes = hasMask ? static_cast<std::uint64_t>(modelSize.width) * modelSize.height : 0u;
+					return fullOutput ? std::optional{ *fullOutput + maskBytes } : std::nullopt;
+				}
 				std::uint64_t total = 0;
 				const std::array formats{ colorFormat, DXGI_FORMAT_R32_FLOAT, motionFormat, outputFormat };
 				const std::array sizes{ modelSize, modelGuideSize, modelGuideSize, modelSize };
@@ -186,14 +274,30 @@ namespace NeuralRendering
 
 		bool ValidateTargets(std::span<const RendererApplyArgs> args, std::span<const ModelResolution::Targets> targets)
 		{
-			std::array<ComPtr<IUnknown>, kMaximumRegionEvaluations * 4> identities{}, sources{};
+			std::array<ComPtr<IUnknown>, kMaximumRegionEvaluations * 4> identities{};
+			std::array<ComPtr<IUnknown>, kMaximumRegionEvaluations * 7> sources{};
 			std::size_t count = 0, sourceCount = 0;
-			for (const auto& input : args)
+			for (const auto& input : args) {
 				for (auto* source : { input.colorInput, input.depthGuide, input.motionVectors, input.colorOutput }) {
 					if (!(sources[sourceCount] = Util::GetComIdentity(source)))
 						return false;
 					++sourceCount;
 				}
+				if (input.controlMask) {
+					if (!(sources[sourceCount] = Util::GetComIdentity(input.controlMask.Get())))
+						return false;
+					++sourceCount;
+				}
+				for (auto* view : { input.actorSelection.Get(), input.modelOutputSelection ? input.modelOutputSelection->mask.Get() : nullptr }) {
+					if (!view)
+						continue;
+					ComPtr<ID3D11Resource> selection;
+					view->GetResource(&selection);
+					if (!(sources[sourceCount] = Util::GetComIdentity(selection.Get())))
+						return false;
+					++sourceCount;
+				}
+			}
 			for (std::size_t index = 0; index < args.size(); ++index) {
 				RendererApplyArgs projected;
 				if (!ModelResolution::Project(args[index], projected))
@@ -224,8 +328,19 @@ namespace NeuralRendering
 			       args.computeSubrect.IsValid() ? args.computeSubrect :
 			                                       BuildCenteredComputeSubrect(args.outputWidth, args.outputHeight, args.tuning.singleSubrectScale);
 		}
-		std::optional<ModelResolutionGeometry> Geometry(const RendererApplyArgs& args)
+		std::optional<ModelResolutionGeometry> Geometry(const RendererApplyArgs& args
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			,
+			PackedCropAdmissionDiagnostics* diagnostics = nullptr
+#endif
+		)
 		{
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			if (diagnostics && args.packedCrops.count >= 2) {
+				diagnostics->stage = PackedCropStage::ModelProjection;
+				diagnostics->reason = PackedCropReason::InvalidModelGeometry;
+			}
+#endif
 			if (!args.centralArea.Valid())
 				return std::nullopt;
 			auto geometry = BuildModelResolutionGeometry(args.viewportCrop, { args.outputWidth, args.outputHeight }, SourceRegion(args),
@@ -239,6 +354,64 @@ namespace NeuralRendering
 					geometry->modelRegion = IntersectComputeSubrect(geometry->modelRegion, context);
 				}
 			}
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			if (geometry && diagnostics && args.packedCrops.count >= 2) {
+				diagnostics->modelAreasAvailable = true;
+				diagnostics->effectiveBaselineModelPixels = geometry->modelRegion.Area();
+				diagnostics->reason = PackedCropReason::UnsupportedRoute;
+			}
+#endif
+			if (geometry && args.packedCrops.count >= 2 && args.characterVisualIsolation && args.renderingMode &&
+				(*args.renderingMode == RenderingMode::FullResolution || *args.renderingMode == RenderingMode::ReducedResolution)) {
+				const auto unpackedGeometry = *geometry;
+				geometry->packedCrops = BuildPackedCropLayout(args.packedCrops, geometry->sourceSize, geometry->modelSize, SourceRegion(args)
+#ifdef DEVBENCH_BRIDGE_ENABLED
+																															   ,
+					diagnostics
+#endif
+				);
+				const auto atlasArea = std::uint64_t(geometry->packedCrops.extent.width) * geometry->packedCrops.extent.height;
+				if (atlasArea * 4u > unpackedGeometry.modelRegion.Area() * 3u) {
+					geometry->packedCrops = {};
+#ifdef DEVBENCH_BRIDGE_ENABLED
+					if (diagnostics) {
+						diagnostics->stage = PackedCropStage::AreaAdmission;
+						diagnostics->reason = PackedCropReason::InsufficientAreaSaving;
+					}
+#endif
+				}
+				if (geometry->packedCrops.count) {
+					const auto unpacked = geometry->modelSize;
+					geometry->modelSize = geometry->packedCrops.extent;
+					const auto size = geometry->modelSize;
+					geometry->modelGuideSize = {
+						static_cast<std::uint32_t>((std::uint64_t(size.width) * geometry->modelGuideSize.width + unpacked.width - 1u) / unpacked.width),
+						static_cast<std::uint32_t>((std::uint64_t(size.height) * geometry->modelGuideSize.height + unpacked.height - 1u) / unpacked.height)
+					};
+					geometry->nativeCrop = UpscalingDLSS::ViewportCrop::Identity(geometry->modelGuideSize.width, geometry->modelGuideSize.height, size.width, size.height);
+					geometry->modelRegion = { 0, 0, size.width, size.height };
+					geometry->motionNormalization[0] *= static_cast<float>(unpacked.width) / size.width;
+					geometry->motionNormalization[1] *= static_cast<float>(unpacked.height) / size.height;
+					// Rounding must not change the feature type in only one member of a stereo pair.
+					if (ResolveFeatureUpscaling(geometry->modelGuideSize.width, geometry->modelGuideSize.height, size.width, size.height) !=
+						ResolveFeatureUpscaling(unpackedGeometry.modelGuideSize.width, unpackedGeometry.modelGuideSize.height, unpacked.width, unpacked.height)) {
+						*geometry = unpackedGeometry;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+						if (diagnostics) {
+							diagnostics->stage = PackedCropStage::ProviderCompatibility;
+							diagnostics->reason = PackedCropReason::ProviderTypeChanged;
+						}
+#endif
+					}
+#ifdef DEVBENCH_BRIDGE_ENABLED
+					else if (diagnostics) {
+						diagnostics->stage = PackedCropStage::Admitted;
+						diagnostics->reason = PackedCropReason::Admitted;
+					}
+#endif
+				}
+			}
+
 			return geometry;
 		}
 	}
@@ -252,36 +425,212 @@ namespace NeuralRendering
 		Constants constants{};
 	};
 
-	bool ModelResolution::Project(const RendererApplyArgs& input, RendererApplyArgs& adapted) noexcept
+	struct ModelResolution::CoverageWork
 	{
-		const auto geometry = Geometry(input);
+		ComPtr<ID3D11Buffer> flags;
+		ComPtr<ID3D11ShaderResourceView> srv;
+		ComPtr<ID3D11UnorderedAccessView> uav;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		ComPtr<ID3D11Buffer> staging;
+		ComPtr<ID3D11Query> query;
+		std::uint32_t sampledFrame = 0, queuedFrame = 0, missing = 0;
+		bool pending = false, sampled = false, inspectionRequested = false;
+		HRESULT inspectionResult = S_OK;
+#endif
+	};
+
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	void ModelResolution::ServiceCoverageInspection(ID3D11DeviceContext* context)
+	{
+		if (!coverage_ || !coverage_->inspectionRequested)
+			return;
+		auto& work = *coverage_;
+		work.inspectionRequested = false;
+		if (work.pending) {
+			std::uint32_t missing = 0;
+			const auto result = PollCharacterMaskBounds(context, work.query.Get(), work.staging.Get(),
+				std::as_writable_bytes(std::span(&missing, 1)));
+			work.inspectionResult = result.result;
+			if (result.status == CharacterMaskReadbackStatus::Pending)
+				return;
+			work.pending = false;
+			if (!result.Ready())
+				return;
+			work.missing = missing;
+			work.sampledFrame = work.queuedFrame;
+			work.sampled = true;
+		}
+		if (!work.staging) {
+			D3D11_BUFFER_DESC desc{};
+			desc.ByteWidth = sizeof(std::uint32_t);
+			desc.Usage = D3D11_USAGE_STAGING;
+			desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+			work.inspectionResult = device_->CreateBuffer(&desc, nullptr, &work.staging);
+			if (FAILED(work.inspectionResult))
+				return;
+			Util::SetResourceName(work.staging.Get(), "NeuralRendering::PackedCropCoverageReadback");
+		}
+		if (!work.query) {
+			const D3D11_QUERY_DESC desc{ D3D11_QUERY_EVENT, 0 };
+			work.inspectionResult = device_->CreateQuery(&desc, &work.query);
+			if (FAILED(work.inspectionResult))
+				return;
+			Util::SetResourceName(work.query.Get(), "NeuralRendering::PackedCropCoverageReady");
+		}
+		context->CopyResource(work.staging.Get(), work.flags.Get());
+		context->End(work.query.Get());
+		work.queuedFrame = lastCoverageFrame_;
+		work.pending = true;
+		work.inspectionResult = S_OK;
+	}
+
+	nlohmann::json ModelResolution::GetPackedCoverageDiagnostics()
+	{
+		using json = nlohmann::json;
+		if (coverage_ && lastBatchGuarded_)
+			coverage_->inspectionRequested = true;
+		return { { "lastBatchGuarded", lastBatchGuarded_ },
+			{ "lastBatchFrame", lastBatchGuarded_ ? json(lastCoverageFrame_) : json(nullptr) },
+			{ "completedSampleFrame", coverage_ && coverage_->sampled ? json(coverage_->sampledFrame) : json(nullptr) },
+			{ "wholeBatchFallback", coverage_ && coverage_->sampled ? json(coverage_->missing != 0) : json(nullptr) },
+			{ "inspectionPending", coverage_ && coverage_->pending },
+			{ "inspectionResult", coverage_ ? coverage_->inspectionResult : S_OK },
+			{ "scope", "current_selection_and_required_context_for_complete_batch" },
+			{ "sampling", "explicit_devbench_inspection_only_nonblocking_on_render_thread" } };
+	}
+#endif
+
+	bool ModelResolution::EnsureCoverage(ID3D11Device* device, HRESULT& result)
+	{
+		if (!coverageShader_) {
+			const auto supportPixels = std::to_string(kPackedCropSupportPixels);
+			coverageShader_.Attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
+				L"Data/Shaders/Upscaling/NeuralRendering/ModelResolutionCoverageCS.hlsl",
+				{ { "PACKED_CROP_SUPPORT_PIXELS", supportPixels.c_str() } }, "cs_5_0", "main")));
+			if (!coverageShader_) {
+				result = E_FAIL;
+				return false;
+			}
+			Util::SetResourceName(coverageShader_.Get(), "NeuralRendering::PackedCropCoverage");
+		}
+		if (!guardedReconstruct_) {
+			guardedReconstruct_.Attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
+				L"Data/Shaders/Upscaling/NeuralRendering/ModelResolutionReconstructCS.hlsl",
+				{ { "PACKED_CROP_COVERAGE_GUARD", "1" } }, "cs_5_0", "main")));
+			if (!guardedReconstruct_) {
+				result = E_FAIL;
+				return false;
+			}
+			Util::SetResourceName(guardedReconstruct_.Get(), "NeuralRendering::GuardedModelReconstruction");
+		}
+		if (coverage_)
+			return true;
+		auto work = std::make_shared<CoverageWork>();
+		D3D11_BUFFER_DESC desc{};
+		desc.ByteWidth = desc.StructureByteStride = sizeof(std::uint32_t);
+		desc.Usage = D3D11_USAGE_DEFAULT;
+		desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+		desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+		result = device->CreateBuffer(&desc, nullptr, &work->flags);
+		if (FAILED(result))
+			return false;
+		Util::SetResourceName(work->flags.Get(), "NeuralRendering::PackedCropCoverage");
+		result = device->CreateShaderResourceView(work->flags.Get(), nullptr, &work->srv);
+		if (FAILED(result))
+			return false;
+		Util::SetResourceName(work->srv.Get(), "NeuralRendering::PackedCropCoverage SRV");
+		result = device->CreateUnorderedAccessView(work->flags.Get(), nullptr, &work->uav);
+		if (FAILED(result))
+			return false;
+		Util::SetResourceName(work->uav.Get(), "NeuralRendering::PackedCropCoverage UAV");
+		coverage_ = std::move(work);
+		return true;
+	}
+
+	bool ModelResolution::Required(const RendererApplyArgs& args
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		,
+		PackedCropAdmissionDiagnostics* diagnostics
+#endif
+		) noexcept
+	{
+		if (args.modelOutputSelection || args.modelResolutionPercent != kMaximumModelResolutionPercent || args.centralArea.Active() || !args.centralArea.Valid())
+			return true;
+		if (args.packedCrops.count < 2)
+			return false;
+		const auto geometry = Geometry(args
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			,
+			diagnostics
+#endif
+		);
+		return geometry && geometry->packedCrops.count != 0;
+	}
+
+	bool ModelResolution::Project(const RendererApplyArgs& input, RendererApplyArgs& adapted
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		,
+		PackedCropAdmissionDiagnostics* diagnostics
+#endif
+		) noexcept
+	{
+		const auto geometry = Geometry(input
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			,
+			diagnostics
+#endif
+		);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		const auto reject = [&] {
+			if (diagnostics) {
+				diagnostics->stage = PackedCropStage::ModelProjection;
+				diagnostics->reason = geometry ? PackedCropReason::InvalidProjection : PackedCropReason::InvalidModelGeometry;
+			}
+			return false;
+		};
+#endif
 		const auto featureUpscaling = ResolveFeatureUpscaling(input.guideWidth, input.guideHeight, input.outputWidth, input.outputHeight);
 		if (!geometry || !input.renderingMode ||
 			EffectiveModelResolutionPercent(*input.renderingMode, input.modelResolutionPercent) != input.modelResolutionPercent ||
 			(input.renderingMode == RenderingMode::ReducedResolution && (!input.reset || input.featureUpscaling)) ||
 			!featureUpscaling || input.featureUpscaling != *featureUpscaling ||
-			!Required(input) ||
 			input.colorWidth != input.outputWidth || input.colorHeight != input.outputHeight ||
-			!SourceRegion(input).Fits(input.outputWidth, input.outputHeight))
-			return false;
+			!SourceRegion(input).Fits(input.outputWidth, input.outputHeight)) {
 #ifdef DEVBENCH_BRIDGE_ENABLED
-		if (input.roi && input.roi->compactSource)
+			return reject();
+#else
 			return false;
 #endif
+		}
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		if (input.roi && input.roi->compactSource)
+			return reject();
+#endif
+		const auto projectedUpscaling = ResolveFeatureUpscaling(geometry->modelGuideSize.width, geometry->modelGuideSize.height,
+			geometry->modelSize.width, geometry->modelSize.height);
+		if (!projectedUpscaling) {
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			return reject();
+#else
+			return false;
+#endif
+		}
 		const auto sourceSize = geometry->sourceSize;
 		const auto modelSize = geometry->modelSize;
 		const auto map = [&](const ComputeSubrect& rect) {
 			return MapComputeSubrect(rect, sourceSize.width, sourceSize.height, modelSize.width, modelSize.height);
 		};
 		adapted = input;
+		adapted.modelOutputSelection.reset();
 		adapted.modelResolutionPercent = kMaximumModelResolutionPercent;
 		adapted.modelResolutionHistory = ModelResolutionHistory{ input.viewportCrop, input.modelResolutionPercent,
 			SourceRegion(input), reinterpret_cast<std::uintptr_t>(Util::GetComIdentity(input.controlMask.Get()).Get()),
-			input.centralArea.Active() ? input.centralArea : CentralArea{} };
+			input.centralArea.Active() ? input.centralArea : CentralArea{}, geometry->packedCrops };
 		adapted.centralArea = {};
+		adapted.packedCrops = {};
 		adapted.guideWidth = geometry->modelGuideSize.width;
 		adapted.guideHeight = geometry->modelGuideSize.height;
-		adapted.featureUpscaling = *ResolveFeatureUpscaling(adapted.guideWidth, adapted.guideHeight, modelSize.width, modelSize.height);
+		adapted.featureUpscaling = *projectedUpscaling;
 		adapted.colorWidth = adapted.outputWidth = modelSize.width;
 		adapted.colorHeight = adapted.outputHeight = modelSize.height;
 		adapted.computeSubrect = geometry->modelRegion;
@@ -292,7 +641,8 @@ namespace NeuralRendering
 			roi.inferenceContext = geometry->modelRegion;
 			roi.allocationCapacity = modelSize;
 			if (input.roi->samplingSupport) {
-				const auto support = IntersectComputeSubrect(map(*input.roi->samplingSupport), geometry->modelRegion);
+				const auto support = geometry->packedCrops.count ? geometry->modelRegion :
+				                                                   IntersectComputeSubrect(map(*input.roi->samplingSupport), geometry->modelRegion);
 				roi.samplingSupport = support.IsValid() ? std::optional{ support } : std::nullopt;
 			}
 			if (input.roi->temporalEnvelope)
@@ -303,7 +653,7 @@ namespace NeuralRendering
 			adapted.controlMaskHeight = modelSize.height;
 		}
 		if (input.actorSelection)
-			adapted.actorSelectionSupport = map(input.actorSelectionSupport);
+			adapted.actorSelectionSupport = geometry->packedCrops.count ? geometry->modelRegion : map(input.actorSelectionSupport);
 		return true;
 	}
 
@@ -312,13 +662,13 @@ namespace NeuralRendering
 		return !colorProcessing && !compactInputs && ValidBatchLayout(args) &&
 		       std::ranges::all_of(args, [](const auto& input) {
 				   RendererApplyArgs projected;
-				   return !HasActorInputs(input) && Project(input, projected);
+				   return Project(input, projected);
 			   });
 	}
 
 	std::optional<std::uint64_t> ModelResolution::AdditionalBytes(std::span<const RendererApplyArgs> args, bool sharedTargets) const
 	{
-		if (!ValidBatchLayout(args))
+		if (!ValidBatchLayout(args) || !ValidateSelectedOutputs(args))
 			return std::nullopt;
 		std::uint64_t total = 0;
 		for (const auto& input : args) {
@@ -386,11 +736,59 @@ namespace NeuralRendering
 		return true;
 	}
 
+	bool ModelResolution::EnsureSelectionShader(bool guarded, HRESULT& result)
+	{
+		auto& shader = guarded ? guardedSelection_ : selection_;
+		if (shader)
+			return true;
+		std::vector<std::pair<const char*, const char*>> defines{ { "MODEL_OUTPUT_SELECTION", "1" } };
+		if (guarded)
+			defines.emplace_back("PACKED_CROP_COVERAGE_GUARD", "1");
+		shader.Attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
+			L"Data/Shaders/Upscaling/NeuralRendering/ModelResolutionReconstructCS.hlsl", defines, "cs_5_0", "main")));
+		if (!shader) {
+			result = E_FAIL;
+			return false;
+		}
+		Util::SetResourceName(shader.Get(), guarded ? "NeuralRendering::GuardedSelectedReconstruction" : "NeuralRendering::SelectedReconstruction");
+		return true;
+	}
+
+	void ModelResolution::DispatchCoverage(std::span<const RendererApplyArgs> args, Batch& batch)
+	{
+		auto* context = args.front().context;
+		ComputeStateGuard<1> guard(context);
+		const std::array<UINT, 4> clear{};
+		context->ClearUnorderedAccessViewUint(coverage_->uav.Get(), clear.data());
+		for (std::size_t index = 0; index < args.size(); ++index) {
+			auto& work = *batch.resources[index];
+			work.constants.packedCoverageGuard = 1u;
+			if (!work.constants.packedCount)
+				continue;
+			context->UpdateSubresource(constants_.Get(), 0, nullptr, &work.constants, 0, 0);
+			auto* cb = constants_.Get();
+			auto* selection = args[index].actorSelection.Get();
+			auto* destination = coverage_->uav.Get();
+			context->CSSetShader(coverageShader_.Get(), nullptr, 0);
+			context->CSSetConstantBuffers(0, 1, &cb);
+			context->CSSetShaderResources(0, 1, &selection);
+			context->CSSetUnorderedAccessViews(0, 1, &destination, nullptr);
+			{
+				CS_GPU_PASS("NeuralRendering::PackedCropCoverage");
+				context->Dispatch((work.constants.sourceRegion[0] + 7u) / 8u, (work.constants.sourceRegion[1] + 7u) / 8u, 1);
+			}
+			guard.Unbind();
+		}
+		lastBatchGuarded_ = true;
+		lastCoverageFrame_ = args.front().frameId;
+	}
+
 	bool ModelResolution::Prepare(std::span<const RendererApplyArgs> args, Batch& batch, HRESULT& result, std::span<const Targets> targets)
 	{
 		result = E_INVALIDARG;
 		batch = {};
-		if (!ValidBatchLayout(args) || (!targets.empty() && targets.size() != args.size()))
+		lastBatchGuarded_ = false;
+		if (!ValidBatchLayout(args) || !ValidateSelectedOutputs(args) || (!targets.empty() && targets.size() != args.size()))
 			return false;
 		ComPtr<ID3D11Device> contextDevice;
 		args.front().context->GetDevice(&contextDevice);
@@ -415,6 +813,8 @@ namespace NeuralRendering
 			return false;
 		if (!EnsureShaders(args.front().device, result))
 			return false;
+		batch.device = args.front().device;
+		batch.context = args.front().context;
 		try {
 			for (std::size_t index = 0; index < args.size(); ++index) {
 				const auto& input = args[index];
@@ -436,7 +836,7 @@ namespace NeuralRendering
 								!CreateTexture(input.device, work->depth, key.modelGuideSize, DXGI_FORMAT_R32_FLOAT, prefix + "Depth", result) ||
 								!CreateTexture(input.device, work->motion, key.modelGuideSize, key.motionFormat, prefix + "Motion", result) ||
 								!CreateTexture(input.device, work->output, modelSize, key.outputFormat, prefix + "Output", result))) ||
-						!CreateTexture(input.device, work->reconstructed, sourceSize, key.outputFormat, prefix + "Reconstructed", result) ||
+						(!key.selectedOutput && !CreateTexture(input.device, work->reconstructed, sourceSize, key.outputFormat, prefix + "Reconstructed", result)) ||
 						(hasMask && !CreateTexture(input.device, work->mask, modelSize, DXGI_FORMAT_R8_UNORM, prefix + "Mask", result)))
 						return false;
 					slots_[input.featureSlot] = work;
@@ -467,6 +867,25 @@ namespace NeuralRendering
 					input.centralArea.Scale(), input.centralArea.horizontalScale, static_cast<float>(input.centralArea.featherPixels), input.centralArea.Active() ? 1u : 0u,
 					input.centralArea.offset, { static_cast<float>(input.centralArea.finalOutput.width), static_cast<float>(input.centralArea.finalOutput.height) }
 				};
+				work->constants.packedCount = geometry->packedCrops.count;
+				work->constants.unpackedSize = { geometry->packedCrops.unpackedExtent.width, geometry->packedCrops.unpackedExtent.height };
+				work->constants.packedTiles = geometry->packedCrops.tiles;
+				if (input.modelOutputSelection) {
+					const auto& selection = *input.modelOutputSelection;
+					const auto& support = selection.maskSupport;
+					work->constants.selectedOutput = 1u;
+					work->constants.selectionMode = !selection.mask ? 0u : selection.providerBlending ? 2u :
+					                                                                                    1u;
+					work->constants.outputStorageFormat = key.outputFormat;
+					work->constants.selectionBounds = { static_cast<float>(support.baseX) / sourceSize.width, static_cast<float>(support.baseY) / sourceSize.height,
+						static_cast<float>(support.baseX + support.width) / sourceSize.width, static_cast<float>(support.baseY + support.height) / sourceSize.height };
+					batch.selectedOutputs[index] = selection.destination;
+					batch.selectionMasks[index] = selection.mask;
+					batch.selectionSupports[index] = selection.maskSupport;
+					batch.providerSelections[index] = selection.providerBlending;
+					batch.selectionSources[index] = input.colorInput;
+					batch.selectionDestinations[index] = input.colorOutput;
+				}
 				auto& target = batch.targets[index];
 				target = sharedTargets ? targets[index] : Targets{ work->color, work->depth, work->motion, work->output };
 				auto& adapted = batch.arguments[index];
@@ -481,8 +900,15 @@ namespace NeuralRendering
 					adapted.controlMaskWidth = modelSize.width;
 					adapted.controlMaskHeight = modelSize.height;
 				}
-				if (input.actorSelection) {
-					adapted.actorSelection = work->mask.srv;
+				adapted.actorSelection = hasMask ? work->mask.srv : nullptr;
+				if (work->constants.packedCount) {
+					if (!ValidSelectionView(input, sourceSize, input.actorSelection.Get())) {
+						result = E_INVALIDARG;
+						return false;
+					}
+					if (!EnsureCoverage(input.device, result))
+						return false;
+					batch.packedCoverage = coverage_->srv;
 				}
 				batch.resources[index] = std::move(work);
 			}
@@ -490,10 +916,17 @@ namespace NeuralRendering
 			result = E_OUTOFMEMORY;
 			return false;
 		}
-		batch.reconstructionShader = reconstruct_;
+		const bool selected = std::ranges::any_of(args, [](const auto& input) { return input.modelOutputSelection.has_value(); });
+		if (selected && !EnsureSelectionShader(batch.packedCoverage != nullptr, result))
+			return false;
+		batch.reconstructionShader = selected ? (batch.packedCoverage ? guardedSelection_ : selection_) :
+		                                        (batch.packedCoverage ? guardedReconstruct_ : reconstruct_);
 		batch.constants = constants_;
 		auto* context = args.front().context;
+		if (batch.packedCoverage)
+			DispatchCoverage(args, batch);
 		ComputeStateGuard<4, 4> guard(context);
+
 		for (std::size_t index = 0; index < args.size(); ++index) {
 			const auto& work = *batch.resources[index];
 			context->UpdateSubresource(constants_.Get(), 0, nullptr, &work.constants, 0, 0);
@@ -515,10 +948,45 @@ namespace NeuralRendering
 			}
 			guard.Unbind();
 		}
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		if (batch.packedCoverage)
+			ServiceCoverageInspection(context);
+#endif
 		result = args.front().device->GetDeviceRemovedReason();
 		if (SUCCEEDED(result))
 			batch.count = args.size();
 		return SUCCEEDED(result);
+	}
+
+	template <std::size_t Bindings>
+	void ModelResolution::DispatchReconstruction(std::span<const RendererApplyArgs> args, const Batch& batch)
+	{
+		auto* context = args.front().context;
+		ComputeStateGuard<Bindings> guard(context);
+		for (std::size_t index = 0; index < args.size(); ++index) {
+			const auto& work = *batch.resources[index];
+			context->UpdateSubresource(batch.constants.Get(), 0, nullptr, &work.constants, 0, 0);
+			auto* cb = batch.constants.Get();
+			std::array<ID3D11ShaderResourceView*, Bindings> srvs{};
+			srvs[0] = work.colorView.Get();
+			srvs[1] = batch.targets[index].color.srv.Get();
+			srvs[2] = batch.targets[index].output.srv.Get();
+			if constexpr (Bindings >= 4)
+				srvs[3] = batch.packedCoverage.Get();
+			if constexpr (Bindings == 5)
+				srvs[4] = batch.selectionMasks[index].Get();
+			auto* uav = batch.selectedOutputs[index] ? batch.selectedOutputs[index].Get() : work.reconstructed.uav.Get();
+			context->CSSetShader(batch.reconstructionShader.Get(), nullptr, 0);
+			context->CSSetConstantBuffers(0, 1, &cb);
+			context->CSSetShaderResources(0, static_cast<UINT>(srvs.size()), srvs.data());
+			context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
+			{
+				CS_GPU_PASS("NeuralRendering::ModelResolutionReconstruct");
+				const auto extent = work.allocation.selectedOutput ? work.constants.sourceSize : work.constants.sourceRegion;
+				context->Dispatch((extent[0] + 7u) / 8u, (extent[1] + 7u) / 8u, 1);
+			}
+			guard.Unbind();
+		}
 	}
 
 	bool ModelResolution::Reconstruct(std::span<const RendererApplyArgs> args, const Batch& batch, HRESULT& result)
@@ -529,34 +997,39 @@ namespace NeuralRendering
 			std::ranges::any_of(std::span(batch.resources.data(), batch.count), [](const auto& work) { return !work; }) ||
 			std::ranges::any_of(std::span(batch.targets.data(), batch.count), [](const auto& target) { return !target.color.srv || !target.output.srv; }))
 			return false;
-		auto* context = args.front().context;
-		ComputeStateGuard<3> guard(context);
+		if (!ValidBatchLayout(args) || args.front().device != batch.device.Get() || args.front().context != batch.context.Get())
+			return false;
 		for (std::size_t index = 0; index < args.size(); ++index) {
-			const auto& work = *batch.resources[index];
-			context->UpdateSubresource(batch.constants.Get(), 0, nullptr, &work.constants, 0, 0);
-			auto* cb = batch.constants.Get();
-			const std::array srvs{ work.colorView.Get(), batch.targets[index].color.srv.Get(), batch.targets[index].output.srv.Get() };
-			auto* uav = work.reconstructed.uav.Get();
-			context->CSSetShader(batch.reconstructionShader.Get(), nullptr, 0);
-			context->CSSetConstantBuffers(0, 1, &cb);
-			context->CSSetShaderResources(0, static_cast<UINT>(srvs.size()), srvs.data());
-			context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
-			{
-				CS_GPU_PASS("NeuralRendering::ModelResolutionReconstruct");
-				context->Dispatch((work.constants.sourceRegion[0] + 7u) / 8u, (work.constants.sourceRegion[1] + 7u) / 8u, 1);
-			}
-			guard.Unbind();
+			const auto& selection = args[index].modelOutputSelection;
+			if (static_cast<bool>(selection) != static_cast<bool>(batch.selectedOutputs[index]) ||
+				(selection && (args[index].colorInput != batch.selectionSources[index].Get() ||
+								  args[index].colorOutput != batch.selectionDestinations[index].Get() ||
+								  selection->maskSupport != batch.selectionSupports[index] ||
+								  selection->providerBlending != batch.providerSelections[index] ||
+								  selection->destination.Get() != batch.selectedOutputs[index].Get() ||
+								  selection->mask.Get() != batch.selectionMasks[index].Get())))
+				return false;
 		}
+		if (std::ranges::any_of(std::span(batch.selectedOutputs.data(), batch.count), [](const auto& output) { return output != nullptr; }))
+			DispatchReconstruction<5>(args, batch);
+		else if (batch.packedCoverage)
+			DispatchReconstruction<4>(args, batch);
+		else
+			DispatchReconstruction<3>(args, batch);
 		result = args.front().device->GetDeviceRemovedReason();
 		return SUCCEEDED(result);
 	}
 
 	void ModelResolution::Commit(std::span<const RendererApplyArgs> args, const Batch& batch) const
 	{
+		if (std::ranges::all_of(std::span(batch.selectedOutputs.data(), batch.count), [](const auto& output) { return output != nullptr; }))
+			return;
 		CS_GPU_PASS("NeuralRendering::ModelResolutionCommit");
 		ComputeStateGuard<3> guard(args.front().context);
 		for (std::size_t index = 0; index < args.size(); ++index) {
 			const auto& work = *batch.resources[index];
+			if (batch.selectedOutputs[index])
+				continue;
 			const auto& c = work.constants;
 			const D3D11_BOX box{ c.sourceOffset[0], c.sourceOffset[1], 0,
 				c.sourceOffset[0] + c.sourceRegion[0], c.sourceOffset[1] + c.sourceRegion[1], 1 };
@@ -568,11 +1041,18 @@ namespace NeuralRendering
 	{
 		prepare_.Reset();
 		reconstruct_.Reset();
+		coverageShader_.Reset();
+		guardedReconstruct_.Reset();
+		selection_.Reset();
+		guardedSelection_.Reset();
 		compileFailed_ = false;
 	}
 	void ModelResolution::Reset() noexcept
 	{
 		slots_ = {};
+		coverage_.reset();
+		lastBatchGuarded_ = false;
+		lastCoverageFrame_ = std::numeric_limits<std::uint32_t>::max();
 		InvalidateShaders();
 		constants_.Reset();
 		device_.Reset();
@@ -580,9 +1060,11 @@ namespace NeuralRendering
 
 	void ModelResolution::ReleaseUnscaledSlots(std::span<const RendererApplyArgs> args) noexcept
 	{
+		// A mixed packed/unpacked pair still needs both private reconstruction targets.
+		if (std::ranges::any_of(args, [](const auto& value) { return Required(value); }))
+			return;
 		for (const auto& input : args)
-			if (!Required(input))
-				ReleaseSlot(input.featureSlot);
+			ReleaseSlot(input.featureSlot);
 	}
 	void ModelResolution::ReleaseSlot(std::uint32_t slot) noexcept
 	{

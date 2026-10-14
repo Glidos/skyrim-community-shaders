@@ -75,15 +75,15 @@ namespace
 	};
 
 	std::vector<Bounds> Reference(std::uint32_t width, std::uint32_t height,
-		const std::vector<std::uint8_t>& pixels)
+		const std::vector<std::uint8_t>& pixels, std::uint32_t tileSize = 32)
 	{
-		const auto tilesX = (width + 31u) / 32u;
-		std::vector<Bounds> bounds(tilesX * ((height + 31u) / 32u));
+		const auto tilesX = (width + tileSize - 1u) / tileSize;
+		std::vector<Bounds> bounds(tilesX * ((height + tileSize - 1u) / tileSize));
 		for (std::uint32_t y = 0; y < height; ++y) {
 			for (std::uint32_t x = 0; x < width; ++x) {
 				if (pixels[y * width + x] == 0)
 					continue;
-				auto& tile = bounds[(y / 32u) * tilesX + x / 32u];
+				auto& tile = bounds[(y / tileSize) * tilesX + x / tileSize];
 				if (tile[2] == 0) {
 					tile = { x, y, x + 1u, y + 1u };
 				} else {
@@ -129,7 +129,7 @@ namespace
 		};
 
 	public:
-		explicit Harness(const std::filesystem::path& shaderDirectory)
+		explicit Harness(const std::filesystem::path& shaderDirectory, std::uint32_t tileSize = 32) : tileSize_(tileSize)
 		{
 			constexpr D3D_FEATURE_LEVEL requested = D3D_FEATURE_LEVEL_11_0;
 			D3D_FEATURE_LEVEL actual{};
@@ -138,7 +138,9 @@ namespace
 				"Create WARP device");
 			ComPtr<ID3DBlob> code, errors;
 			const auto path = shaderDirectory / "DLSS5CharacterMaskBoundsCS.hlsl";
-			const auto result = D3DCompileFromFile(path.c_str(), nullptr,
+			const auto tileValue = std::to_string(tileSize_);
+			const D3D_SHADER_MACRO defines[]{ { "CHARACTER_MASK_TILE_SIZE", tileValue.c_str() }, { nullptr, nullptr } };
+			const auto result = D3DCompileFromFile(path.c_str(), defines,
 				D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "cs_5_0",
 				D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_WARNINGS_ARE_ERRORS |
 					D3DCOMPILE_OPTIMIZATION_LEVEL3,
@@ -179,8 +181,8 @@ namespace
 		{
 			Require(width && height && pixels.size() == width * height, name + ": input dimensions");
 			Sample sample;
-			sample.size = { width, height, (width + 31u) / 32u, 0u };
-			sample.expected = Reference(width, height, pixels);
+			sample.size = { width, height, (width + tileSize_ - 1u) / tileSize_, 0u };
+			sample.expected = Reference(width, height, pixels, tileSize_);
 			D3D11_TEXTURE2D_DESC textureDesc{};
 			textureDesc.Width = width;
 			textureDesc.Height = height;
@@ -234,7 +236,7 @@ namespace
 			ComPtr<ID3D11ShaderResourceView> boundMask;
 			context_->CSGetShaderResources(0, 1, &boundMask);
 			Require(boundMask.Get() == sample.maskView.Get(), "Bounds input was silently nulled by an output hazard");
-			context_->Dispatch(sample.size[2], (sample.size[1] + 31u) / 32u, 1);
+			context_->Dispatch(sample.size[2], (sample.size[1] + tileSize_ - 1u) / tileSize_, 1);
 			context_->CSSetUnorderedAccessViews(0, 2, nullUavs.data(), nullptr);
 			context_->CopyResource(sample.staging.Get(), sample.output.Get());
 			context_->End(sample.query.Get());
@@ -243,7 +245,8 @@ namespace
 		void EarlyCategoryBoundsCases(const std::filesystem::path& shaderDirectory)
 		{
 			ComPtr<ID3DBlob> code, errors;
-			const D3D_SHADER_MACRO defines[]{ { "EARLY_CATEGORY_BOUNDS", "1" }, { nullptr, nullptr } };
+			const auto tileValue = std::to_string(tileSize_);
+			const D3D_SHADER_MACRO defines[]{ { "EARLY_CATEGORY_BOUNDS", "1" }, { "CHARACTER_MASK_TILE_SIZE", tileValue.c_str() }, { nullptr, nullptr } };
 			const auto compiled = D3DCompileFromFile((shaderDirectory / "DLSS5CharacterMaskBoundsCS.hlsl").c_str(), defines,
 				D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "cs_5_0",
 				D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_WARNINGS_ARE_ERRORS | D3DCOMPILE_OPTIMIZATION_LEVEL3,
@@ -268,7 +271,8 @@ namespace
 						pixels[y * width * eyeCount + x] = { 12345, codes[(x * 3u + y * 5u) % codes.size()] };
 				auto source = MakeTexture(width * eyeCount, height, NeuralRendering::kCharacterCategoryFormat, pixels);
 				for (std::uint32_t selection = 0; selection < 32; ++selection) {
-					auto sample = CreateSample("early active-view bounds", width, height * eyeCount, std::vector<std::uint8_t>(width * height * eyeCount));
+					const auto stagingHeight = ((height + tileSize_ - 1u) / tileSize_) * tileSize_ * eyeCount;
+					auto sample = CreateSample("early active-view bounds", width, stagingHeight, std::vector<std::uint8_t>(width * stagingHeight));
 					std::vector<Bounds> expected;
 					for (std::uint32_t eye = 0; eye < eyeCount; ++eye) {
 						std::vector<std::uint8_t> mask(width * height);
@@ -279,11 +283,11 @@ namespace
 								                    x < valid[eye][0] + valid[eye][2] && y < valid[eye][1] + valid[eye][3];
 								mask[y * width + x] = inside && codeIndex >= 1 && codeIndex <= 5 && (selection & (1u << (codeIndex - 1u))) ? 1 : 0;
 							}
-						const auto eyeBounds = Reference(width, height, mask);
+						const auto eyeBounds = Reference(width, height, mask, tileSize_);
 						expected.insert(expected.end(), eyeBounds.begin(), eyeBounds.end());
 					}
 					Require(expected.size() == sample.expected.size(), "Early active-view staging extent");
-					const std::array<Bounds, 3> constants{ Bounds{ width, height, (width + 31u) / 32u, selection << 1u }, valid[0], valid[1] };
+					const std::array<Bounds, 3> constants{ Bounds{ width, height, (width + tileSize_ - 1u) / tileSize_, selection << 1u }, valid[0], valid[1] };
 					D3D11_BUFFER_DESC desc{};
 					desc.ByteWidth = sizeof(constants);
 					desc.Usage = D3D11_USAGE_IMMUTABLE;
@@ -295,7 +299,7 @@ namespace
 					context_->CSSetConstantBuffers(0, 1, cb.GetAddressOf());
 					context_->CSSetShaderResources(0, 1, source.srv.GetAddressOf());
 					context_->CSSetUnorderedAccessViews(0, 1, sample.outputView.GetAddressOf(), nullptr);
-					context_->Dispatch((width + 31u) / 32u, (height + 31u) / 32u, eyeCount);
+					context_->Dispatch((width + tileSize_ - 1u) / tileSize_, (height + tileSize_ - 1u) / tileSize_, eyeCount);
 					ID3D11UnorderedAccessView* empty = nullptr;
 					context_->CSSetUnorderedAccessViews(0, 1, &empty, nullptr);
 					context_->CopyResource(sample.staging.Get(), sample.output.Get());
@@ -893,6 +897,7 @@ namespace
 		ComPtr<ID3D11DeviceContext> context_;
 		ComPtr<ID3D11ComputeShader> shader_;
 		std::uint32_t cases_ = 0;
+		std::uint32_t tileSize_ = 32;
 	};
 }
 
@@ -903,6 +908,10 @@ int wmain(int argc, wchar_t** argv)
 		Harness gpu(argv[1]);
 		gpu.ReadbackCases();
 		gpu.EarlyCategoryBoundsCases(argv[1]);
+		Harness tiled(argv[1], 16);
+		tiled.EarlyCategoryBoundsCases(argv[1]);
+		tiled.Case("16-pixel clipped edge tiles", 33, 17, std::vector<std::uint8_t>(33 * 17, 1));
+		tiled.ReadbackCases();
 		gpu.ConnectedPipelineCases(argv[1]);
 		gpu.Case("minimum positive R8 pixel", 1, 1, { 1 });
 		std::vector<std::uint8_t> tiny(33 * 17);
@@ -938,7 +947,7 @@ int wmain(int argc, wchar_t** argv)
 					pixel = static_cast<std::uint8_t>(1u + random() % 255u);
 			gpu.Case("random " + std::to_string(test), width, height, pixels);
 		}
-		std::cout << "Production character mask-bounds HLSL passed " << gpu.Cases() << " WARP cases\n";
+		std::cout << "Production character mask-bounds HLSL passed " << gpu.Cases() + tiled.Cases() << " WARP cases\n";
 		return 0;
 	} catch (const std::exception& error) {
 		std::cerr << error.what() << '\n';

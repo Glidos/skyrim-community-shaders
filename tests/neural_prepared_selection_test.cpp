@@ -76,6 +76,10 @@ struct Fixture
 		ComputeSubrect maskWorkSubrect{ 7, 9, 13, 11 };
 		ComputeSubrect computeSubrect{ 3, 5, 40, 30 };
 		std::optional<RoiDescriptor> roi;
+		StablePackedCropSources stablePackedCrops;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		PackedCropPlanningDiagnostics packedCropPlanning{};
+#endif
 	};
 	std::array<Slot, 4> slots_{};
 	std::uint64_t earlyMaskCaptureSerial_ = 9;
@@ -222,12 +226,22 @@ int main()
 		args.sourceWorldFrame = 10;
 		args.generation = 3;
 		args.featureSlot = slotIndex;
+		slot.stablePackedCrops.sources = { { ComputeSubrect{ 5, 8, 8, 8 }, ComputeSubrect{ 24, 12, 8, 8 } }, 2 };
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		slot.packedCropPlanning.reason = PackedCropReason::SourcesReady;
+		slot.packedCropPlanning.inputRegions = 2;
+		slot.packedCropPlanning.candidateExamined = true;
+		slot.packedCropPlanning.selectedSources = slot.stablePackedCrops.sources;
+#endif
 		for (bool capture : { false, true }) {
 			Color::Registry::Instance().enabled = capture;
 			auto result = producer->BuildPreparedResult(args, slot);
 			Require(result.prepared && result.computeSubrect == slot.computeSubrect);
-			Require(result.roi == slot.roi);
+			Require(result.roi == slot.roi && result.packedCrops == slot.stablePackedCrops.sources);
 #ifdef DEVBENCH_BRIDGE_ENABLED
+			Require(result.packedCropPlanning.reason == PackedCropReason::SourcesReady &&
+					result.packedCropPlanning.inputRegions == 2 && result.packedCropPlanning.candidateExamined &&
+					result.packedCropPlanning.selectedSources == slot.stablePackedCrops.sources);
 			Require(result.evidence == (capture ? evidence : nullptr));
 #else
 			Require(!result.evidence);

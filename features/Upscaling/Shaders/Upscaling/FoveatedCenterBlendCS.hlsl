@@ -1,3 +1,4 @@
+#include "Common/NeuralRenderingSelection.hlsli"
 #include "Upscaling/FoveatedBlend.hlsli"
 
 cbuffer FoveatedCenterBlendCB : register(b0)
@@ -61,9 +62,7 @@ float4 PrepareFinalLdrModelColor(float4 modelColor, float4 originalColor)
 		float characterWeight = 0.0;
 		[branch] if (all(centerUV >= CharacterMaskBounds.xy) && all(centerUV < CharacterMaskBounds.zw))
 			characterWeight = saturate(CharacterMask.Load(sourcePos));
-		// Provider blending already applies strength and feathering once.
-		if (CharacterSelectionMode == 2 && characterWeight > 0.0)
-			characterWeight = 1.0;
+		characterWeight = NeuralRenderingSelectionWeight(characterWeight, CharacterSelectionMode);
 		float4 baselineColor = BaselineCenterColor.Load(sourcePos);
 		centerColor = baselineColor;
 		if (characterWeight > 0.0) {

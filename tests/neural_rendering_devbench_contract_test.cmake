@@ -1012,7 +1012,7 @@ if(NOT _descriptor_two_value_maximum EQUAL 1)
 endif()
 
 foreach(_status_contract IN ITEMS
-    [[{ "apiVersion", 10 }]]
+    [[{ "apiVersion", 11 }]]
     [[{ "implementationMatrix", NeuralImplementationMatrixJson() }]]
     [[{ "insertionPointMatrix", NeuralInsertionPointMatrixJson() }]]
     [[{ "selectedInsertionPoint", NeuralInsertionPointJson(insertionPoint) }]]
@@ -1068,7 +1068,7 @@ foreach(_status_contract IN ITEMS
     [[{ "currentFrame", temporalAdmission.currentFrame }]]
     [[{ "lastWorldRenderFrame", temporalAdmission.lastWorldRenderFrame }]]
     [[{ "lastCompletedWorldRenderFrame", temporalAdmission.lastCompletedWorldRenderFrame }]]
-    [[nr_status returns the API-v10 NR runtime]]
+    [[nr_status returns the API-v11 NR runtime]]
     [[nr_status exposes lifetimeDiagnostics: a bounded 64-record CPU history]]
     [[NeuralRendering::LifetimeDiagnosticsJson(NeuralRendering::Renderer::Instance().GetLifetimeDiagnostics()]]
     [[{ "neuralRendering", NeuralRenderingStatusJson(a_upscaling) }]]

@@ -3,8 +3,16 @@
 #endif
 
 // Exact bounds of positive pixels, or enabled authored categories before resolve.
-// One group owns one 32x32 tile and always replaces its output record, including
+// One group owns one tile and always replaces its output record, including
 // empty tiles. Bounds are global mask coordinates with exclusive maximum edges.
+#ifndef CHARACTER_MASK_TILE_SIZE
+#	define CHARACTER_MASK_TILE_SIZE 32
+#endif
+#if CHARACTER_MASK_TILE_SIZE != 16 && CHARACTER_MASK_TILE_SIZE != 32
+#	error Unsupported character mask tile size
+#endif
+#define CHARACTER_MASK_LANE_SIZE (CHARACTER_MASK_TILE_SIZE / 8)
+
 cbuffer CharacterMaskBoundsCB : register(b0)
 {
 	uint4 Size;  // mask width, mask height, tile count X, reserved
@@ -40,10 +48,10 @@ bool IsSelected(uint2 pixel, uint eye)
 	uint lane : SV_GroupIndex) {
 	uint2 minimum = uint2(0xffffffffu, 0xffffffffu);
 	uint2 maximum = 0u;
-	const uint2 base = groupID.xy * 32u + threadID.xy * 4u;
-	[unroll] for (uint y = 0u; y < 4u; ++y)
+	const uint2 base = groupID.xy * CHARACTER_MASK_TILE_SIZE + threadID.xy * CHARACTER_MASK_LANE_SIZE;
+	[unroll] for (uint y = 0u; y < CHARACTER_MASK_LANE_SIZE; ++y)
 	{
-		[unroll] for (uint x = 0u; x < 4u; ++x)
+		[unroll] for (uint x = 0u; x < CHARACTER_MASK_LANE_SIZE; ++x)
 		{
 			const uint2 pixel = base + uint2(x, y);
 			if (IsSelected(pixel, groupID.z)) {
@@ -64,7 +72,7 @@ bool IsSelected(uint2 pixel, uint eye)
 		GroupMemoryBarrierWithGroupSync();
 	}
 	if (lane == 0u) {
-		const uint eyeOffset = groupID.z * Size.z * ((Size.y + 31u) / 32u);
+		const uint eyeOffset = groupID.z * Size.z * ((Size.y + CHARACTER_MASK_TILE_SIZE - 1u) / CHARACTER_MASK_TILE_SIZE);
 		TileBounds[eyeOffset + groupID.y * Size.z + groupID.x] =
 			GroupBounds[0].x == 0xffffffffu ? uint4(0u, 0u, 0u, 0u) : GroupBounds[0];
 	}

@@ -156,7 +156,8 @@ int main()
 				++(changed.*field);
 				require(BuildNeuralRenderingSettingsKey(changed) == sceneKey);
 			}
-			for (const auto field : { &Upscaling::Settings::neuralCharacterAdaptiveRoiSelectionEnabled,
+			for (const auto field : { &Upscaling::Settings::neuralCharacterPackedCrops,
+					 &Upscaling::Settings::neuralCharacterAdaptiveRoiSelectionEnabled,
 					 &Upscaling::Settings::neuralCharacterDepthAwareFeatherEnabled,
 					 &Upscaling::Settings::neuralCharacterVisibilityDepthTestEnabled
 #ifdef DEVBENCH_BRIDGE_ENABLED

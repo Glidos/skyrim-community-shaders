@@ -3,6 +3,7 @@
 #include "../DLSSViewportCrop.h"
 #include "CentralAreaPolicy.h"
 #include "ComputeSubrect.h"
+#include "PackedCropPolicy.h"
 #include "PipelinePolicy.h"
 
 #include <array>
@@ -45,6 +46,7 @@ namespace NeuralRendering
 		ComputeSubrect sourceRegion{};
 		std::uintptr_t controlMaskIdentity = 0;
 		CentralArea centralArea{};
+		PackedCropLayout packedCrops{};
 
 		bool operator==(const ModelResolutionHistory&) const = default;
 	};
@@ -56,6 +58,7 @@ namespace NeuralRendering
 		ComputeSubrect sourceRegion{}, modelRegion{};
 		UpscalingDLSS::ViewportCrop nativeCrop{};
 		std::array<float, 2> motionNormalization{};
+		PackedCropLayout packedCrops{};
 	};
 
 	/** Map crop-local inference work while converting full-eye normalized motion exactly once. */

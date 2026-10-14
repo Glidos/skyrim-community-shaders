@@ -1,5 +1,6 @@
 #include "Features/Upscaling/NeuralRendering/ComputeSubrect.h"
 
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <optional>
@@ -137,16 +138,22 @@ struct Upscaling
 	};
 	Settings settings;
 	std::array<std::unique_ptr<Texture>, 2> foveatedCenterColorIn, foveatedCenterNeuralOut, foveatedCenterNeuralSelected;
-	unsigned allocations = 0, dispatches = 0;
-	bool blendSucceeds = true;
+	unsigned allocations = 0, allocationAttempts = 0, selectedPreparations = 0, dispatches = 0;
+	bool selectedAllocationAllowed = true, blendSucceeds = true;
 	uint64_t measuredPixels = 0;
 	std::optional<uint64_t> measuredCopiedBytes;
-	bool EnsureFoveatedTexture(std::unique_ptr<Texture>& t, Resource*, unsigned w, unsigned h, bool, bool, bool, bool, const char*)
+	bool EnsureReducedResolutionNeuralSelected(unsigned eye, Resource*, unsigned w, unsigned h)
 	{
-		if (!t || t->desc.Width != w || t->desc.Height != h) {
-			t = std::make_unique<Texture>(w, h, -1000.0f);
-			++allocations;
-		}
+		++selectedPreparations;
+		auto& selected = foveatedCenterNeuralSelected[eye];
+		if (selected && selected->resource && selected->srv && selected->uav &&
+			selected->desc.Width == w && selected->desc.Height == h)
+			return true;
+		++allocationAttempts;
+		if (!selectedAllocationAllowed)
+			return false;
+		selected = std::make_unique<Texture>(w, h, -1000.0f);
+		++allocations;
 		return true;
 	}
 	unsigned CaptureNeuralStage(NeuralStereoRouteRole, unsigned, unsigned, unsigned, uint64_t, const char*) { return 1; }
@@ -216,12 +223,13 @@ int main()
 						u.dispatches = 0;
 						if (u.foveatedCenterNeuralSelected[eye])
 							std::fill(u.foveatedCenterNeuralSelected[eye]->resource->pixels.begin(), u.foveatedCenterNeuralSelected[eye]->resource->pixels.end(), -500.0f);
+						u.selectedAllocationAllowed = repeat == 0;
 						Require(u.PrepareReducedResolutionNeuralOutput(eye, args));
 						Require(u.foveatedCenterNeuralSelected[eye]->resource->pixels == expected);
 						Require(globals::d3d::instance.copies == (area == 77 ? 0u : 1u));
 						Require(u.measuredPixels == area && u.measuredCopiedBytes == (area == 77 ? 0u : 308u));
-						Require(u.allocations == 1);
-						Require(u.dispatches == 1);
+						Require(u.allocations == 1 && u.allocationAttempts == 1);
+						Require(u.selectedPreparations == repeat + 1 && u.dispatches == 1);
 					}
 					const auto originalAllocations = u.allocations;
 					for (const auto& invalid : std::vector<ComputeSubrect>{
@@ -239,4 +247,31 @@ int main()
 					u.blendSucceeds = false;
 					Require(!u.PrepareReducedResolutionNeuralOutput(eye, args));
 				}
+	for (const unsigned eye : { 0u, 1u })
+		for (const bool partial : { false, true })
+			for (const unsigned cachedState : { 0u, 1u, 2u }) {
+				Upscaling u;
+				u.foveatedCenterColorIn[eye] = std::make_unique<Texture>(11, 7, 4.0f);
+				u.foveatedCenterNeuralOut[eye] = std::make_unique<Texture>(11, 7, 12.0f);
+				if (cachedState)
+					u.foveatedCenterNeuralSelected[eye] = std::make_unique<Texture>(cachedState == 1 ? 3u : 11u, 7, -500.0f);
+				if (cachedState == 2)
+					u.foveatedCenterNeuralSelected[eye]->uav = {};
+				auto* previous = u.foveatedCenterNeuralSelected[eye].get();
+				const auto previousPixels = previous ? previous->resource->pixels : std::vector<float>{};
+				u.selectedAllocationAllowed = false;
+				currentMask = {};
+				NeuralRendering::RendererApplyArgs args;
+				args.colorInput = u.foveatedCenterColorIn[eye]->resource.get();
+				args.featureSlot = eye;
+				args.computeSubrect = partial ? ComputeSubrect{ 1, 1, 8, 5 } : ComputeSubrect{ 0, 0, 11, 7 };
+				globals::d3d::instance.copies = 0;
+				Require(!u.PrepareReducedResolutionNeuralOutput(eye, args));
+				Require(u.selectedPreparations == 1 && u.allocationAttempts == 1 && !u.allocations);
+				Require(!globals::d3d::instance.copies && !u.dispatches && !u.measuredPixels && !u.measuredCopiedBytes);
+				Require(u.foveatedCenterNeuralSelected[eye].get() == previous);
+				Require(!previous || previous->resource->pixels == previousPixels);
+				Require(u.foveatedCenterColorIn[eye]->resource->pixels == std::vector<float>(77, 4.0f));
+				Require(u.foveatedCenterNeuralOut[eye]->resource->pixels == std::vector<float>(77, 12.0f));
+			}
 }

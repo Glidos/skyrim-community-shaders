@@ -4,6 +4,7 @@
 #include "Features/Upscaling/NeuralRendering/MemoryConservationPolicy.h"
 #include "Features/Upscaling/NeuralRendering/MemoryRecoveryPolicy.h"
 #include "Features/Upscaling/NeuralRendering/ModelResolutionPolicy.h"
+#include "Features/Upscaling/NeuralRendering/PrewarmPolicy.h"
 #include "Features/Upscaling/NeuralRendering/Runtime.h"
 #include "Features/Upscaling/NeuralRendering/StallRecoveryPolicy.h"
 
@@ -88,6 +89,7 @@ namespace globals
 				bool neuralRenderingRenderscaleFov = false;
 				bool neuralCharacterSceneStrengthsEnabled = false;
 				bool neuralCharacterProviderBlending = false;
+				bool neuralCharacterPackedCrops = true;
 				bool neuralCharacterFacesEnabled = true, neuralCharacterSkinEnabled = true, neuralCharacterHairEnabled = true;
 				bool neuralCharacterArmorEnabled = false, neuralCharacterWeaponsEnabled = false;
 				float neuralCharacterFaceStrength = 1.0f, neuralCharacterSkinStrength = 1.0f, neuralCharacterHairStrength = 0.65f;
@@ -97,8 +99,10 @@ namespace globals
 				unsigned neuralRenderingMode = 0;
 				unsigned neuralRenderingModelResolutionPercent = 100;
 				bool neuralRenderingPressureResolutionEnabled = true;
-				bool neuralRenderingPrewarmEnabled = false;
-				bool neuralRenderingParallelEyes = false;
+				bool neuralRenderingPrewarmEnabled = true;
+				float neuralRenderingSingleSubrectScale = 1.0f;
+				bool neuralRenderingAutoMask = true, neuralRenderingUICorrection = false;
+				bool neuralRenderingParallelEyes = true;
 				unsigned neuralRenderingCentralAreaPercent = 100, neuralRenderingCentralFeatherPixels = 64;
 				unsigned neuralRenderingPreset = 1, neuralRenderingStyle = 0;
 				float neuralRenderingIntensity = 1.0f, neuralRenderingLocalTone = 1.0f;
@@ -685,10 +689,95 @@ int main()
 		Upscaling::Settings settings{};
 		ImGui::Clear();
 		DrawNeuralModelResolutionSettings(settings);
-		require(ImGui::Seen("Evaluate NR eyes in parallel") == vr && !settings.neuralRenderingParallelEyes,
-			"parallel NR control must be VR-only and default off");
-		require(ImGui::Seen("Prewarm NR while loading") == vr && !settings.neuralRenderingPrewarmEnabled,
-			"Optional prewarm is default-off and only exposed for VR");
+		require(ImGui::Seen("Multi-Crop") && settings.neuralCharacterPackedCrops,
+			"Multi-Crop must be available and default on on both runtimes");
+		require(!ImGui::Seen("Parallel Eyes") && !ImGui::Seen("Prewarm NR while loading"),
+			"Ordinary resolution controls must not expose execution debug controls");
+		ImGui::Clear("Multi-Crop");
+		DrawNeuralModelResolutionSettings(settings);
+		require(!settings.neuralCharacterPackedCrops && settings.neuralRenderingParallelEyes,
+			"Multi-Crop must remain independently testable from default-on parallel scheduling");
+		ImGui::Clear();
+		DrawNeuralExecutionSettings(settings);
+		require(ImGui::Seen("Parallel Eyes") == vr && settings.neuralRenderingParallelEyes,
+			"Parallel Eyes is VR-only and defaults on");
+		require(ImGui::Seen("Prewarm NR while loading") == vr && settings.neuralRenderingPrewarmEnabled,
+			"The saved prewarm preference defaults on and the control is VR-only");
+	}
+	{
+		globals::game::isVR = true;
+		Upscaling::Settings supported{};
+		supported.neuralRenderingMode = 2;
+		supported.neuralRenderingPressureResolutionEnabled = false;
+		require(!NeuralRendering::PrewarmConfigurationBlocker(supported, true),
+			"Full-view C supports prewarm with fixed full model resolution and automatic masks");
+		require(NeuralRendering::PrewarmConfigurationBlocker(supported, false), "Flat NR must not prewarm");
+		const auto verifyBlocked = [&](const Upscaling::Settings& unsupported) {
+			require(NeuralRendering::PrewarmConfigurationBlocker(unsupported, true), "Unsupported configurations must defer prewarm");
+			auto settings = unsupported;
+			ImGui::Clear("Prewarm NR while loading");
+			DrawNeuralExecutionSettings(settings);
+			require(ImGui::Disabled("Prewarm NR while loading") &&
+						std::find(ImGui::checkboxValues.begin(), ImGui::checkboxValues.end(), std::pair<std::string, bool>{ "Prewarm NR while loading", false }) != ImGui::checkboxValues.end(),
+				"Unsupported prewarm must display off and ignore clicks");
+			require(settings.neuralRenderingPrewarmEnabled, "Unsupported modes retain the saved prewarm preference");
+		};
+		for (const auto [member, value] : {
+				 std::pair{ &Upscaling::Settings::neuralRenderingMode, 0u },
+				 std::pair{ &Upscaling::Settings::neuralRenderingMode, 1u },
+				 std::pair{ &Upscaling::Settings::neuralRenderingModelResolutionPercent, 90u },
+				 std::pair{ &Upscaling::Settings::neuralRenderingCentralAreaPercent, 75u } }) {
+			auto settings = supported;
+			settings.*member = value;
+			verifyBlocked(settings);
+		}
+		for (const auto member : { &Upscaling::Settings::neuralRenderingPressureResolutionEnabled,
+				 &Upscaling::Settings::neuralRenderingRenderscaleFov, &Upscaling::Settings::neuralCharacterRenderingEnabled,
+				 &Upscaling::Settings::neuralCharacterSceneStrengthsEnabled, &Upscaling::Settings::neuralRenderingAutoMask,
+				 &Upscaling::Settings::neuralRenderingUICorrection }) {
+			auto settings = supported;
+			settings.*member = !(settings.*member);
+			verifyBlocked(settings);
+		}
+		auto cropped = supported;
+		cropped.neuralRenderingSingleSubrectScale = 0.75f;
+		verifyBlocked(cropped);
+		ImGui::Clear();
+		DrawNeuralExecutionSettings(supported);
+		require(!ImGui::Disabled("Prewarm NR while loading") &&
+					std::find(ImGui::checkboxValues.begin(), ImGui::checkboxValues.end(), std::pair<std::string, bool>{ "Prewarm NR while loading", true }) != ImGui::checkboxValues.end(),
+			"Supported prewarm must display enabled by default");
+		ImGui::Clear("Prewarm NR while loading");
+		DrawNeuralExecutionSettings(supported);
+		require(!supported.neuralRenderingPrewarmEnabled, "Supported prewarm must allow an explicit opt-out");
+	}
+	{
+		State visibilityState;
+		globals::state = &visibilityState;
+		for (const bool vr : { false, true }) {
+			globals::game::isVR = vr;
+			for (const bool enabled : { false, true }) {
+				auto& upscaling = globals::features::upscaling;
+				upscaling.settings = {};
+				upscaling.settings.neuralRenderingEnabled = true;
+				upscaling.settings.neuralRenderingMode = 2;
+				upscaling.settings.foveatedVendorDispatch = false;
+				upscaling.settings.neuralRenderingPressureResolutionEnabled = false;
+				upscaling.settings.neuralRenderingParallelEyes = enabled;
+				upscaling.settings.neuralRenderingPrewarmEnabled = enabled;
+				for (const auto level : { spdlog::level::debug, spdlog::level::info, spdlog::level::debug }) {
+					visibilityState.level = level;
+					ImGui::Clear();
+					upscaling.DrawSelectionControls();
+					const bool visible = vr && level == spdlog::level::debug;
+					require(ImGui::Seen("Parallel Eyes") == visible && ImGui::Seen("Prewarm NR while loading") == visible,
+						"Execution settings are visible only in VR Debug controls");
+					require(upscaling.settings.neuralRenderingParallelEyes == enabled && upscaling.settings.neuralRenderingPrewarmEnabled == enabled,
+						"Returning to Info or changing runtime must preserve both saved execution preferences");
+				}
+			}
+		}
+		globals::state = nullptr;
 	}
 	globals::game::isVR = true;
 	ImGui::Clear();
@@ -1041,7 +1130,7 @@ int main()
 			ImGui::Clear("Intensity");
 			upscaling.DrawSelectionControls();
 			for (const char* label : { "After upscaling", "Before DLSS", "Preset", "Intensity", "Style",
-					 "NR Model Resolution", "Lower NR resolution under memory pressure", "Limit NR to central area",
+					 "NR Model Resolution", "Multi-Crop", "Lower NR resolution under memory pressure", "Limit NR to central area",
 					 "NR central area", "NR central feather", "Entire scene", "Humans", "Faces" })
 				require(ImGui::Seen(label) && ImGui::Disabled(label),
 					"Off, missing DLL and unavailable NR must grey out every child control, including mask sliders");

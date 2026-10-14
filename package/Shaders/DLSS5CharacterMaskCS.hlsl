@@ -57,8 +57,11 @@ bool GroupHasSupport(uint2 origin)
 	const int2 upper = int2(floor((float2(last) + 0.5) * scale - 0.5 - Jitter.xy)) + radius + 1;
 	const int2 minimum = GetGlobalSourcePixel(lower) - int2(SourceCrop.x, 0);
 	const int2 maximum = GetGlobalSourcePixel(upper) - int2(SourceCrop.x, 0) + 1;
-	const uint2 firstTile = uint2(minimum) / 32u;
-	const uint2 lastTile = uint2(maximum - 1) / 32u;
+#	ifndef CHARACTER_MASK_TILE_SIZE
+#		define CHARACTER_MASK_TILE_SIZE 32
+#	endif
+	const uint2 firstTile = uint2(minimum) / CHARACTER_MASK_TILE_SIZE;
+	const uint2 lastTile = uint2(maximum - 1) / CHARACTER_MASK_TILE_SIZE;
 	// Invalid metadata or an unusually large footprint keeps the reference work.
 	if (any(lastTile >= SupportGrid.xy) || any(lastTile - firstTile > 3u))
 		return true;

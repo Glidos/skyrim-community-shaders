@@ -32,6 +32,54 @@ def body(source, signature, indent="\t"):
 
 
 class MemoryRecoveryContracts(unittest.TestCase):
+    def test_output_creation_denial_preserves_pressure_retirement_progress(self):
+        source = body(RENDERER, "Renderer::ReserveOutputAllocation(")
+        retire_gate = source.index("if (state_->memoryRecovery_.phase == MemoryRecoveryPhase::Retiring)")
+        sample = source.index("SampleMemoryBudgetLocked(")
+        self.assertLess(source.index("state_->failureLatched_ || state_->quarantined_"), retire_gate)
+        reservation = source.index("auto reservation = service.Reserve(")
+        self.assertLess(retire_gate, source.index("const auto initial = service.Sample("))
+        self.assertLess(source.index("const auto initial = service.Sample("), reservation)
+        self.assertLess(reservation, sample)
+        self.assertLess(source.index("if (!reservation)"), sample)
+        early_retirement = source[retire_gate:reservation]
+        self.assertIn("backendMaintenancePending_.store(true", early_retirement)
+        self.assertIn("snapshot_.memoryRecovery = state_->memoryRecovery_", early_retirement)
+        self.assertIn("state_->PublishMemoryBudgetWorkLocked()", early_retirement)
+        self.assertIn("return {};", early_retirement)
+        unknown = source.split("if (!sample.IsFresh(now) || !shared.Fresh(now) || shared.generation != initial.generation || shared.pendingBytes < reservation.Bytes())", 1)[1].split("if (!state_->memoryRecovery_.CanAllocateOutput(", 1)[0]
+        self.assertIn("return {};", unknown)
+        self.assertNotIn("memoryRecovery_.Admit(", unknown)
+        self.assertIn("const auto pending = shared.pendingBytes - reservation.Bytes();", unknown)
+        self.assertNotIn("PendingBytes(", source)
+        self.assertIn("CanAllocateOutput(sample, bytes, now, pending)", source)
+        denial = source.split("if (!state_->memoryRecovery_.CanAllocateOutput(", 1)[1].split("state_->memorySample_.valid = false", 1)[0]
+        self.assertIn("memoryRecovery_.Admit(sample, bytes, now, pending)", denial)
+        self.assertLess(denial.index("memoryRecovery_.Admit("), denial.index("snapshot_.memoryRecovery ="))
+        self.assertLess(denial.index("snapshot_.memoryRecovery ="), denial.index("backendMaintenancePending_.store(true"))
+        self.assertIn("phase == MemoryRecoveryPhase::Retiring", denial)
+        self.assertLess(denial.index("memoryRecovery_.Admit("), denial.index("PublishMemoryBudgetWorkLocked()"))
+        self.assertLess(denial.index("PublishMemoryBudgetWorkLocked()"), denial.index("return {};"))
+        self.assertNotIn("RetireMemoryPressureLocked(", source)
+        self.assertNotIn("TeardownBackendLocked(", source)
+        self.assertNotIn("RendererOwnership", source)
+
+    def test_pressure_maintenance_keeps_ownership_order_and_fault_gates(self):
+        source = body(RENDERER, "void Renderer::ServiceBackendMaintenance(")
+        self.assertLess(source.index("backendMaintenancePending_.load("), source.index("Util::RendererOwnership owner"))
+        self.assertLess(source.index("Util::RendererOwnership owner"), source.index("std::unique_lock lock(state_->mutex_"))
+        self.assertLess(source.index("if (!lock.owns_lock())"), source.index("RetireMemoryPressureLocked("))
+        self.assertLess(source.index("snapshot_.stallRecovery.pending"), source.index("state_->failureLatched_ || state_->quarantined_"))
+        fault_gate = source.split("else if (state_->failureLatched_ || state_->quarantined_)", 1)[1].split("else if (state_->memoryRecovery_.phase", 1)[0]
+        self.assertIn("backendMaintenancePending_.store(false", fault_gate)
+        retirement = source.split("else if (state_->memoryRecovery_.phase == MemoryRecoveryPhase::Retiring)", 1)[1].split("else", 1)[0]
+        self.assertIn("RetireMemoryPressureLocked()", retirement)
+        self.assertNotIn("if (a_requested)", retirement)
+        self.assertLess(retirement.index("RetireMemoryPressureLocked()"), retirement.index("PublishMemoryBudgetWorkLocked(a_requested)"))
+        self.assertLess(source.index("RetireMemoryPressureLocked("), source.index("ServiceRetainedBackendLocked("))
+        retire = body(RENDERER, "bool Renderer::State::RetireMemoryPressureLocked(")
+        self.assertLess(retire.index("TeardownBackendLocked("), retire.index("memoryRecovery_.Retired("))
+
     def test_conservation_retires_before_allocating_and_preserves_stereo(self):
         source = body(RENDERER, "bool Renderer::State::AdmitMemoryLocked(")
         self.assertLess(source.index("memoryConservation_.Update("), source.index("ReclaimMemoryLocked("))
@@ -154,6 +202,27 @@ class MemoryRecoveryContracts(unittest.TestCase):
         self.assertIn("restorationPreviousPercent_ = previousCeiling", proposal)
         self.assertNotIn("ResolutionChangedLocked(", proposal)
 
+    def test_adaptive_projection_hint_only_publishes_policy_changes(self):
+        hint = body(RENDERER, "std::uint32_t Renderer::ModelResolutionCeiling()")
+        self.assertIn("modelResolutionCeiling_.load(std::memory_order_relaxed)", hint)
+        self.assertNotIn("mutex_", hint)
+        self.assertNotIn("Sample", hint)
+        self.assertIn("static_assert(std::atomic_uint32_t::is_always_lock_free)", RENDERER)
+        publisher = body(RENDERER, "void PublishModelResolutionCeilingLocked()", "\t\t")
+        self.assertIn("memoryResolution_.enabled ? memoryResolution_.ceilingPercent : kMaximumModelResolutionPercent", publisher)
+        self.assertEqual(RENDERER.count("modelResolutionCeiling_.store("), 1)
+        preparation = body(RENDERER, "void Renderer::State::PrepareMemoryResolutionLocked(")
+        preference_change = preparation.split("if (memoryResolution_.enabled != first.pressureResolutionEnabled) {", 1)[1].split("\n\t\t}", 1)[0]
+        self.assertLess(preference_change.index("memoryResolution_.SetEnabled("), preference_change.index("PublishModelResolutionCeilingLocked()"))
+        for signature in ("void Renderer::State::ResolutionChangedLocked()",
+                          "bool Renderer::State::RetryWorkingResolutionLocked(",
+                          "void Renderer::State::FinishMemoryRecoveryLocked("):
+            self.assertIn("PublishModelResolutionCeilingLocked()", body(RENDERER, signature))
+        evaluation = body(UPSCALING, "NeuralStereoEvaluationSummary EvaluatePreparedNeuralStereo(")
+        self.assertEqual(evaluation.count("ModelResolutionCeiling()"), 1)
+        self.assertIn("pressureResolutionEnabled &&", evaluation)
+        self.assertNotIn("modelResolutionPercent =", evaluation)
+
     def test_completion_follows_the_entire_transaction(self):
         for entry in ("Apply", "ApplyStereo", "ApplySequentialStereo"):
             source = body(RENDERER, f"bool Renderer::{entry}(")
@@ -246,6 +315,10 @@ class MemoryRecoveryContracts(unittest.TestCase):
         self.assertNotIn("TeardownBackendLocked(", source)
         self.assertNotIn("RetireMemoryPressureLocked(", source)
         self.assertIn("state_->snapshot_.memoryRecovery = state_->memoryRecovery_", source)
+        self.assertLess(source.index("ReportDlssWarning("), source.index("PublishMemoryBudgetWorkLocked()"))
+        self.assertIn("if (state_->memoryRecovery_.phase == MemoryRecoveryPhase::Retiring)", source)
+        self.assertIn("backendMaintenancePending_.store(true", source)
+        self.assertNotIn("SampleMemoryBudgetLocked(", source)
         ui = UPSCALING.split('Neural Rendering cannot recover safely in this session.', 1)[1].split('if ((status.failureLatched || status.quarantined)', 1)[0]
         self.assertIn("else if (status.failureLatched)", ui)
         self.assertIn("else if (IsNeuralRenderingRequested()", ui)
@@ -291,8 +364,14 @@ class MemoryRecoveryContracts(unittest.TestCase):
 
     def test_faulted_backend_does_not_reserve_future_streaming_work(self):
         finish = body(RENDERER, "void FinishMemoryAdmissionLocked()", "\t\t")
-        self.assertIn("if (failureLatched_ || quarantined_)", finish)
-        guard = finish.split("if (failureLatched_ || quarantined_)", 1)[1].split("const auto phase", 1)[0]
+        self.assertLess(finish.index("memoryReservation_.Reset()"), finish.index("PublishMemoryBudgetWorkLocked()"))
+        publication = body(RENDERER, "void PublishMemoryBudgetWorkLocked(", "\t\t")
+        self.assertIn("if (!requested || failureLatched_ || quarantined_)", publication)
+        self.assertNotIn(".Sample(", publication)
+        self.assertNotIn("memoryReservation_", publication)
+        self.assertIn("phase == MemoryRecoveryPhase::Retiring || phase == MemoryRecoveryPhase::Rebuilding", publication)
+        self.assertIn("phase == MemoryRecoveryPhase::Waiting   ? memoryRecovery_.admissionDemandBytes", publication)
+        guard = publication.split("if (!requested || failureLatched_ || quarantined_)", 1)[1].split("const auto phase", 1)[0]
         self.assertIn("SetOwnerWork(Util::GpuMemoryBudget::Owner::NeuralRendering, false, 0)", guard)
         self.assertIn("return;", guard)
         for signature in ("bool Renderer::State::FailLocked(", "void Renderer::State::QuarantineAfterUnexpectedFailureLocked("):

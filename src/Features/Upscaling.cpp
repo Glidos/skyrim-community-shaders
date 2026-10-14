@@ -40,6 +40,7 @@
 #include "Upscaling/NeuralRendering/CharacterSettingsJson.h"
 #include "Upscaling/NeuralRendering/ComputeStateGuard.h"
 #include "Upscaling/NeuralRendering/ConfigurationSerialization.h"
+#include "Upscaling/NeuralRendering/ModelResolution.h"
 #include "Upscaling/NeuralRendering/ModelResolutionPolicy.h"
 #include "Upscaling/NeuralRendering/PipelinePolicy.h"
 #include "Upscaling/NeuralRendering/Renderer.h"
@@ -5265,20 +5266,24 @@ Optional: select FOV + TAA for further performance savings (not compatible with 
 		const bool requested = args.providerBlending;
 		args.controlMask.Reset();
 		args.actorSelection.Reset();
+		args.actorSelectionSupport = {};
 		args.controlMaskWidth = args.controlMaskHeight = 0;
 		args.providerBlending = false;
-		if (!requested)
-			return true;
+		if (!args.characterVisualIsolation)
+			return !requested;
 		const auto selection = NeuralRendering::CharacterRendering::Instance().GetPreparedSelection(
 			args.featureSlot, args.frameId, args.sourceWorldFrame, args.generation, args.outputWidth, args.outputHeight);
-		if (!args.characterVisualIsolation || !selection.mask || !selection.providerBlending)
+		if (!selection.mask || (requested && !selection.providerBlending))
 			return false;
+		// Packed coverage uses the source selection independently of native provider blending.
 		args.actorSelection = selection.mask;
+		args.actorSelectionSupport = selection.maskSupport;
+		if (!requested)
+			return true;
 		selection.mask->GetResource(&args.controlMask);
 		args.controlMaskWidth = args.outputWidth;
 		args.controlMaskHeight = args.outputHeight;
 		args.providerBlending = true;
-		args.actorSelectionSupport = selection.maskSupport;
 		return true;
 	}
 
@@ -5297,6 +5302,10 @@ Optional: select FOV + TAA for further performance savings (not compatible with 
 		a_args.controlMaskHeight = 0;
 		a_args.computeSubrect = {};
 		a_args.roi.reset();
+		a_args.packedCrops = {};
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		a_args.packedCropPlanning = {};
+#endif
 		a_args.characterVisualIsolation = false;
 		const auto characterSettings = BuildCharacterSettings(a_settings, a_sourceWorldFrame);
 		if (!NeuralRendering::IsCharacterMaskActive(characterSettings) || !UsesCharacterVisualIsolation(a_settings)) {
@@ -5325,6 +5334,10 @@ Optional: select FOV + TAA for further performance savings (not compatible with 
 		a_args.characterEvidence = result.evidence;
 		a_args.computeSubrect = result.computeSubrect;
 		a_args.roi = result.roi;
+		a_args.packedCrops = result.packedCrops;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		a_args.packedCropPlanning = result.packedCropPlanning;
+#endif
 		a_args.reset = a_args.reset || result.resetHistory;
 		a_args.characterVisualIsolation = true;
 		a_args.providerBlending = characterSettings.providerBlending;
@@ -6788,6 +6801,7 @@ Optional: select FOV + TAA for further performance savings (not compatible with 
 			addFloat(a_settings.neuralCharacterArmorStrength);
 			addFloat(a_settings.neuralCharacterWeaponsStrength);
 			if (a_settings.neuralCharacterRenderingEnabled) {
+				add(a_settings.neuralCharacterPackedCrops);
 				addFloat(a_settings.neuralCharacterMaximumDistanceMeters);
 				add(a_settings.neuralCharacterAdaptiveRoiSelectionEnabled);
 				addFloat(a_settings.neuralCharacterFocusScale);
@@ -18769,6 +18783,25 @@ namespace
 		MenuUI::DetailText("Works with After upscaling and Before DLSS.");
 	}
 
+	void DrawNeuralExecutionSettings(Upscaling::Settings& settings)
+	{
+		if (globals::game::isVR) {
+			Util::Widgets::Checkbox("Parallel Eyes", &settings.neuralRenderingParallelEyes);
+			Util::AddTooltip("Overlap both eye models on separate GPU queues. Enabled by default. The saved choice also applies at Info logging. Keeps NR resolution, coverage and strength. Parallel faults disable this option until restart. NR resumes serially only after safe recovery. GPU profiling includes the queue join.");
+			const auto parallel = NeuralRendering::Renderer::Instance().GetSnapshot();
+			if (settings.neuralRenderingParallelEyes && parallel.parallelEyesDisabled)
+				MenuUI::DetailNote("Parallel evaluation unavailable this session; NR uses serial evaluation.");
+			const bool prewarmSupported = NeuralRendering::PrewarmConfigurationBlocker(settings, true) == nullptr;
+			bool prewarmEnabled = settings.neuralRenderingPrewarmEnabled && prewarmSupported;
+			{
+				auto guard = Util::DisableGuard(!prewarmSupported);
+				if (Util::Widgets::Checkbox("Prewarm NR while loading", &prewarmEnabled))
+					settings.neuralRenderingPrewarmEnabled = prewarmEnabled;
+			}
+			Util::AddTooltip("Enabled by default for supported configurations, inactive for others. The saved choice also applies at Info logging. Prepare NR during the main menu or loading when GPU memory permits. Requires Before DLSS, 100% NR resolution, full coverage and automatic masking, with Actors only, scene category adjustments, UI correction and Lower NR resolution under memory pressure off. Other configurations initialize during gameplay.");
+		}
+	}
+
 	void DrawNeuralIntegerSetting(const char* label, std::uint32_t& value, int minimum, int maximum, const char* format)
 	{
 		auto* storage = ImGui::GetStateStorage();
@@ -18788,15 +18821,11 @@ namespace
 
 	void DrawNeuralModelResolutionSettings(Upscaling::Settings& settings)
 	{
-		if (globals::game::isVR) {
-			Util::Widgets::Checkbox("Evaluate NR eyes in parallel", &settings.neuralRenderingParallelEyes);
-			Util::AddTooltip("Overlap both eye models on separate GPU queues. Experimental and off by default. Keeps NR resolution, coverage and strength. Parallel faults disable this option until restart. NR resumes serially only after safe recovery. GPU profiling includes the queue join.");
-			const auto parallel = NeuralRendering::Renderer::Instance().GetSnapshot();
-			if (settings.neuralRenderingParallelEyes && parallel.parallelEyesDisabled)
-				MenuUI::DetailNote("Parallel evaluation unavailable this session; NR uses serial evaluation.");
-			Util::Widgets::Checkbox("Prewarm NR while loading", &settings.neuralRenderingPrewarmEnabled);
-			Util::AddTooltip("Prepare NR during the main menu or loading when GPU memory permits. Requires Before DLSS, 100% NR resolution, full coverage and automatic masking, with Actors only, scene category adjustments and Lower NR resolution under memory pressure off. Other configurations initialize during gameplay.");
-		}
+		Util::Widgets::Checkbox("Multi-Crop", &settings.neuralCharacterPackedCrops);
+		Util::AddTooltip("Enabled by default. In Actors only mode, find tighter crops around selected material pixels and pack them with surrounding context into one image per eye. Uses completed occupancy to propose tighter crops, with a current-mask GPU coverage check. Keeps the base image in both eyes if a crop misses selected pixels or required context. Uses actor bounds when proposals are unavailable. Uses the NR resolution slider. Parallel Eyes in Debug controls overlaps the two eye models in VR. Requires cropped actor evaluation. Keeps exact output masks, but changing model context can change appearance. Uses the enclosing region when packing would save less than 25% of evaluated pixels. Pixel savings do not guarantee faster frames.");
+		if (settings.neuralCharacterPackedCrops && (!settings.neuralCharacterRenderingEnabled ||
+													   settings.neuralCharacterCropMode != static_cast<std::uint32_t>(NeuralRendering::CharacterCropMode::Cropped)))
+			MenuUI::DetailNote("Crop packing requires Actors only and cropped actor evaluation.");
 		DrawNeuralIntegerSetting("NR Model Resolution", settings.neuralRenderingModelResolutionPercent,
 			NeuralRendering::kMinimumModelResolutionPercent, NeuralRendering::kMaximumModelResolutionPercent, "%d%%");
 		if (auto tooltip = Util::HoverTooltipWrapper())
@@ -18969,8 +18998,10 @@ void Upscaling::DrawNeuralRenderingSettings(UpscaleMethod a_upscaleMethod, const
 			}
 			ImGui::Spacing();
 			DrawNeuralModelResolutionSettings(settings);
-			if (debugMode)
+			if (debugMode) {
+				DrawNeuralExecutionSettings(settings);
 				DrawNeuralCentralAreaSettings(settings);
+			}
 		}
 		const bool reducedResolution = GetNeuralRenderingMode() == NeuralRendering::RenderingMode::ReducedResolution;
 		const bool missingFov = NeuralRendering::RequiresFoveatedMask(GetNeuralRenderingMode(), settings.neuralRenderingFovOnly, globals::game::isVR, settings.neuralRenderingRenderscaleFov) &&
@@ -44815,16 +44846,11 @@ FidelityFX::UpscaleResult Upscaling::DispatchSingleFoveatedVendorEye(UpscaleMeth
 	bool neuralResourcesReady = neuralRenderingRequested;
 	if (neuralResourcesReady && !useSubmitNeuralFloatBridge &&
 		(!directNeuralCommit || characterVisualIsolation)) {
-		neuralResourcesReady = prepareFoveatedTexture(
-			foveatedCenterNeuralOut[eyeIndex],
-			colorIn,
-			neuralOutputWidth,
-			neuralOutputHeight,
-			false,
-			true,
-			false,
-			false,
-			("NeuralRendering::FoveatedCenterOutput" + suffix).c_str());
+		const bool beforeDlss = NeuralRendering::RunsBeforeDlss(GetNeuralRenderingArrangement());
+		neuralResourcesReady = beforeDlss ?
+		                           EnsureReducedResolutionNeuralSelected(eyeIndex, colorIn, neuralOutputWidth, neuralOutputHeight, validateStagedResources) :
+		                           prepareFoveatedTexture(foveatedCenterNeuralOut[eyeIndex], colorIn, neuralOutputWidth, neuralOutputHeight,
+									   false, true, false, false, ("NeuralRendering::FoveatedCenterOutput" + suffix).c_str());
 	}
 	if (neuralResourcesReady && useSubmitNeuralFloatBridge) {
 		neuralResourcesReady = PrepareSubmitNeuralFloatResources(
@@ -44938,9 +44964,9 @@ FidelityFX::UpscaleResult Upscaling::DispatchSingleFoveatedVendorEye(UpscaleMeth
 											  eyeIndex, directNeuralCommit) :
 										  (directNeuralCommit ?
 												  foveatedCenterColorOut[eyeIndex]->resource.get() :
-												  (foveatedCenterNeuralOut[eyeIndex] ?
-														  foveatedCenterNeuralOut[eyeIndex]->resource.get() :
-														  nullptr))) :
+												  (NeuralRendering::RunsBeforeDlss(GetNeuralRenderingArrangement()) ?
+														  (foveatedCenterNeuralSelected[eyeIndex] ? foveatedCenterNeuralSelected[eyeIndex]->resource.get() : nullptr) :
+														  (foveatedCenterNeuralOut[eyeIndex] ? foveatedCenterNeuralOut[eyeIndex]->resource.get() : nullptr)))) :
 		                          nullptr;
 		centerKey.neuralFloatIn = useSubmitNeuralFloatBridge &&
 		                                  submitNeuralFloatColorIn[eyeIndex] ?
@@ -45060,6 +45086,8 @@ FidelityFX::UpscaleResult Upscaling::DispatchSingleFoveatedVendorEye(UpscaleMeth
 					eyeIndex, directNeuralCommit);
 			} else if (directNeuralCommit) {
 				neuralOutput = foveatedCenterColorOut[eyeIndex]->resource.get();
+			} else if (NeuralRendering::RunsBeforeDlss(GetNeuralRenderingArrangement())) {
+				neuralOutput = foveatedCenterNeuralSelected[eyeIndex] ? foveatedCenterNeuralSelected[eyeIndex]->resource.get() : nullptr;
 			} else if (foveatedCenterNeuralOut[eyeIndex]) {
 				neuralOutput = foveatedCenterNeuralOut[eyeIndex]->resource.get();
 			}
@@ -45175,7 +45203,20 @@ FidelityFX::UpscaleResult Upscaling::DispatchSingleFoveatedVendorEye(UpscaleMeth
 			NeuralRendering::RendererApplyOutcome outcome{};
 			bool applied = false;
 			try {
-				applied = BindPreparedActorBlending(args) && NeuralRendering::Renderer::Instance().Apply(args, &outcome);
+				const bool beforeDlss = NeuralRendering::RunsBeforeDlss(GetNeuralRenderingArrangement());
+				bool ready = BindPreparedActorBlending(args);
+				if (ready && beforeDlss) {
+					const bool fuseSelection = NeuralRendering::ModelResolution::Required(args) ||
+					                           (args.pressureResolutionEnabled && NeuralRendering::Renderer::Instance().ModelResolutionCeiling() < NeuralRendering::kMaximumModelResolutionPercent);
+					ready = PrepareReducedResolutionNeuralOutputTarget(eyeIndex, args, fuseSelection);
+				}
+				applied = ready && NeuralRendering::Renderer::Instance().Apply(args, &outcome);
+				if (applied && beforeDlss) {
+					applied = args.modelOutputSelection ? outcome.WasOutputSelected(args.featureSlot) :
+					                                      PrepareReducedResolutionNeuralOutput(eyeIndex, args);
+					if (!applied)
+						RequestHistoryReset();
+				}
 			} catch (const std::exception& e) {
 				logger::error("[DLSSNR] Unexpected renderer exception; preserving normal DLSS: {}", e.what());
 			} catch (...) {
@@ -45459,6 +45500,71 @@ FidelityFX::UpscaleResult Upscaling::DispatchSingleFoveatedVendorEye(UpscaleMeth
 	return blended ? FidelityFX::UpscaleResult::Ready : FidelityFX::UpscaleResult::Failed;
 }
 
+bool Upscaling::EnsureReducedResolutionNeuralSelected(uint32_t eye, ID3D11Resource* source, uint32_t width, uint32_t height, bool validateStaged)
+{
+	if (eye >= 2 || !source || !width || !height ||
+		width > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION || height > D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+		return false;
+	D3D11_TEXTURE2D_DESC sourceDesc{};
+	if (!TryGetTexture2DDesc(source, sourceDesc))
+		return false;
+	auto& selected = foveatedCenterNeuralSelected[eye];
+	if (selected && selected->resource && selected->srv && selected->uav &&
+		selected->desc.Width == width && selected->desc.Height == height && selected->desc.Format == sourceDesc.Format)
+		return true;
+	if (validateStaged || ShouldReuseOrdinarySaveResources())
+		return false;
+	auto* device = globals::d3d::device;
+	const auto bytes = NeuralRendering::LogicalTextureBytes(sourceDesc.Format, width, height);
+	if (!device || !bytes || !*bytes)
+		return false;
+	auto reservation = NeuralRendering::Renderer::Instance().ReserveOutputAllocation(device, *bytes);
+	if (!reservation)
+		return false;
+	const std::string name = eye == 0 ? "NeuralRendering::ReducedSelectedLeft" : "NeuralRendering::ReducedSelectedRight";
+	if (!EnsureFoveatedTexture(selected, source, width, height, false, true, true, false, name.c_str()))
+		return false;
+	Util::GpuMemoryBudget::Get().Sample(device, 0, true);
+	return true;
+}
+
+bool Upscaling::PrepareReducedResolutionNeuralOutputTarget(uint32_t eye, NeuralRendering::RendererApplyArgs& args, bool fuseSelection)
+{
+	if (eye >= 2 || args.renderingMode != NeuralRendering::RenderingMode::ReducedResolution ||
+		!foveatedCenterColorIn[eye] || !foveatedCenterColorIn[eye]->srv ||
+		!CSX::NvidiaComIdentity::IsSame(args.colorInput, foveatedCenterColorIn[eye]->resource.get()) ||
+		args.colorWidth != args.outputWidth || args.colorHeight != args.outputHeight ||
+		!args.computeSubrect.Fits(args.outputWidth, args.outputHeight))
+		return false;
+	const auto selection = args.characterVisualIsolation ? GetPreparedCharacterSelection(settings, args.featureSlot,
+															   args.frameId, args.sourceWorldFrame, args.generation, args.outputWidth, args.outputHeight) :
+	                                                       NeuralRendering::CharacterPreparedSelection{};
+	if (args.characterVisualIsolation && !selection.mask)
+		return false;
+	auto& selected = foveatedCenterNeuralSelected[eye];
+	const std::string suffix = eye == 0 ? "Left" : "Right";
+	if (!EnsureReducedResolutionNeuralSelected(eye, args.colorInput, args.outputWidth, args.outputHeight))
+		return false;
+	args.modelOutputSelection.reset();
+	if (fuseSelection) {
+		args.colorOutput = selected->resource.get();
+		NeuralRendering::ModelOutputSelection output;
+		output.destination = selected->uav.get();
+		output.mask = selection.mask;
+		output.maskSupport = selection.maskSupport;
+		output.providerBlending = selection.providerBlending;
+		args.modelOutputSelection = std::move(output);
+		foveatedCenterNeuralOut[eye].reset();
+		return true;
+	}
+	auto& output = foveatedCenterNeuralOut[eye];
+	if (!EnsureFoveatedTexture(output, args.colorInput, args.outputWidth, args.outputHeight,
+			false, true, false, false, ("NeuralRendering::ReducedOutput" + suffix).c_str()))
+		return false;
+	args.colorOutput = output->resource.get();
+	return true;
+}
+
 bool Upscaling::PrepareReducedResolutionNeuralOutput(uint32_t eye, const NeuralRendering::RendererApplyArgs& args)
 {
 	auto* context = globals::d3d::context;
@@ -45476,9 +45582,7 @@ bool Upscaling::PrepareReducedResolutionNeuralOutput(uint32_t eye, const NeuralR
 	if (args.characterVisualIsolation && !mask)
 		return false;
 	auto& selected = foveatedCenterNeuralSelected[eye];
-	const std::string name = eye == 0 ? "NeuralRendering::ReducedSelectedLeft" : "NeuralRendering::ReducedSelectedRight";
-	if (!EnsureFoveatedTexture(selected, args.colorInput, args.outputWidth, args.outputHeight,
-			false, true, true, false, name.c_str()))
+	if (!EnsureReducedResolutionNeuralSelected(eye, args.colorInput, args.outputWidth, args.outputHeight))
 		return false;
 	NeuralRendering::ComputeStateGuard<3> stateGuard(context);
 	winrt::com_ptr<ID3D11SamplerState> previousSampler;
@@ -45619,6 +45723,10 @@ namespace
 			for (std::uint32_t eye = 0; eye < (globals::game::isVR ? 2u : 1u); ++eye) {
 				a_batchArgs[eye].computeSubrect = maskResults[eye].computeSubrect;
 				a_batchArgs[eye].roi = maskResults[eye].roi;
+				a_batchArgs[eye].packedCrops = maskResults[eye].packedCrops;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				a_batchArgs[eye].packedCropPlanning = maskResults[eye].packedCropPlanning;
+#endif
 				a_batchArgs[eye].reset = a_batchArgs[eye].reset || maskResults[eye].resetHistory;
 				a_batchArgs[eye].characterEvidence = maskResults[eye].evidence;
 				a_results[eye].bypassed = !maskResults[eye].requiresEvaluation;
@@ -45704,6 +45812,23 @@ namespace
 			a_results, &Upscaling::NeuralCenterDispatchResult::bypassed);
 		const uint32_t evaluationEyeMask =
 			summary.preparedEyeMask & ~summary.bypassedEyeMask & 0b11u;
+		if (evaluationEyeMask && NeuralRendering::RunsBeforeDlss(a_upscaling.GetNeuralRenderingArrangement())) {
+			bool fuseSelection = false, pressureResolutionEnabled = false;
+			for (uint32_t eye = 0; eye < (globals::game::isVR ? 2u : 1u); ++eye) {
+				if (evaluationEyeMask & (1u << eye)) {
+					fuseSelection = fuseSelection || NeuralRendering::ModelResolution::Required(a_batchArgs[eye]);
+					pressureResolutionEnabled |= a_batchArgs[eye].pressureResolutionEnabled;
+				}
+			}
+			fuseSelection = fuseSelection || (pressureResolutionEnabled &&
+												 NeuralRendering::Renderer::Instance().ModelResolutionCeiling() < NeuralRendering::kMaximumModelResolutionPercent);
+			for (uint32_t eye = 0; eye < (globals::game::isVR ? 2u : 1u); ++eye) {
+				if ((evaluationEyeMask & (1u << eye)) && !a_upscaling.PrepareReducedResolutionNeuralOutputTarget(eye, a_batchArgs[eye], fuseSelection)) {
+					a_upscaling.RequestHistoryReset();
+					return {};
+				}
+			}
+		}
 		std::array<bool, 2> evaluatedEyes{};
 		std::array<bool, 2> successfulEyes{};
 
@@ -45741,7 +45866,12 @@ namespace
 			}
 			if (applied && NeuralRendering::RunsBeforeDlss(a_upscaling.GetNeuralRenderingArrangement())) {
 				for (uint32_t eye = 0; eye < (globals::game::isVR ? 2u : 1u); ++eye) {
-					if ((evaluationEyeMask & (1u << eye)) && !a_upscaling.PrepareReducedResolutionNeuralOutput(eye, a_batchArgs[eye])) {
+					if ((evaluationEyeMask & (1u << eye)) == 0)
+						continue;
+					const auto& args = a_batchArgs[eye];
+					const bool selected = args.modelOutputSelection ? outcome.WasOutputSelected(args.featureSlot) :
+					                                                  a_upscaling.PrepareReducedResolutionNeuralOutput(eye, args);
+					if (!selected) {
 						applied = false;
 						a_upscaling.RequestHistoryReset();
 						break;
@@ -45852,10 +45982,7 @@ bool Upscaling::PrepareFlatReducedResolutionNeuralInput(ID3D11Resource* color, I
 		if (!GetFoveatedCenterBlendCS() ||
 			!EnsureFoveatedTexture(foveatedCenterColorIn[0], color, width, height,
 				false, true, false, false, "NeuralRendering::ReducedColorMono") ||
-			!EnsureFoveatedTexture(foveatedCenterNeuralOut[0], color, width, height,
-				false, true, true, false, "NeuralRendering::ReducedOutputMono") ||
-			!EnsureFoveatedTexture(foveatedCenterNeuralSelected[0], color, width, height,
-				false, true, true, false, "NeuralRendering::ReducedSelectedMono") ||
+			!EnsureReducedResolutionNeuralSelected(0, color, width, height) ||
 			!EnsureFoveatedTexture(foveatedCenterDepth[0], depth, width, height,
 				false, true, true, false, "NeuralRendering::ReducedDepthMono", DXGI_FORMAT_R32_FLOAT) ||
 			!EnsureFoveatedTexture(foveatedCenterMotionVectors[0], motion, width, height,
@@ -45888,7 +46015,7 @@ bool Upscaling::PrepareFlatReducedResolutionNeuralInput(ID3D11Resource* color, I
 		args.generation = route.generation;
 		args.insertionPoint = NeuralRendering::InsertionPoint::UpscaledCenter;
 		args.colorInput = foveatedCenterColorIn[0]->resource.get();
-		args.colorOutput = foveatedCenterNeuralOut[0]->resource.get();
+		args.colorOutput = foveatedCenterNeuralSelected[0]->resource.get();
 		args.depthGuide = foveatedCenterDepth[0]->resource.get();
 		args.depthGuideSRV = foveatedCenterDepth[0]->srv.get();
 		args.motionVectors = foveatedCenterMotionVectors[0]->resource.get();
@@ -51448,14 +51575,8 @@ void Upscaling::ServiceNeuralRenderingPrewarm()
 		return defer("awaiting_main_or_loading_menu");
 	if (!IsNeuralRenderingRequested() || !NeuralRendering::Runtime::IsInstalled())
 		return defer("nr_unavailable");
-	if (GetNeuralRenderingMode() != NeuralRendering::RenderingMode::ReducedResolution ||
-		settings.neuralRenderingModelResolutionPercent != 100 || settings.neuralRenderingPressureResolutionEnabled ||
-		settings.neuralRenderingCentralAreaPercent != 100 || settings.neuralRenderingSingleSubrectScale != 1.0f ||
-		NeuralRendering::RequiresFoveatedMask(GetNeuralRenderingMode(), settings.neuralRenderingFovOnly, true, settings.neuralRenderingRenderscaleFov))
-		return defer("exact_route_not_supported");
-	if (settings.neuralCharacterRenderingEnabled || settings.neuralCharacterSceneStrengthsEnabled ||
-		!settings.neuralRenderingAutoMask || settings.neuralRenderingUICorrection)
-		return defer("creation_mask_not_available");
+	if (const auto* blocker = NeuralRendering::PrewarmConfigurationBlocker(settings, globals::game::isVR))
+		return defer(blocker);
 	if (IsVRRenderScaleTransitionPending(vrRenderScaleTransitionState.load(std::memory_order_acquire)) ||
 		!IsVRRenderScaleModeActive() || !runtimeResolutionPlan.foveatedRegion.IsValid())
 		return defer("geometry_not_authoritative");

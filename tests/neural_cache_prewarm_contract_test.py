@@ -73,7 +73,7 @@ class CacheContracts(unittest.TestCase):
         self.assertIn("nr_shader_invalidate", schema["inputSchema"]["properties"]["action"]["enum"])
         prewarm = schema["inputSchema"]["properties"]["prewarmEnabled"]
         self.assertEqual(prewarm["type"], "boolean")
-        self.assertIs(prewarm["default"], False)
+        self.assertIs(prewarm["default"], True)
         renderer = schema["outputSchema"]["properties"]["neuralRendering"]["properties"]["renderer"]["properties"]
         self.assertIn("shaderGenerationApplied", renderer)
         self.assertEqual(renderer["prewarm"]["properties"]["providerAllocationBytes"]["type"], "null")
@@ -93,6 +93,14 @@ class CacheContracts(unittest.TestCase):
         owner = body(read(NR / "Renderer.cpp"), "bool Renderer::ServicePrewarm(")
         self.assertIn("if (!lock.owns_lock())\n\t\t\treturn false;", owner)
         self.assertNotIn("PrepareFullResolutionNeuralInputs", service)
+        self.assertIn("PrewarmConfigurationBlocker(settings, globals::game::isVR)", service)
+        self.assertNotIn("IsDeveloperMode", service)
+        self.assertNotIn("GetLogLevel", service)
+        status = schema["outputSchema"]["properties"]["neuralRendering"]["properties"]["prewarmConfiguration"]
+        self.assertEqual(status["properties"]["enabled"]["type"], "boolean")
+        settings = read(ROOT / "src/Features/Upscaling.h")
+        for field in ("neuralRenderingPrewarmEnabled", "neuralRenderingParallelEyes", "neuralCharacterPackedCrops"):
+            self.assertIn("bool " + field + " = true;", settings)
 
 
 if __name__ == "__main__":

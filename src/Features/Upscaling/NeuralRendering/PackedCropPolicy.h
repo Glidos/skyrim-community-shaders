@@ -1,0 +1,409 @@
+#pragma once
+
+#include "../DLSSViewportCrop.h"
+#include "CharacterComputeSubrect.h"
+#include "RegionCapacity.h"
+
+#include <array>
+#include <limits>
+#include <span>
+#include <tuple>
+#include <vector>
+
+namespace NeuralRendering
+{
+	inline constexpr std::size_t kMaximumPackedCrops = 4;
+	inline constexpr std::uint32_t kPackedCropContextPixels = 0;
+	inline constexpr std::uint32_t kPackedCropAlignment = kCharacterComputeRoiAlignment;
+	inline constexpr std::uint32_t kPackedCropSupportPixels = kPackedCropContextPixels + kCharacterComputeRoiGuardPixels;
+
+	/** Source-eye rectangles retain original coordinates and never mix eyes. */
+	struct PackedCropSources
+	{
+		std::array<ComputeSubrect, kMaximumPackedCrops> regions{};
+		std::uint32_t count = 0;
+		bool operator==(const PackedCropSources&) const = default;
+	};
+
+	struct StablePackedCropSources
+	{
+		PackedCropSources sources{};
+		std::uint32_t frames = 0;
+		std::uint32_t singleRegionFrames = 0;
+	};
+
+	/** Fixed mappings are temporal identity, independently of reusable texture sizes. */
+	struct PackedCropLayout
+	{
+		struct Tile
+		{
+			ComputeSubrect source{}, model{}, packed{};
+			bool operator==(const Tile&) const = default;
+		};
+		std::array<Tile, kMaximumPackedCrops> tiles{};
+		UpscalingDLSS::Extent extent{}, unpackedExtent{};
+		std::uint32_t count = 0;
+		bool operator==(const PackedCropLayout&) const = default;
+	};
+
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	/** CPU decisions are captured at admission, independently of GPU coverage. */
+	enum class PackedCropReason
+	{
+		NotRequested,
+		CropDisabled,
+		FullOutputMask,
+		EmptySelection,
+		UncertainProjection,
+		FullEyeFallback,
+		NotExamined,
+		TooFewRegions,
+		InvalidSourceBounds,
+		ContextOutsideAvailable,
+		MergedToSingle,
+		SourcesReady,
+		RetainedSources,
+		InvalidModelGeometry,
+		UnsupportedRoute,
+		InvalidCropCount,
+		OverlappingSources,
+		InvalidModelMapping,
+		NoBoundedLayout,
+		InsufficientAreaSaving,
+		ProviderTypeChanged,
+		InvalidProjection,
+		Admitted
+	};
+	enum class PackedCropStage
+	{
+		SourcePlanning,
+		ModelProjection,
+		AtlasLayout,
+		AreaAdmission,
+		ProviderCompatibility,
+		Admitted
+	};
+
+	struct PackedCropPlanningDiagnostics
+	{
+		PackedCropReason reason = PackedCropReason::NotRequested;
+		PackedCropReason candidateReason = PackedCropReason::NotExamined;
+		std::uint32_t inputRegions = 0;
+		std::uint32_t tileSourceFrame = std::numeric_limits<std::uint32_t>::max();
+		bool candidateExamined = false;
+		PackedCropSources mergedContexts{}, selectedSources{};
+		ComputeSubrect available{};
+	};
+
+	struct PackedCropAdmissionDiagnostics
+	{
+		PackedCropPlanningDiagnostics planning{};
+		PackedCropStage stage = PackedCropStage::SourcePlanning;
+		PackedCropReason reason = PackedCropReason::NotExamined;
+		std::uint32_t frame = std::numeric_limits<std::uint32_t>::max(), sourceFrame = std::numeric_limits<std::uint32_t>::max();
+		std::uint64_t generation = 0;
+		std::uint32_t modelResolutionPercent = 100;
+		std::uint64_t baselineSourcePixels = 0, layoutBaselineModelPixels = 0, effectiveBaselineModelPixels = 0, candidateModelPixels = 0;
+		UpscalingDLSS::Extent candidateExtent{};
+		bool modelAreasAvailable = false, candidateAreaAvailable = false;
+	};
+#endif
+
+	/** Context containment owns atlas reuse as well as initial construction. */
+	[[nodiscard]] inline ComputeSubrect BuildPackedCropContext(CharacterRect region,
+		std::uint32_t width, std::uint32_t height, ComputeSubrect available) noexcept
+	{
+		if (width > kMaximumNeuralImageDimension || height > kMaximumNeuralImageDimension || !available.Fits(width, height))
+			return {};
+		const auto support = BuildCharacterComputeSubrect(std::span(&region, 1), width, height);
+		if (!ContainsComputeSubrect(available, support))
+			return {};
+		const auto lower = [](std::uint32_t base) {
+			return (base > kPackedCropContextPixels ? base - kPackedCropContextPixels : 0u) / kPackedCropAlignment * kPackedCropAlignment;
+		};
+		const auto upper = [](std::uint32_t end, std::uint32_t limit) {
+			return std::min(limit, (end + kPackedCropContextPixels + kPackedCropAlignment - 1u) / kPackedCropAlignment * kPackedCropAlignment);
+		};
+		const auto x = std::max(available.baseX, lower(support.baseX)), y = std::max(available.baseY, lower(support.baseY));
+		return { x, y, std::min(available.baseX + available.width, upper(support.baseX + support.width, width)) - x,
+			std::min(available.baseY + available.height, upper(support.baseY + support.height, height)) - y };
+	}
+
+	/** Merge all selected coverage; capacity limits never discard an actor. */
+	[[nodiscard]] inline PackedCropSources BuildPackedCropSources(std::span<const CharacterRect> regions,
+		std::uint32_t width, std::uint32_t height, ComputeSubrect available
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		,
+		PackedCropPlanningDiagnostics* diagnostics = nullptr
+#endif
+	)
+	{
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		if (diagnostics) {
+			*diagnostics = {};
+			diagnostics->candidateExamined = true;
+			diagnostics->inputRegions = static_cast<std::uint32_t>(regions.size());
+			diagnostics->available = available;
+		}
+		const auto finish = [&](PackedCropSources sources, PackedCropReason reason) {
+			if (diagnostics) {
+				diagnostics->reason = diagnostics->candidateReason = reason;
+				diagnostics->selectedSources = sources;
+			}
+			return sources;
+		};
+#endif
+		PackedCropSources result{};
+		if (regions.size() < 2 || width > kMaximumNeuralImageDimension || height > kMaximumNeuralImageDimension || !available.Fits(width, height)) {
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			return finish({}, regions.size() < 2 ? PackedCropReason::TooFewRegions : PackedCropReason::InvalidSourceBounds);
+#else
+			return result;
+#endif
+		}
+		std::vector<CharacterRect> contexts;
+		contexts.reserve(regions.size());
+		for (const auto& region : regions) {
+			const auto context = BuildPackedCropContext(region, width, height, available);
+			if (!context.IsValid()) {
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				return finish({}, PackedCropReason::ContextOutsideAvailable);
+#else
+				return {};
+#endif
+			}
+			contexts.push_back({ context.baseX, context.baseY, context.baseX + context.width, context.baseY + context.height });
+		}
+		const auto spatialOrder = [](const auto& a, const auto& b) {
+			return std::tie(a.minY, a.minX, a.maxY, a.maxX) < std::tie(b.minY, b.minX, b.maxY, b.maxX);
+		};
+		std::ranges::sort(contexts, spatialOrder);
+		CharacterRegionPolicy::CompactToCapacity(contexts, kMaximumPackedCrops);
+		// Overlapping contexts share one tile, so reconstruction has one unambiguous owner.
+		for (std::size_t i = 0; i < contexts.size();) {
+			bool merged = false;
+			for (std::size_t j = i + 1; j < contexts.size(); ++j) {
+				const auto& a = contexts[i];
+				const auto& b = contexts[j];
+				if (a.minX < b.maxX && b.minX < a.maxX && a.minY < b.maxY && b.minY < a.maxY) {
+					contexts[i] = CharacterRegionPolicy::Union(a, b);
+					contexts.erase(contexts.begin() + j);
+					merged = true;
+					break;
+				}
+			}
+			i = merged ? 0 : i + 1;
+		}
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		if (diagnostics) {
+			for (const auto& context : contexts)
+				diagnostics->mergedContexts.regions[diagnostics->mergedContexts.count++] = { context.minX, context.minY, context.maxX - context.minX, context.maxY - context.minY };
+		}
+#endif
+		if (contexts.size() < 2) {
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			return finish({}, PackedCropReason::MergedToSingle);
+#else
+			return {};
+#endif
+		}
+		std::ranges::sort(contexts, spatialOrder);
+		for (const auto& rect : contexts)
+			result.regions[result.count++] = { rect.minX, rect.minY, rect.maxX - rect.minX, rect.maxY - rect.minY };
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		return finish(result, PackedCropReason::SourcesReady);
+#else
+		return result;
+#endif
+	}
+
+	/** Keep a contained layout stable; growth is immediate, contraction requires residence. */
+	[[nodiscard]] inline PackedCropSources ResolvePackedCropSources(std::span<const CharacterRect> regions,
+		std::uint32_t width, std::uint32_t height, ComputeSubrect available, StablePackedCropSources& state
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		,
+		PackedCropPlanningDiagnostics* diagnostics = nullptr
+#endif
+	)
+	{
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		if (diagnostics) {
+			*diagnostics = {};
+			diagnostics->inputRegions = static_cast<std::uint32_t>(regions.size());
+			diagnostics->available = available;
+		}
+#endif
+		if (regions.empty() || width > kMaximumNeuralImageDimension || height > kMaximumNeuralImageDimension || !available.Fits(width, height)) {
+			state = {};
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			if (diagnostics)
+				diagnostics->reason = regions.empty() ? PackedCropReason::EmptySelection : PackedCropReason::InvalidSourceBounds;
+#endif
+			return {};
+		}
+		// A transient selection loss must not retire and rebuild the atlas on adjacent frames.
+		state.singleRegionFrames = regions.size() == 1 ? std::min(state.singleRegionFrames + 1u, kCharacterProviderRoiHistoryFrames) : 0u;
+		if (state.singleRegionFrames == kCharacterProviderRoiHistoryFrames) {
+			state = {};
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			if (diagnostics)
+				diagnostics->reason = PackedCropReason::TooFewRegions;
+#endif
+			return {};
+		}
+		bool covered = state.sources.count >= 2 && state.sources.count <= kMaximumPackedCrops;
+		for (std::uint32_t i = 0; covered && i < state.sources.count; ++i)
+			covered = ContainsComputeSubrect(available, state.sources.regions[i]);
+		for (const auto& region : regions) {
+			const auto support = BuildPackedCropContext(region, width, height, available);
+			bool found = false;
+			for (std::uint32_t i = 0; covered && i < state.sources.count; ++i)
+				found = found || ContainsComputeSubrect(state.sources.regions[i], support);
+			covered = covered && found;
+		}
+		if (covered && ++state.frames < kCharacterProviderRoiHistoryFrames) {
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			if (diagnostics) {
+				diagnostics->reason = PackedCropReason::RetainedSources;
+				diagnostics->selectedSources = state.sources;
+			}
+#endif
+			return state.sources;
+		}
+		auto candidate = BuildPackedCropSources(regions, width, height, available
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			,
+			diagnostics
+#endif
+		);
+		std::uint64_t previousArea = 0, candidateArea = 0;
+		for (std::uint32_t i = 0; i < state.sources.count && i < kMaximumPackedCrops; ++i)
+			previousArea += state.sources.regions[i].Area();
+		for (std::uint32_t i = 0; i < candidate.count; ++i)
+			candidateArea += candidate.regions[i].Area();
+		if (!covered || (candidate.count >= 2 && candidateArea * 4u <= previousArea * 3u))
+			state.sources = candidate;
+		state.frames = 0;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		if (diagnostics) {
+			diagnostics->selectedSources = state.sources;
+			if (state.sources != candidate)
+				diagnostics->reason = PackedCropReason::RetainedSources;
+		}
+#endif
+		return state.sources;
+	}
+
+	/** Search bounded shelf layouts, admitting only at least 25% less evaluated area. */
+	[[nodiscard]] inline PackedCropLayout BuildPackedCropLayout(const PackedCropSources& sources,
+		UpscalingDLSS::Extent sourceSize, UpscalingDLSS::Extent modelSize, ComputeSubrect available
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		,
+		PackedCropAdmissionDiagnostics* diagnostics = nullptr
+#endif
+		) noexcept
+	{
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		if (diagnostics) {
+			diagnostics->stage = PackedCropStage::AtlasLayout;
+			diagnostics->reason = PackedCropReason::NoBoundedLayout;
+			diagnostics->candidateAreaAvailable = false;
+			diagnostics->candidateExtent = {};
+			diagnostics->candidateModelPixels = 0;
+		}
+		const auto reject = [&](PackedCropReason reason) {
+			if (diagnostics)
+				diagnostics->reason = reason;
+			return PackedCropLayout{};
+		};
+#endif
+		PackedCropLayout best{};
+		if (sources.count < 2 || sources.count > kMaximumPackedCrops ||
+			!available.Fits(sourceSize.width, sourceSize.height) || sourceSize.width > kMaximumNeuralImageDimension ||
+			sourceSize.height > kMaximumNeuralImageDimension || !modelSize.IsValid() ||
+			modelSize.width > kMaximumNeuralImageDimension || modelSize.height > kMaximumNeuralImageDimension) {
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			return reject(sources.count < 2 || sources.count > kMaximumPackedCrops ? PackedCropReason::InvalidCropCount : PackedCropReason::InvalidSourceBounds);
+#else
+			return best;
+#endif
+		}
+		std::array<PackedCropLayout::Tile, kMaximumPackedCrops> tiles{};
+		for (std::uint32_t i = 0; i < sources.count; ++i) {
+			if (!ContainsComputeSubrect(available, sources.regions[i])) {
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				return reject(PackedCropReason::ContextOutsideAvailable);
+#else
+				return {};
+#endif
+			}
+			for (std::uint32_t j = 0; j < i; ++j) {
+				if (IntersectComputeSubrect(sources.regions[i], sources.regions[j]).IsValid()) {
+#ifdef DEVBENCH_BRIDGE_ENABLED
+					return reject(PackedCropReason::OverlappingSources);
+#else
+					return {};
+#endif
+				}
+			}
+			tiles[i].source = sources.regions[i];
+			tiles[i].model = MapComputeSubrect(sources.regions[i], sourceSize.width, sourceSize.height, modelSize.width, modelSize.height);
+			if (!tiles[i].model.IsValid()) {
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				return reject(PackedCropReason::InvalidModelMapping);
+#else
+				return {};
+#endif
+			}
+		}
+		const auto baseline = MapComputeSubrect(available, sourceSize.width, sourceSize.height, modelSize.width, modelSize.height).Area();
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		if (diagnostics)
+			diagnostics->layoutBaselineModelPixels = baseline;
+#endif
+		const auto align = [](std::uint32_t value) { return (value + kPackedCropAlignment - 1u) / kPackedCropAlignment * kPackedCropAlignment; };
+		for (bool vertical : { false, true }) {
+			for (std::uint32_t breaks = 0; breaks < (1u << (sources.count - 1)); ++breaks) {
+				PackedCropLayout layout{ tiles, {}, modelSize, sources.count };
+				std::uint32_t x = 0, y = 0, row = 0, right = 0;
+				for (std::uint32_t i = 0; i < sources.count; ++i) {
+					const auto w = vertical ? tiles[i].model.height : tiles[i].model.width;
+					const auto h = vertical ? tiles[i].model.width : tiles[i].model.height;
+					layout.tiles[i].packed = { vertical ? y : x, vertical ? x : y, tiles[i].model.width, tiles[i].model.height };
+					x += align(w);
+					row = std::max(row, align(h));
+					right = std::max(right, x);
+					if (i + 1 == sources.count || (breaks & (1u << i))) {
+						y += row;
+						x = row = 0;
+					}
+				}
+				layout.extent = vertical ? UpscalingDLSS::Extent{ y, right } : UpscalingDLSS::Extent{ right, y };
+				// Native minimum dimensions do not require a halo around every source crop.
+				layout.extent.width = std::max(layout.extent.width, kMinimumExperimentalContextExtent);
+				layout.extent.height = std::max(layout.extent.height, kMinimumExperimentalContextExtent);
+				const auto area = static_cast<std::uint64_t>(layout.extent.width) * layout.extent.height;
+				const auto bestArea = static_cast<std::uint64_t>(best.extent.width) * best.extent.height;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				if (diagnostics && layout.extent.width <= kMaximumNeuralImageDimension && layout.extent.height <= kMaximumNeuralImageDimension &&
+					(!diagnostics->candidateAreaAvailable || area < diagnostics->candidateModelPixels)) {
+					diagnostics->candidateAreaAvailable = true;
+					diagnostics->candidateModelPixels = area;
+					diagnostics->candidateExtent = layout.extent;
+				}
+#endif
+				if (layout.extent.width <= kMaximumNeuralImageDimension && layout.extent.height <= kMaximumNeuralImageDimension &&
+					area * 4u <= baseline * 3u && (!best.count || area < bestArea))
+					best = layout;
+			}
+		}
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		if (diagnostics) {
+			diagnostics->stage = best.count || diagnostics->candidateAreaAvailable ? PackedCropStage::AreaAdmission : PackedCropStage::AtlasLayout;
+			diagnostics->reason = best.count ? PackedCropReason::Admitted : diagnostics->candidateAreaAvailable ? PackedCropReason::InsufficientAreaSaving :
+			                                                                                                      PackedCropReason::NoBoundedLayout;
+		}
+#endif
+		return best;
+	}
+}

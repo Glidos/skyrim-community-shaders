@@ -8,6 +8,7 @@
 #include "CharacterRegionPolicy.h"
 #include "CharacterSettings.h"
 #include "ComputeSubrect.h"
+#include "PackedCropPolicy.h"
 
 #include <array>
 #include <cstdint>
@@ -69,6 +70,14 @@ namespace NeuralRendering
 		ComputeSubrect computeSubrect{};
 		/** CPU enclosure for the immutable source frame, or an empty/diagnostic mode. */
 		std::string maskRoiStatus = "disabled";
+		/** Current-source occupancy planning for Multi-Crop, with explicit geometry fallback. */
+		std::string tileCropStatus = "inactive";
+		std::uint32_t tileCropSourceFrame = std::numeric_limits<std::uint32_t>::max();
+		std::uint32_t tileCropOccupiedTiles = 0;
+		std::uint32_t tileCropRegions = 0;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		PackedCropPlanningDiagnostics packedCropPlanning{};
+#endif
 		std::string cropDecision = "inactive";
 		std::uint64_t cropQualificationKey = 0;
 		ComputeSubrect cropCandidate{};
@@ -84,7 +93,7 @@ namespace NeuralRendering
 		std::int32_t maskRoiLastFailureResult = 0;
 		std::uint32_t maskRoiLastFailureFrame = std::numeric_limits<std::uint32_t>::max();
 		double maskRoiLastFailureWaitMs = 0.0;
-		/** Compatibility counters: zero because current-frame GPU bounds are not requested. */
+		/** Legacy single-ROI counters; Multi-Crop occupancy reports through earlyMaskBounds. */
 		std::uint64_t maskRoiReadbackAttempts = 0;
 		std::uint64_t maskRoiReadbackSuccesses = 0;
 		std::uint64_t maskRoiReadbackFallbacks = 0;
@@ -280,6 +289,10 @@ namespace NeuralRendering
 		std::optional<RoiDescriptor> roi;
 		/** A proven-empty episode invalidates model history without retiring resources. */
 		bool resetHistory = false;
+		PackedCropSources packedCrops{};
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		PackedCropPlanningDiagnostics packedCropPlanning{};
+#endif
 	};
 
 	/** One locked read of a prepared slot; GPU contents retain render-thread ownership. */
@@ -321,7 +334,7 @@ namespace NeuralRendering
 		void ObserveClassificationRejection(
 			std::uint32_t a_frame,
 			CharacterClassificationRejection a_reason) noexcept;
-		/** Freezes active mono or packed stereo IDs with synchronized pre-decal scene depth. */
+		/** Freezes mono/stereo IDs and synchronized depth; optional tile crops queue a nonblocking occupancy sample. */
 		bool CaptureAuthoredCategories(
 			ID3D11Device* a_device,
 			ID3D11DeviceContext* a_context,
@@ -333,7 +346,7 @@ namespace NeuralRendering
 			std::uint32_t a_enabledCategoryMask,
 			float a_jitterX,
 			float a_jitterY,
-			bool a_gpuMaskSupport = false) noexcept;
+			bool a_gpuMaskSupport = false, bool a_tileCrops = false) noexcept;
 
 		/** Builds an exact per-eye mask. Failure leaves Feature 18 fail-closed. */
 		bool PrepareMask(

@@ -9,6 +9,7 @@
 #include "CharacterComputeSubrect.h"
 #include "CharacterMaskReadback.h"
 #include "CharacterMaskWorkPolicy.h"
+#include "CharacterTileCropPolicy.h"
 #include "ColorPipeline.h"
 #include "ComputeStateGuard.h"
 
@@ -32,6 +33,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -83,18 +85,10 @@ namespace NeuralRendering
 				left.y * 0.5f + right.y * 0.5f, left.z * 0.5f + right.z * 0.5f };
 		}
 
-		inline constexpr std::uint32_t kCharacterMaskRoiTileSize = 32;
+		inline constexpr std::uint32_t kCharacterMaskRoiTileSize = kCharacterOccupancyTileSize;
 		inline constexpr std::uint32_t kCharacterMaskRoiMaximumExtent = 16384;
 
-		/** GPU diagnostic ABI: nonzero-pixel enclosure in each row-major tile. */
-		struct CharacterMaskRoiTileBounds
-		{
-			std::uint32_t minX = 0;
-			std::uint32_t minY = 0;
-			std::uint32_t maxX = 0;
-			std::uint32_t maxY = 0;
-			bool operator==(const CharacterMaskRoiTileBounds&) const = default;
-		};
+		using CharacterMaskRoiTileBounds = CharacterRect;
 		static_assert(sizeof(CharacterMaskRoiTileBounds) == 16);
 
 		enum DiagnosticCounter : std::uint32_t
@@ -201,6 +195,7 @@ namespace NeuralRendering
 			add(a_settings.armor);
 			add(a_settings.weapons);
 			add(a_settings.providerBlending);
+			add(a_settings.packedCrops);
 			addFloat(a_settings.faceStrength);
 			addFloat(a_settings.skinStrength);
 			addFloat(a_settings.hairStrength);
@@ -224,13 +219,6 @@ namespace NeuralRendering
 			add(static_cast<std::uint32_t>(a_settings.maskTestMode));
 			add(static_cast<std::uint32_t>(a_settings.debugView));
 			return hash;
-		}
-
-		bool UsesAuthoredMask(CharacterMaskTestMode a_mode) noexcept
-		{
-			return a_mode == CharacterMaskTestMode::Authored ||
-			       a_mode ==
-			           CharacterMaskTestMode::AuthoredWithoutVisibilityDepth;
 		}
 
 		ComputeSubrect BuildFullComputeSubrect(
@@ -438,7 +426,8 @@ namespace NeuralRendering
 
 		struct EarlyMaskReadback
 		{
-			ComPtr<ID3D11Buffer> bounds;
+			ComPtr<ID3D11Buffer> bounds, staging;
+			std::vector<CharacterRect> cpuBounds;
 			ComPtr<ID3D11UnorderedAccessView> uav;
 			ComPtr<ID3D11ShaderResourceView> srv;
 			ComPtr<ID3D11Query> query;
@@ -542,6 +531,14 @@ namespace NeuralRendering
 			bool maskUniform = false;
 			float uniformMaskValue = 0.0f;
 			StableCharacterComputeSubrect stableComputeSubrect{};
+			StablePackedCropSources stablePackedCrops{};
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			PackedCropPlanningDiagnostics packedCropPlanning{};
+#endif
+			CharacterTileCropReadiness tileCropReadiness{};
+			const char* tileCropStatus = "inactive";
+			std::uint32_t tileCropOccupiedTiles = 0, tileCropRegions = 0;
+			std::uint32_t tileCropSourceFrame = std::numeric_limits<std::uint32_t>::max();
 			std::uint64_t computeSubrectGeneration = 0;
 			UpscalingDLSS::ViewportCrop computeSubrectCrop{};
 			bool computeSubrectContractValid = false;
@@ -633,12 +630,15 @@ namespace NeuralRendering
 				texture->GetDesc(&desc);
 				evidence.logicalTextureBytes += static_cast<std::uint64_t>(desc.Width) * desc.Height * 4u;
 			}
+			evidence.logicalBoundsBytes = 0;
 			for (const auto& readback : earlyMaskReadbacks_) {
-				if (!readback.bounds)
-					continue;
-				D3D11_BUFFER_DESC desc{};
-				readback.bounds->GetDesc(&desc);
-				evidence.logicalBoundsBytes += desc.ByteWidth;
+				for (auto* buffer : { readback.bounds.Get(), readback.staging.Get() }) {
+					if (!buffer)
+						continue;
+					D3D11_BUFFER_DESC desc{};
+					buffer->GetDesc(&desc);
+					evidence.logicalBoundsBytes += desc.ByteWidth;
+				}
 			}
 		}
 
@@ -701,7 +701,9 @@ namespace NeuralRendering
 			CharacterMaskPrepareResult result{ true, a_slot.requiresEvaluation,
 				a_slot.computeSubrect, {}, a_slot.roi };
 			result.resetHistory = a_slot.requiresEvaluation && a_slot.resetHistoryAfterEmpty;
+			result.packedCrops = a_slot.stablePackedCrops.sources;
 #ifdef DEVBENCH_BRIDGE_ENABLED
+			result.packedCropPlanning = a_slot.packedCropPlanning;
 			if (Color::Registry::Instance().CaptureEvidenceEnabled())
 				result.evidence = FindPreparationEvidence(
 					a_args.frameId, a_args.sourceWorldFrame, a_args.generation, a_args.featureSlot, true);
@@ -813,6 +815,7 @@ namespace NeuralRendering
 			capturedGeometry_.admissions.clear();
 			sourceEvidence_.reset();
 			earlyMaskCaptureSerial_ = 0;
+			completedTileProposal_ = {};
 			capturedFrame_ = std::numeric_limits<std::uint32_t>::max();
 			capturedCategoriesEmpty_ = false;
 			capturedEyeWidth_ = 0;
@@ -847,6 +850,8 @@ namespace NeuralRendering
 				slot.emptyProof = CharacterEmptyProofKind::None;
 				if (!a_preserveRoiHistory) {
 					slot.stableComputeSubrect = {};
+					slot.stablePackedCrops = {};
+					slot.tileCropReadiness = {};
 				}
 				slot.prepareKey = {};
 				slot.contentSerial = 0;
@@ -1356,7 +1361,7 @@ namespace NeuralRendering
 		{
 			if (!supportShader_ && !supportShaderCompileFailed_) {
 				supportShader_.Attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
-					L"Data/Shaders/DLSS5CharacterMaskCS.hlsl", { { "GPU_CHARACTER_SUPPORT", "1" }, { "NR_DIAGNOSTICS", "1" } }, "cs_5_0")));
+					L"Data/Shaders/DLSS5CharacterMaskCS.hlsl", { { "GPU_CHARACTER_SUPPORT", "1" }, { "NR_DIAGNOSTICS", "1" }, { "CHARACTER_MASK_TILE_SIZE", "16" } }, "cs_5_0")));
 				supportShaderCompileFailed_ = !supportShader_;
 				if (supportShader_)
 					Util::SetResourceName(supportShader_.Get(), "DLSS5CharacterRendering::GpuSupportCS");
@@ -1483,6 +1488,7 @@ namespace NeuralRendering
 		void ResetEarlyMaskBounds()
 		{
 			earlyMaskReadbacks_ = {};
+			completedTileProposal_ = {};
 			earlyMaskShader_.Reset();
 			earlyMaskConstants_.Reset();
 			earlyMaskShaderFailed_ = false;
@@ -1504,7 +1510,7 @@ namespace NeuralRendering
 				if (earlyMaskShaderFailed_)
 					return false;
 				earlyMaskShader_.Attach(static_cast<ID3D11ComputeShader*>(Util::CompileShader(
-					L"Data\\Shaders\\DLSS5CharacterMaskBoundsCS.hlsl", { { "EARLY_CATEGORY_BOUNDS", "1" } }, "cs_5_0")));
+					L"Data\\Shaders\\DLSS5CharacterMaskBoundsCS.hlsl", { { "EARLY_CATEGORY_BOUNDS", "1" }, { "CHARACTER_MASK_TILE_SIZE", "16" } }, "cs_5_0")));
 				if (!earlyMaskShader_) {
 					earlyMaskShaderFailed_ = true;
 					return FailEarlyMaskBounds("early_bounds_shader_failed", E_FAIL);
@@ -1527,8 +1533,10 @@ namespace NeuralRendering
 			if (!capturedEyeWidth_ || !capturedHeight_ || !capturedEyeCount_ || capturedEyeCount_ > 2u ||
 				std::max(capturedEyeWidth_, capturedHeight_) > kCharacterMaskRoiMaximumExtent)
 				return FailEarlyMaskBounds("early_bounds_dimensions_invalid", E_INVALIDARG);
-			const auto columns = (capturedEyeWidth_ + 31u) / 32u;
-			const auto rows = (capturedHeight_ + 31u) / 32u;
+			const auto columns = (capturedEyeWidth_ + kCharacterMaskRoiTileSize - 1u) / kCharacterMaskRoiTileSize;
+			const auto rows = (capturedHeight_ + kCharacterMaskRoiTileSize - 1u) / kCharacterMaskRoiTileSize;
+			if (std::uint64_t(columns) * rows * capturedEyeCount_ > kMaximumCharacterOccupancyTiles)
+				return FailEarlyMaskBounds("early_bounds_grid_too_large", E_INVALIDARG);
 			EarlyMaskReadback created;
 			created.tileCount = columns * rows * capturedEyeCount_;
 			D3D11_BUFFER_DESC desc{};
@@ -1544,6 +1552,15 @@ namespace NeuralRendering
 			if (FAILED(result))
 				return FailEarlyMaskBounds("early_bounds_buffer_failed", result);
 			Util::SetResourceName(created.bounds.Get(), "DLSS5CharacterRendering::EarlyMaskBounds");
+			D3D11_BUFFER_DESC stagingDesc{};
+			stagingDesc.ByteWidth = desc.ByteWidth;
+			stagingDesc.Usage = D3D11_USAGE_STAGING;
+			stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+			result = a_device->CreateBuffer(&stagingDesc, nullptr, &created.staging);
+			if (FAILED(result))
+				return FailEarlyMaskBounds("early_bounds_staging_failed", result);
+			Util::SetResourceName(created.staging.Get(), "DLSS5CharacterRendering::EarlyMaskBounds Staging");
+			created.cpuBounds.resize(created.tileCount);
 			D3D11_UNORDERED_ACCESS_VIEW_DESC view{};
 			view.Format = DXGI_FORMAT_UNKNOWN;
 			view.ViewDimension = D3D11_UAV_DIMENSION_BUFFER;
@@ -1567,28 +1584,50 @@ namespace NeuralRendering
 		void QueueEarlyMaskBounds(ID3D11Device* a_device, ID3D11DeviceContext* a_context, CharacterSourceEvidence* evidence = nullptr)
 		{
 			try {
-				auto* selected = FindReusableCharacterMaskReadback(std::span<EarlyMaskReadback>(earlyMaskReadbacks_), [&](auto& readback) {
-					BOOL ready = FALSE;
-					const auto result = a_context->GetData(readback.query.Get(), &ready, sizeof(ready), D3D11_ASYNC_GETDATA_DONOTFLUSH);
-					if (FAILED(result)) {
-						(void)FailEarlyMaskBounds("early_bounds_retire_query_failed", result);
-						return false;
+				EarlyMaskReadback* selected = nullptr;
+				for (auto& readback : earlyMaskReadbacks_) {
+					if (readback.pending) {
+						Increment(snapshot_.earlyMaskBounds.polls);
+						const auto sampled = PollCharacterMaskBounds(a_context, readback.query.Get(), readback.staging.Get(),
+							std::as_writable_bytes(std::span(readback.cpuBounds)));
+						if (sampled.status == CharacterMaskReadbackStatus::Pending) {
+							Increment(snapshot_.earlyMaskBounds.pending);
+							continue;
+						}
+						readback.pending = false;
+						if (!sampled.Ready()) {
+							(void)FailEarlyMaskBounds(sampled.Reason(), sampled.result);
+							return;
+						}
+						Increment(snapshot_.earlyMaskBounds.ready);
+						if (readback.captureSerial > completedTileProposal_.captureSerial) {
+							completedTileProposal_.cpuBounds.swap(readback.cpuBounds);
+							completedTileProposal_.captureSerial = readback.captureSerial;
+							completedTileProposal_.frame = readback.frame;
+							completedTileProposal_.width = readback.width;
+							completedTileProposal_.height = readback.height;
+							completedTileProposal_.eyeCount = readback.eyeCount;
+							completedTileProposal_.tileCount = readback.tileCount;
+							completedTileProposal_.categories = readback.categories;
+						}
 					}
-					return result == S_OK && ready;
-				});
+					if (!selected)
+						selected = &readback;
+				}
 				if (!selected) {
 					Increment(snapshot_.earlyMaskBounds.ringBusy);
 					return;
 				}
 				if (!EnsureEarlyMaskBounds(*selected, a_device))
 					return;
+				selected->cpuBounds.resize(selected->tileCount);
 				CharacterComputeStateGuard stateGuard(a_context);
 				if (!stateGuard.Captured()) {
 					(void)FailEarlyMaskBounds("early_bounds_compute_state_unavailable", E_FAIL);
 					return;
 				}
-				const auto columns = (capturedEyeWidth_ + 31u) / 32u;
-				const auto rows = (capturedHeight_ + 31u) / 32u;
+				const auto columns = (capturedEyeWidth_ + kCharacterMaskRoiTileSize - 1u) / kCharacterMaskRoiTileSize;
+				const auto rows = (capturedHeight_ + kCharacterMaskRoiTileSize - 1u) / kCharacterMaskRoiTileSize;
 				std::array<std::array<std::uint32_t, 4>, 3> constants{};
 				constants[0] = { capturedEyeWidth_, capturedHeight_, columns, capturedEnabledCategoryMask_ };
 				for (std::size_t eye = 0; eye < capturedEyeCount_; ++eye) {
@@ -1610,6 +1649,7 @@ namespace NeuralRendering
 					a_context->Dispatch(columns, rows, capturedEyeCount_);
 				}
 				a_context->CSSetUnorderedAccessViews(0, 2, nullUavs.data(), nullptr);
+				a_context->CopyResource(selected->staging.Get(), selected->bounds.Get());
 				a_context->End(selected->query.Get());
 				selected->pending = true;
 				selected->captureSerial = earlyMaskCaptureSerial_;
@@ -1617,7 +1657,7 @@ namespace NeuralRendering
 				selected->categories = capturedEnabledCategoryMask_;
 				Increment(snapshot_.earlyMaskBounds.queued);
 				snapshot_.earlyMaskBounds.lastQueuedFrame = capturedFrame_;
-				snapshot_.earlyMaskBounds.readbackBytes = 0;
+				snapshot_.earlyMaskBounds.readbackBytes = selected->tileCount * sizeof(CharacterMaskRoiTileBounds);
 				if (evidence)
 					evidence->boundsReadbackBytes = snapshot_.earlyMaskBounds.readbackBytes;
 				if (evidence)
@@ -1640,9 +1680,54 @@ namespace NeuralRendering
 			return nullptr;
 		}
 
+		CharacterTileCrops ReadTileCropProposal(const CharacterMaskPrepareArgs& args,
+			std::span<const CharacterRect> eligibility, Slot& slot)
+		{
+			slot.tileCropStatus = "geometry_fallback_no_completed_grid";
+			slot.tileCropOccupiedTiles = slot.tileCropRegions = 0;
+			slot.tileCropSourceFrame = std::numeric_limits<std::uint32_t>::max();
+			const auto* readback = &completedTileProposal_;
+			if (!readback->captureSerial || readback->captureSerial > earlyMaskCaptureSerial_ ||
+				!CharacterTileProposalFresh(readback->frame, args.sourceWorldFrame) ||
+				readback->width != capturedEyeWidth_ || readback->height != capturedHeight_ ||
+				readback->eyeCount != capturedEyeCount_ || args.eyeIndex >= readback->eyeCount ||
+				readback->categories != GetEnabledCharacterCategoryMask(args.settings) ||
+				readback->cpuBounds.size() != readback->tileCount) {
+				Increment(snapshot_.earlyMaskBounds.geometryFallbacks);
+				return {};
+			}
+			const auto feather = args.settings.depthAwareFeather ? args.settings.featherRadius : 0u;
+			const auto jitter = ResolveCharacterMaskSamplingJitter(args.outputIsJittered, capturedJitterX_, capturedJitterY_);
+			const auto eyeTiles = readback->tileCount / readback->eyeCount;
+			auto crops = BuildCharacterTileCrops(std::span(readback->cpuBounds).subspan(args.eyeIndex * eyeTiles, eyeTiles),
+				{ readback->width, readback->height },
+				{ args.viewportCrop.input.left, args.viewportCrop.input.top, args.viewportCrop.input.Width(), args.viewportCrop.input.Height() },
+				{ args.outputWidth, args.outputHeight }, eligibility,
+				static_cast<std::uint32_t>(ResolveCharacterMaskFootprintGuard(args.viewportCrop.input.Width(), args.outputWidth, feather, jitter[0])),
+				static_cast<std::uint32_t>(ResolveCharacterMaskFootprintGuard(args.viewportCrop.input.Height(), args.outputHeight, feather, jitter[1])));
+			if (!crops.valid || crops.regions.empty()) {
+				slot.tileCropStatus = crops.valid ? "geometry_fallback_empty_grid" : "geometry_fallback_invalid_grid";
+				Increment(snapshot_.earlyMaskBounds.geometryFallbacks);
+				return {};
+			}
+			slot.tileCropStatus = "async_occupied_tiles_16_gpu_guarded";
+			slot.tileCropSourceFrame = readback->frame;
+			slot.tileCropOccupiedTiles = crops.occupiedTiles;
+			slot.tileCropRegions = static_cast<std::uint32_t>(crops.regions.size());
+
+			return crops;
+		}
+
 		static void PublishMaskRoiSnapshot(const Slot& a_slot, CharacterEyeSnapshot& a_eye)
 		{
 			a_eye.maskRoiStatus = a_slot.maskRoiStatus;
+			a_eye.tileCropStatus = a_slot.tileCropStatus;
+			a_eye.tileCropSourceFrame = a_slot.tileCropSourceFrame;
+			a_eye.tileCropOccupiedTiles = a_slot.tileCropOccupiedTiles;
+			a_eye.tileCropRegions = a_slot.tileCropRegions;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			a_eye.packedCropPlanning = a_slot.packedCropPlanning;
+#endif
 			a_eye.maskRoiPlanningCpuMs = a_slot.maskRoiPlanningCpuMs;
 			a_eye.maskRoiCurrentFrame = a_slot.maskRoiCurrentFrame;
 			a_eye.emptyProof = a_slot.emptyProof;
@@ -2089,8 +2174,8 @@ namespace NeuralRendering
 			if (gpuSupport) {
 				if (!EnsureGpuSupport(a_slot, *support, a_args.device))
 					return false;
-				constants.supportGrid[0] = (support->width + 31u) / 32u;
-				constants.supportGrid[1] = (support->height + 31u) / 32u;
+				constants.supportGrid[0] = (support->width + kCharacterMaskRoiTileSize - 1u) / kCharacterMaskRoiTileSize;
+				constants.supportGrid[1] = (support->height + kCharacterMaskRoiTileSize - 1u) / kCharacterMaskRoiTileSize;
 				constants.supportGrid[2] = a_args.eyeIndex * constants.supportGrid[0] * constants.supportGrid[1];
 				constants.supportGrid[3] = 1;
 			}
@@ -2318,6 +2403,7 @@ namespace NeuralRendering
 		std::uint64_t detectionEpoch_ = 0;
 		double detectionCpuMs_ = 0.0;
 		std::array<EarlyMaskReadback, kReadbackLatency> earlyMaskReadbacks_{};
+		EarlyMaskReadback completedTileProposal_{};
 		ComPtr<ID3D11ComputeShader> earlyMaskShader_;
 		ComPtr<ID3D11Buffer> earlyMaskConstants_;
 		std::uint64_t earlyMaskCaptureSerial_ = 0;
@@ -2625,7 +2711,7 @@ namespace NeuralRendering
 		std::uint32_t a_enabledCategoryMask,
 		float a_jitterX,
 		float a_jitterY,
-		bool a_gpuMaskSupport) noexcept
+		bool a_gpuMaskSupport, bool a_tileCrops) noexcept
 	{
 		if (!state_)
 			return false;
@@ -2640,10 +2726,8 @@ namespace NeuralRendering
 			evidence->jitterX = a_jitterX;
 			evidence->jitterY = a_jitterY;
 			evidence->captureTiming = AllocateEvidence<Util::PassTimingCapture>();
-#ifdef DEVBENCH_BRIDGE_ENABLED
-			if (a_gpuMaskSupport)
+			if (a_gpuMaskSupport || a_tileCrops)
 				evidence->boundsTiming = AllocateEvidence<Util::PassTimingCapture>();
-#endif
 		}
 		try {
 			std::scoped_lock lock(state_->mutex_);
@@ -2867,12 +2951,8 @@ namespace NeuralRendering
 			state_->snapshot_.categoryCaptureEmpty = false;
 			Increment(state_->snapshot_.categoryCaptureSuccesses);
 			state_->earlyMaskCaptureSerial_ = state_->AllocatePreparedContentSerial();
-#ifdef DEVBENCH_BRIDGE_ENABLED
-			if (a_gpuMaskSupport)
+			if (a_gpuMaskSupport || a_tileCrops)
 				state_->QueueEarlyMaskBounds(a_device, a_context, evidence.get());
-#else
-			(void)a_gpuMaskSupport;
-#endif
 			if (evidence) {
 				evidence->captureSerial = state_->earlyMaskCaptureSerial_;
 				evidence->copiedRects = sourceRects;
@@ -3263,6 +3343,8 @@ namespace NeuralRendering
 				if (slot.roiPolicyKey != key.settings) {
 					slot.stableComputeSubrect = {};
 					slot.roiPolicyKey = key.settings;
+					slot.stablePackedCrops = {};
+					slot.tileCropReadiness = {};
 				}
 				const auto planningStart = evidence ? DiagnosticNow() : std::chrono::steady_clock::time_point{};
 				const auto requiredComputeSubrect = selectionEmpty ?
@@ -3331,13 +3413,6 @@ namespace NeuralRendering
 						slot.stableComputeSubrect = {};
 				}
 
-				slot.maskRoiPlanningCpuMs = evidence ? ElapsedMilliseconds(planningStart) : 0.0;
-				if (evidence) {
-					evidence->roiPlanningCpuAvailable = true;
-					evidence->roiPlanningCpuMs = slot.maskRoiPlanningCpuMs;
-					evidence->boundsUsed = false;
-					evidence->boundsStatus = slot.maskRoiStatus;
-				}
 				if (!provenEmpty &&
 					!slot.computeSubrect.Fits(
 						a_args.outputWidth, a_args.outputHeight)) {
@@ -3354,6 +3429,63 @@ namespace NeuralRendering
 							!plan.fullEyeEligibilityFallback))
 						slot.computeSubrect = slot.roi->inferenceContext;
 #endif
+				}
+				if (computeSubrectContractChanged) {
+					slot.stablePackedCrops = {};
+					slot.tileCropReadiness = {};
+				}
+				slot.tileCropStatus = "inactive";
+				slot.tileCropSourceFrame = std::numeric_limits<std::uint32_t>::max();
+				slot.tileCropOccupiedTiles = slot.tileCropRegions = 0;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				slot.packedCropPlanning = {};
+#endif
+				if (a_args.settings.packedCrops && useCrop && !fullOutputMask && !provenEmpty &&
+					!plan.projectionUncertain && !plan.fullEyeEligibilityFallback) {
+					CharacterTileCrops tiles;
+					try {
+						tiles = state_->ReadTileCropProposal(a_args, plan.regions, slot);
+					} catch (const std::exception& exception) {
+						(void)state_->FailEarlyMaskBounds(exception.what(), E_FAIL);
+						slot.tileCropStatus = "geometry_fallback_planning_failed";
+					}
+					if (!slot.tileCropReadiness.Admit(tiles.valid)) {
+						if (tiles.valid)
+							slot.tileCropStatus = "geometry_fallback_readiness_warmup";
+						tiles = {};
+					} else {
+						Increment(state_->snapshot_.earlyMaskBounds.used);
+						state_->snapshot_.earlyMaskBounds.lastUsedSourceFrame = slot.tileCropSourceFrame;
+					}
+					const std::span<const CharacterRect> packedRegions = tiles.valid ? std::span(tiles.regions) : std::span(plan.regions);
+					(void)ResolvePackedCropSources(packedRegions, a_args.outputWidth, a_args.outputHeight,
+						slot.computeSubrect, slot.stablePackedCrops
+#ifdef DEVBENCH_BRIDGE_ENABLED
+						,
+						&slot.packedCropPlanning
+#endif
+					);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+					slot.packedCropPlanning.tileSourceFrame = tiles.valid ? slot.tileCropSourceFrame : std::numeric_limits<std::uint32_t>::max();
+#endif
+				} else {
+					slot.stablePackedCrops = {};
+					slot.tileCropReadiness = {};
+#ifdef DEVBENCH_BRIDGE_ENABLED
+					slot.packedCropPlanning.reason = !a_args.settings.packedCrops ? PackedCropReason::NotRequested :
+					                                 !useCrop                     ? PackedCropReason::CropDisabled :
+					                                 fullOutputMask               ? PackedCropReason::FullOutputMask :
+					                                 provenEmpty                  ? PackedCropReason::EmptySelection :
+					                                 plan.projectionUncertain     ? PackedCropReason::UncertainProjection :
+					                                                                PackedCropReason::FullEyeFallback;
+#endif
+				}
+				slot.maskRoiPlanningCpuMs = evidence ? ElapsedMilliseconds(planningStart) : 0.0;
+				if (evidence) {
+					evidence->roiPlanningCpuAvailable = true;
+					evidence->roiPlanningCpuMs = slot.maskRoiPlanningCpuMs;
+					evidence->boundsUsed = std::string_view(slot.tileCropStatus) == "async_occupied_tiles_16_gpu_guarded";
+					evidence->boundsStatus = evidence->boundsUsed ? slot.tileCropStatus : slot.maskRoiStatus;
 				}
 				slot.contentSerial = state_->AllocatePreparedContentSerial();
 				if (evidence) {
@@ -3520,6 +3652,10 @@ namespace NeuralRendering
 			a_result.computeSubrect = slot.computeSubrect;
 			a_result.roi = slot.roi;
 			a_result.resetHistory = slot.requiresEvaluation && slot.resetHistoryAfterEmpty;
+			a_result.packedCrops = slot.stablePackedCrops.sources;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			a_result.packedCropPlanning = slot.packedCropPlanning;
+#endif
 			if (evidence) {
 				evidence->key.contentSerial = slot.contentSerial;
 				evidence->support = slot.supportEvidence;

@@ -45,6 +45,86 @@ class PreparedSelectionContract(unittest.TestCase):
         self.assertIn("&selection.maskSupport", upscaling)
         self.assertIn("&characterSelections[eye].maskSupport", upscaling)
 
+
+    def test_scaled_c_selection_requires_transaction_completion(self):
+        source = read("src/Features/Upscaling.cpp")
+        start = source.index("bool Upscaling::PrepareReducedResolutionNeuralOutputTarget(")
+        target = source[start:source.index("bool Upscaling::PrepareReducedResolutionNeuralOutput(", start)]
+        self.assertIn("args.renderingMode != NeuralRendering::RenderingMode::ReducedResolution", target)
+        self.assertIn("CSX::NvidiaComIdentity::IsSame(args.colorInput", target)
+        self.assertIn("output.mask = selection.mask;", target)
+        self.assertIn("output.providerBlending = selection.providerBlending;", target)
+        self.assertLess(target.index("args.colorOutput = selected->resource.get();"),
+                        target.index("foveatedCenterNeuralOut[eye].reset();"))
+        self.assertNotIn("CopyResource(", target)
+        self.assertNotIn("Dispatch(", target)
+        start = source.index("NeuralStereoEvaluationSummary EvaluatePreparedNeuralStereo(")
+        evaluation = source[start:source.index("\n\t}", start)]
+        self.assertLess(evaluation.index("FinalizePreparedNeuralStereoInputs("),
+                        evaluation.index("ModelResolution::Required("))
+        self.assertLess(evaluation.index("PrepareReducedResolutionNeuralOutputTarget("),
+                        evaluation.index("Renderer::Instance().ApplyStereo("))
+        self.assertIn("args.modelOutputSelection ? outcome.WasOutputSelected(args.featureSlot)", evaluation)
+        self.assertIn("a_upscaling.PrepareReducedResolutionNeuralOutput(eye, args)", evaluation)
+        start = source.index("bool BindPreparedActorBlending(")
+        binding = source[start:source.index("\n\t}", start)]
+        self.assertLess(binding.index("args.actorSelection = selection.mask;"),
+                        binding.index("if (!requested)"))
+        self.assertLess(binding.index("if (!requested)"), binding.index("selection.mask->GetResource(&args.controlMask);"))
+
+
+    def test_c_selected_allocation_is_admitted_before_creation(self):
+        source = read("src/Features/Upscaling.cpp")
+        start = source.index("bool Upscaling::EnsureReducedResolutionNeuralSelected(")
+        helper = source[start:source.index("bool Upscaling::PrepareReducedResolutionNeuralOutputTarget(", start)]
+        cached = helper.index("selected->desc.Format == sourceDesc.Format")
+        staged = helper.index("if (validateStaged || ShouldReuseOrdinarySaveResources())")
+        admission = helper.index("ReserveOutputAllocation(device, *bytes)")
+        creation = helper.index("EnsureFoveatedTexture(selected, source")
+        refresh = helper.index("GpuMemoryBudget::Get().Sample(device, 0, true)")
+        self.assertLess(cached, staged)
+        self.assertLess(staged, admission)
+        self.assertLess(admission, creation)
+        self.assertLess(creation, refresh)
+        self.assertIn("LogicalTextureBytes(sourceDesc.Format, width, height)", helper)
+        self.assertIn("if (!reservation)", helper)
+        self.assertNotIn("reservation.Reset()", helper)
+        self.assertNotIn("EnsureFoveatedTexture(foveatedCenterNeuralSelected", source)
+        self.assertEqual(source.count("EnsureReducedResolutionNeuralSelected("), 5)
+        self.assertIn("neuralOutputHeight, validateStagedResources)", source)
+        self.assertIn("EnsureReducedResolutionNeuralSelected(0, color, width, height)", source)
+
+    def test_fused_selection_diagnostics_match_the_registered_schema(self):
+        import json
+        import re
+
+        bridge = read("src/Features/Upscaling/VRRenderScaleDevBenchBridge.cpp")
+        descriptor = json.loads(re.search(r'kNeuralRenderingDescriptor = R"nr\((.*?)\)nr"', bridge, re.S).group(1))
+        properties = descriptor["outputSchema"]["properties"]["neuralRendering"]["properties"]
+        self.assertEqual(properties["apiVersion"]["const"], 11)
+        last_request = properties["modelResolution"]["properties"]["lastRequest"]["properties"]
+        self.assertEqual(last_request["selectedOutput"]["type"], "boolean")
+        self.assertIn("actors and packed crops", last_request["sharedInputs"]["description"])
+        transport = properties["sourceTransport"]["properties"]
+        self.assertEqual(transport["schemaVersion"]["const"], 4)
+        self.assertEqual(transport["lastModelOutputSelected"]["type"], "boolean")
+        self.assertIn("API-v11 NR runtime", descriptor["description"])
+        self.assertIn("latest request's completed-selection flag", descriptor["description"])
+        runtime = properties["characterRendering"]["properties"]["runtime"]["properties"]
+        early_bounds = runtime["earlyMaskBounds"]["description"]
+        self.assertIn("Nonblocking D3D11 query polling and readback", early_bounds)
+        self.assertIn("current-mask GPU coverage guard", early_bounds)
+        self.assertNotIn("Production crop planning issues no reduction or readback", early_bounds)
+        compatibility_fence = runtime["eyes"]["items"]["properties"]["maskRoiReadbackFenceValue"]["description"]
+        self.assertIn("always zero", compatibility_fence)
+        self.assertIn("D3D11 query completion separately", compatibility_fence)
+        self.assertIn('{ "apiVersion", 11 }', bridge)
+        self.assertIn('{ "selectedOutput", snapshot.modelOutputSelected }', bridge)
+        renderer = read("src/Features/Upscaling/NeuralRendering/Renderer.cpp")
+        start = renderer.index("void Renderer::State::SetRequestTelemetryLocked(")
+        request = renderer[start:renderer.index("\n\t}", start)]
+        self.assertIn("snapshot_.modelOutputSelected = false;", request)
+
     def test_finalization_evidence_is_bridge_and_capture_gated(self):
         source = read("src/Features/Upscaling/NeuralRendering/CharacterRendering.cpp")
         finalization = source[source.index("bool CharacterRendering::FinalizePreparedMasks("):
@@ -119,8 +199,36 @@ class PreparedSelectionContract(unittest.TestCase):
 
     def test_empty_proof_is_current_and_has_no_extra_readback(self):
         source = read("src/Features/Upscaling/NeuralRendering/CharacterRendering.cpp")
-        early = source[source.index("EarlyMaskReadback* FindCurrentSupport("):source.index("static void PublishMaskRoiSnapshot(")]
-        self.assertNotIn("PollCharacterMaskBounds(", source)
+        early = source[source.index("EarlyMaskReadback* FindCurrentSupport("):source.index("CharacterTileCrops ReadTileCropProposal(")]
+        empty_selection = source[source.index("bool CharacterRendering::IsCurrentSelectionEmpty("):
+                                 source.index("bool CharacterRendering::PrepareMask(")]
+        self.assertNotIn("PollCharacterMaskBounds(", empty_selection)
+        occupancy = source[source.index("CharacterTileCrops ReadTileCropProposal("):
+                           source.index("static void PublishMaskRoiSnapshot(")]
+        self.assertNotIn("PollCharacterMaskBounds(", occupancy)
+        self.assertIn("CharacterTileProposalFresh(readback->frame, args.sourceWorldFrame)", occupancy)
+        self.assertNotIn("slot.emptyProof", occupancy)
+        retirement = source[source.index("void QueueEarlyMaskBounds("):
+                            source.index("EarlyMaskReadback* FindCurrentSupport(")]
+        self.assertEqual(retirement.count("PollCharacterMaskBounds("), 1)
+        self.assertLess(retirement.index("completedTileProposal_.cpuBounds.swap(readback.cpuBounds)"),
+                        retirement.index("CopyResource(selected->staging.Get(), selected->bounds.Get())"))
+        self.assertIn("readback.captureSerial > completedTileProposal_.captureSerial", retirement)
+        coverage = read("features/Neural Rendering/Shaders/Upscaling/NeuralRendering/ModelResolutionCoverageCS.hlsl")
+        self.assertIn("CurrentSelection.Load", coverage)
+        self.assertIn("PACKED_CROP_SUPPORT_PIXELS", coverage)
+        self.assertIn("InterlockedOr(PackedCoverage[0], 1u)", coverage)
+        adapter = read("src/Features/Upscaling/NeuralRendering/ModelResolution.cpp")
+        self.assertIn("work.constants.packedCoverageGuard = 1u;", adapter)
+        self.assertIn("DispatchReconstruction<3>(args, batch)", adapter)
+        self.assertIn("DispatchReconstruction<4>(args, batch)", adapter)
+        self.assertIn("DispatchReconstruction<5>(args, batch)", adapter)
+        reconstruct = read("features/Neural Rendering/Shaders/Upscaling/NeuralRendering/ModelResolutionReconstructCS.hlsl")
+        self.assertIn("#ifdef PACKED_CROP_COVERAGE_GUARD", reconstruct)
+        self.assertRegex(reconstruct, r"if \(PackedPadding != 0u && PackedCoverage\[0\] != 0u\) \{\s*Result\[pixel\] = source;\s*return;")
+        self.assertIn("geometry_fallback_empty_grid", occupancy)
+        for blocking in ("ReadCharacterMaskBounds(", "->Flush(", "Sleep("):
+            self.assertNotIn(blocking, occupancy)
         self.assertNotIn("TryApplyEarlyMaskBounds(", source)
         self.assertIn("readback.captureSerial == earlyMaskCaptureSerial_", early)
         self.assertIn("readback.frame == a_args.sourceWorldFrame", early)
@@ -166,8 +274,9 @@ class PreparedSelectionContract(unittest.TestCase):
                               source.index("void CharacterRendering::ResolveFeature18Disposition(")]
         for field in ("sourceWorldFrame", "generation", "settings", "outputIsJittered", "viewportCrop.fullInput", "viewportCrop.fullOutput"):
             self.assertIn(f"args.{field} != a_args.front().{field}", finalization)
-        self.assertRegex(capture, r"#ifdef DEVBENCH_BRIDGE_ENABLED\s+if \(a_gpuMaskSupport\)\s+state_->QueueEarlyMaskBounds")
-        self.assertNotIn("selected->staging", source)
+        self.assertRegex(capture, r"if \(a_gpuMaskSupport \|\| a_tileCrops\)\s+state_->QueueEarlyMaskBounds")
+        self.assertIn("CopyResource(selected->staging.Get(), selected->bounds.Get())", source)
+        self.assertIn("slot.tileCropReadiness.Admit(tiles.valid)", source)
         observation = source[source.index("bool CharacterRendering::ObserveGeometry("):source.index("void CharacterRendering::ObserveClassificationRejection(")]
         self.assertLess(observation.index("observationKeys_.contains("), observation.index("Util::ReadGeometryBounds("))
         self.assertIn(".bounds = bounds", observation)

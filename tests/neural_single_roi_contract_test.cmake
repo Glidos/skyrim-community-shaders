@@ -57,14 +57,21 @@ file(READ "${_renderer_source_path}" _renderer_source)
 file(READ "${_runtime_header_path}" _runtime_header)
 file(READ "${_devbench_bridge_path}" _devbench_bridge)
 
-# GPU-only support is optional; CPU geometry alone determines the crop.
+# Completed grids propose layouts; current mask validation owns coverage.
 foreach(_early_bounds_contract IN ITEMS
     [[state_->QueueEarlyMaskBounds(a_device, a_context, evidence.get());]]
     [[state_->earlyMaskCaptureSerial_ = state_->AllocatePreparedContentSerial();]]
     [[readback.captureSerial == earlyMaskCaptureSerial_]]
     [[readback.frame == a_args.sourceWorldFrame && readback.frame == capturedFrame_]]
     [[readback.categories == GetEnabledCharacterCategoryMask(a_args.settings)]]
-    [[if (a_gpuMaskSupport)]]
+    [[if (a_gpuMaskSupport || a_tileCrops)]]
+    [[PollCharacterMaskBounds(a_context, readback.query.Get(), readback.staging.Get(),]]
+    [[completedTileProposal_.cpuBounds.swap(readback.cpuBounds);]]
+    [[CharacterTileProposalFresh(readback->frame, args.sourceWorldFrame)]]
+    [[slot.tileCropReadiness.Admit(tiles.valid)]]
+    [["geometry_fallback_no_completed_grid"]]
+    [["async_occupied_tiles_16_gpu_guarded"]]
+    [["geometry_fallback_empty_grid"]]
     [[if (!provenEmpty && !fullOutputMask)]]
     [[Util::ReadGeometryBounds(*a_geometry, state_->geometryBoundsBudget_, a_selectedCategory, refined)]]
 )
@@ -204,7 +211,7 @@ string(REGEX REPLACE "[\r\n\t ]+" " "
     _character_source_normalized "${_character_source}")
 foreach(_history_contract IN ITEMS
     [[void InvalidatePreparedMasks(bool a_preserveRoiHistory = false)]]
-    [[if (!a_preserveRoiHistory) { slot.stableComputeSubrect = {}; }]]
+    [[if (!a_preserveRoiHistory) { slot.stableComputeSubrect = {}; slot.stablePackedCrops = {}; slot.tileCropReadiness = {}; }]]
     [[state_->InvalidatePreparedMasks(true);]]
     [[if (slot.roiPolicyKey != key.settings) { slot.stableComputeSubrect = {};]]
 )

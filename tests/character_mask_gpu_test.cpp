@@ -160,12 +160,12 @@ namespace
 			Check(device_->CreateComputeShader(maskBlob->GetBufferPointer(),
 					  maskBlob->GetBufferSize(), nullptr, &maskShader_),
 				"Create mask shader");
-			const D3D_SHADER_MACRO supportDefines[]{ { "GPU_CHARACTER_SUPPORT", "1" }, { "NR_DIAGNOSTICS", "1" }, { nullptr, nullptr } };
+			const D3D_SHADER_MACRO supportDefines[]{ { "GPU_CHARACTER_SUPPORT", "1" }, { "NR_DIAGNOSTICS", "1" }, { "CHARACTER_MASK_TILE_SIZE", "16" }, { nullptr, nullptr } };
 			auto supportBlob = Compile(shaderDirectory / "DLSS5CharacterMaskCS.hlsl", D3D_COMPILE_STANDARD_FILE_INCLUDE, supportDefines);
 			CheckMaskLayout(supportBlob.Get(), true);
 			Check(device_->CreateComputeShader(supportBlob->GetBufferPointer(), supportBlob->GetBufferSize(), nullptr, &supportShader_), "Create sparse mask shader");
 			Util::SetResourceName(supportShader_.Get(), "CharacterMaskTest::SparseMask");
-			const D3D_SHADER_MACRO boundsDefines[]{ { "EARLY_CATEGORY_BOUNDS", "1" }, { nullptr, nullptr } };
+			const D3D_SHADER_MACRO boundsDefines[]{ { "EARLY_CATEGORY_BOUNDS", "1" }, { "CHARACTER_MASK_TILE_SIZE", "16" }, { nullptr, nullptr } };
 			auto boundsBlob = Compile(shaderDirectory / "DLSS5CharacterMaskBoundsCS.hlsl", D3D_COMPILE_STANDARD_FILE_INCLUDE, boundsDefines);
 			Check(device_->CreateComputeShader(boundsBlob->GetBufferPointer(), boundsBlob->GetBufferSize(), nullptr, &boundsShader_), "Create support shader");
 			Util::SetResourceName(boundsShader_.Get(), "CharacterMaskTest::SupportBounds");
@@ -718,7 +718,7 @@ namespace
 				(constants.featherOptions[1] != 0.0f && constants.featherOptions[1] != 5.0f))
 				return;
 			const auto sourceWidth = constants.outputAndSourceSize[2], sourceHeight = constants.outputAndSourceSize[3];
-			const auto columns = (sourceWidth + 31u) / 32u, rows = (sourceHeight + 31u) / 32u;
+			const auto columns = (sourceWidth + 15u) / 16u, rows = (sourceHeight + 15u) / 16u;
 			const auto eyes = packedWidth / sourceWidth;
 			Require(eyes >= 1 && eyes <= 2 && packedWidth == eyes * sourceWidth, "Sparse source layout");
 			D3D11_BUFFER_DESC desc{};

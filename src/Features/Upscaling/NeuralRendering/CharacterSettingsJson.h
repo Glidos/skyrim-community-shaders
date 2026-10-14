@@ -23,6 +23,7 @@ namespace NeuralRendering
 			visit("neuralCharacterSceneStrengthsEnabled", settings.neuralCharacterSceneStrengthsEnabled, policy.sceneStrengthsEnabled);
 			visit("neuralCharacterRenderingEnabled", settings.neuralCharacterRenderingEnabled, policy.enabled);
 			visit("neuralCharacterProviderBlending", settings.neuralCharacterProviderBlending, policy.providerBlending);
+			visit("neuralCharacterPackedCrops", settings.neuralCharacterPackedCrops, policy.packedCrops);
 			visit("neuralCharacterFacesEnabled", settings.neuralCharacterFacesEnabled, policy.faces);
 			visit("neuralCharacterSkinEnabled", settings.neuralCharacterSkinEnabled, policy.skin);
 			visit("neuralCharacterHairEnabled", settings.neuralCharacterHairEnabled, policy.hair);

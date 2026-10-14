@@ -18,8 +18,6 @@ function(extract start_token end_token output)
     file(WRITE "${OUTPUT_DIRECTORY}/${output}" "${body}\n")
 endfunction()
 file(MAKE_DIRECTORY "${OUTPUT_DIRECTORY}")
-extract("\t\tbool UsesAuthoredMask(" "\n\t\t}"
-    neural_authored_mode_under_test.h)
 extract("\t\tstruct ProjectionEye" "\n\t\tvoid CaptureSourceGeometry"
     neural_source_types_under_test.h)
 file(READ "${OUTPUT_DIRECTORY}/neural_source_types_under_test.h" source_types)

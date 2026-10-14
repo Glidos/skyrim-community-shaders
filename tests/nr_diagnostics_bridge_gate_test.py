@@ -12,7 +12,7 @@ root = Path(__file__).resolve().parents[1]
 empty_units = ["src/Features/Upscaling/NeuralRendering/ExposureCapture.cpp",
                "src/Features/ScreenshotNeuralDiagnostics.cpp"]
 checks = {
-    "src/Features/Upscaling/NeuralRendering/Renderer.cpp": ["modelPreparationEvidence_", "MergeModelPreparationEvidenceLocked", "SimulateTransientStall", "prewarmReservedBytes", "stageMicroseconds"],
+    "src/Features/Upscaling/NeuralRendering/Renderer.cpp": ["modelPreparationEvidence_", "MergeModelPreparationEvidenceLocked", "SimulateTransientStall", "prewarmReservedBytes", "stageMicroseconds", "packedCropAdmission_", "BeginPackedCropAdmissionLocked"],
     "src/Features/Upscaling/NeuralRendering/Renderer.h": ["SimulateTransientStall", "prewarmReservedBytes", "shaderGenerationApplied"],
     "src/Features/Upscaling/NeuralRendering/Runtime.cpp": ["GetLifecycleCounts", "lifecycleCounts_"],
     "src/Features/Upscaling/NeuralRendering/Runtime.h": ["LifecycleCounts", "lifecycleCounts_"],

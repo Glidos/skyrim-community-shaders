@@ -32,8 +32,18 @@ int main()
 	require(performanceSchema.contains("lastFeatureParallel") && performanceSchema.contains("lastEvaluationGpuMicroseconds") &&
 			performanceSchema.contains("parallelCommandSubmissions"));
 	require(descriptor.at("description").get<std::string>().find("parallelEyes") != std::string::npos);
+	const auto& packedProperty = descriptor.at("inputSchema").at("properties").at("characterPackedCrops");
+	require(packedProperty.at("type") == "boolean" && packedProperty.at("default") == true);
+	for (const auto& value : { json(true), json(false), json(1), json("true"), json(nullptr) }) {
+		NeuralRenderingConfigurationRequest request;
+		json error;
+		const bool accepted = TryParseNeuralRenderingConfiguration({ { "action", "nr_configure" }, { "characterPackedCrops", value } }, request, error);
+		require(accepted == value.is_boolean());
+		if (accepted)
+			require(request.HasAnyControl() && request.HasCharacterControls() && request.characterPackedCrops == value.get<bool>());
+	}
 	const auto& parallelProperty = descriptor.at("inputSchema").at("properties").at("parallelEyes");
-	require(parallelProperty.at("type") == "boolean" && parallelProperty.at("default") == false);
+	require(parallelProperty.at("type") == "boolean" && parallelProperty.at("default") == true);
 	for (const auto& value : { json(true), json(false), json(1), json("true"), json(nullptr) }) {
 		NeuralRenderingConfigurationRequest request;
 		json error;

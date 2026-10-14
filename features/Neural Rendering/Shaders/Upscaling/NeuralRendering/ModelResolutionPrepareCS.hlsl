@@ -14,8 +14,24 @@ void PrepareColor(uint2 id)
 	if (any(id >= ModelRegionSize))
 		return;
 	uint2 pixel = ModelRegionOffset + id;
-	float2 lower = max(float2(pixel) * float2(SourceSize) / float2(ModelSize), float2(SourceRegionOffset));
-	float2 upper = min(float2(pixel + 1u) * float2(SourceSize) / float2(ModelSize), float2(SourceRegionOffset + SourceRegionSize));
+	float2 samplePixel = float2(pixel), sampleGrid = float2(ModelSize);
+	uint2 sourceOffset = SourceRegionOffset, sourceEnd = SourceRegionOffset + SourceRegionSize;
+	if (PackedCount != 0u) {
+		uint tileIndex = FindPackedCrop(float2(pixel) + 0.5, false);
+		if (tileIndex == PackedCount) {
+			ProxyColor[pixel] = 0.0;
+			if (HasMask != 0u)
+				ProxyMask[pixel] = 0.0;
+			return;
+		}
+		PackedCropTile tile = PackedTiles[tileIndex];
+		samplePixel += float2(tile.model.xy) - float2(tile.packed.xy);
+		sampleGrid = float2(UnpackedSize);
+		sourceOffset = tile.source.xy;
+		sourceEnd = tile.source.xy + tile.source.zw;
+	}
+	float2 lower = max(samplePixel * float2(SourceSize) / sampleGrid, float2(sourceOffset));
+	float2 upper = min((samplePixel + 1.0) * float2(SourceSize) / sampleGrid, float2(sourceEnd));
 	uint2 first = uint2(floor(lower));
 	uint2 end = uint2(ceil(upper));
 	float4 color = 0.0;
@@ -25,7 +41,7 @@ void PrepareColor(uint2 id)
 	{
 		[loop] for (uint x = first.x; x < end.x; ++x)
 		{
-			uint2 source = min(uint2(x, y), SourceRegionOffset + SourceRegionSize - 1u);
+			uint2 source = min(uint2(x, y), sourceEnd - 1u);
 			float2 overlap = max(0.0, min(upper, float2(source + 1u)) - max(lower, float2(source)));
 			float weight = overlap.x * overlap.y;
 			if (weight <= 0.0)
@@ -58,6 +74,23 @@ void PrepareGuides(uint2 id)
 	uint2 pixel = regionOffset + id;
 	float2 lower = max(float2(pixel) * float2(guideSize) / float2(modelGuideSize), float2(sourceOffset));
 	float2 upper = min(float2(pixel + 1u) * float2(guideSize) / float2(modelGuideSize), float2(sourceEnd));
+	uint packedTileIndex = PackedCount;
+	if (PackedCount != 0u) {
+		float2 atlasPosition = (float2(pixel) + 0.5) * float2(ModelSize) / float2(modelGuideSize);
+		uint tileIndex = FindPackedCrop(atlasPosition, false);
+		if (tileIndex == PackedCount) {
+			ProxyDepth[pixel] = 1.0;
+			ProxyMotion[pixel] = 0.0;
+			return;
+		}
+		packedTileIndex = tileIndex;
+		PackedCropTile tile = PackedTiles[tileIndex];
+		float2 atlasLower = max(float2(pixel) * float2(ModelSize) / float2(modelGuideSize), float2(tile.packed.xy));
+		float2 atlasUpper = min(float2(pixel + 1u) * float2(ModelSize) / float2(modelGuideSize), float2(tile.packed.xy + tile.packed.zw));
+		float2 shift = float2(tile.model.xy) - float2(tile.packed.xy);
+		lower = max((atlasLower + shift) * float2(guideSize) / float2(UnpackedSize), float2(tile.source.xy) * float2(guideSize) / float2(SourceSize));
+		upper = min((atlasUpper + shift) * float2(guideSize) / float2(UnpackedSize), float2(tile.source.xy + tile.source.zw) * float2(guideSize) / float2(SourceSize));
+	}
 	uint2 first = min(uint2(floor(lower)), guideSize - 1u);
 	uint2 end = min(uint2(ceil(upper)), guideSize);
 	float nearest = 1.0;
@@ -78,7 +111,16 @@ void PrepareGuides(uint2 id)
 		}
 	}
 	ProxyDepth[pixel] = nearest;
-	ProxyMotion[pixel] = motion * MotionVectorScale;
+	float2 atlasMotion = motion * MotionVectorScale;
+	if (packedTileIndex < PackedCount) {
+		PackedCropTile tile = PackedTiles[packedTileIndex];
+		float2 position = (float2(pixel) + 0.5) * float2(ModelSize) / float2(modelGuideSize);
+		float2 reach = abs(atlasMotion) * float2(ModelSize) + 1.0;
+		// A temporal lookup crossing a tile must never sample an unrelated actor history.
+		if (any(position - reach < float2(tile.packed.xy)) || any(position + reach >= float2(tile.packed.xy + tile.packed.zw)))
+			atlasMotion = 2.0;
+	}
+	ProxyMotion[pixel] = atlasMotion;
 }
 
 [numthreads(8, 8, 1)] void main(uint3 id : SV_DispatchThreadID) {

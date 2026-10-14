@@ -227,6 +227,17 @@ namespace NeuralRendering
 			retryAfterMs = std::max(retryAfterMs, Add(nowMs, kMinimumOffMs));
 		}
 
+		/** Scratch outputs use current peak headroom without advancing native recovery. */
+		[[nodiscard]] bool CanAllocateOutput(MemoryBudgetSample current, std::uint64_t bytes,
+			std::uint64_t nowMs, std::uint64_t pending = 0) const noexcept
+		{
+			if (!bytes || phase == MemoryRecoveryPhase::Retiring || !current.IsFresh(nowMs))
+				return false;
+			auto preview = *this;
+			preview.phase = MemoryRecoveryPhase::Ready;
+			return preview.Admit(current, bytes, nowMs, pending);
+		}
+
 		/** Keep process usage, pending owners and future NR allocation demand distinct. */
 		[[nodiscard]] bool Admit(MemoryBudgetSample current, std::uint64_t additionalBytes,
 			std::uint64_t nowMs, std::uint64_t otherPendingBytes = 0) noexcept

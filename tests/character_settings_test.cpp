@@ -28,6 +28,7 @@ namespace
 		bool neuralCharacterAnimalsEnabled = true;
 		bool neuralCharacterOtherActorsEnabled = true;
 		bool neuralCharacterProviderBlending = false;
+		bool neuralCharacterPackedCrops = true;
 		bool neuralCharacterArmorEnabled = false;
 		bool neuralCharacterWeaponsEnabled = false;
 		float neuralCharacterFaceStrength = CharacterPolicy::kDefaultFaceStrength;
@@ -83,7 +84,7 @@ namespace
 			"neuralCharacterHumansEnabled": true, "neuralCharacterOtherHumanoidsEnabled": false,
 			"neuralCharacterCreaturesEnabled": true, "neuralCharacterAnimalsEnabled": false,
 			"neuralCharacterOtherActorsEnabled": false,
-			"neuralCharacterProviderBlending": true,
+			"neuralCharacterProviderBlending": true, "neuralCharacterPackedCrops": true,
 			"neuralCharacterVisualIsolationEnabled": false,
 			"neuralCharacterFacesEnabled": false, "neuralCharacterSkinEnabled": false,
 			"neuralCharacterHairEnabled": true, "neuralCharacterArmorEnabled": true,
@@ -300,6 +301,9 @@ namespace
 		CharacterSettings scene;
 		Require(!IsCharacterMaskActive(scene), "Ordinary scene defaults must avoid mask work");
 		scene.sceneStrengthsEnabled = true;
+		scene.packedCrops = true;
+		Require(!ResolveCharacterScopeSettings(scene).packedCrops && scene.packedCrops,
+			"Scene strengths must ignore packing without altering the saved actor preference");
 		scene.faceStrength = 0.0f;
 		Require(IsCharacterMaskActive(scene) && UsesSceneCharacterStrengths(scene) &&
 					IsCharacterCategoryEnabled(CharacterCategory::Face, scene) && GetCharacterMaskStrengths(scene)[0] == 1.0f,

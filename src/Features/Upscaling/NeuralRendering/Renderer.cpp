@@ -10,6 +10,9 @@
 #include "D3D12Interop.h"
 #include "MemoryResolutionPolicy.h"
 #include "ModelResolution.h"
+#ifdef DEVBENCH_BRIDGE_ENABLED
+#	include "PackedCropEvidenceJson.h"
+#endif
 #include "PipelinePolicy.h"
 #include "ShaderInvalidation.h"
 #include "Utils/ComIdentity.h"
@@ -31,6 +34,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -606,6 +610,11 @@ namespace NeuralRendering
 		std::shared_ptr<ExecutionEvidence> modelPreparationEvidence_;
 		bool forceFullCoordinates_ = false;
 		std::array<CompactInputRetention, Runtime::kFeatureSlotCount> compactRetention_{};
+
+#	ifdef DEVBENCH_BRIDGE_ENABLED
+		std::array<PackedCropAdmissionDiagnostics, Runtime::kFeatureSlotCount> packedCropAdmission_{};
+		PackedCropAdmissionDiagnostics* BeginPackedCropAdmissionLocked(const RendererApplyArgs&) noexcept;
+#	endif
 		ComPtr<ID3D11ComputeShader> copyCompactDepthGuideCS_;
 		struct ValidatedResources;
 		void ApplyCompactLayoutLocked(const RendererApplyArgs& args, ValidatedResources& resources) const;
@@ -704,6 +713,12 @@ namespace NeuralRendering
 		MemoryConservationPolicy memoryConservation_{};
 		MemoryRecoveryPolicy memoryRecovery_{};
 		MemoryResolutionPolicy memoryResolution_{};
+		static_assert(std::atomic_uint32_t::is_always_lock_free);
+		std::atomic_uint32_t modelResolutionCeiling_{ kMaximumModelResolutionPercent };
+		void PublishModelResolutionCeilingLocked() noexcept
+		{
+			modelResolutionCeiling_.store(memoryResolution_.enabled ? memoryResolution_.ceilingPercent : kMaximumModelResolutionPercent, std::memory_order_relaxed);
+		}
 		std::array<std::optional<ResourceKey>, Runtime::kFeatureSlotCount> memoryCapacityKeys_{};
 		struct ResolutionLatch
 		{
@@ -727,13 +742,10 @@ namespace NeuralRendering
 		Util::GpuMemoryBudget::Reservation memoryReservation_;
 		ComPtr<ID3D11Device> memorySampleDevice_;
 		std::uint64_t nextMemorySampleMs_ = 0;
-		void FinishMemoryAdmissionLocked()
+		void PublishMemoryBudgetWorkLocked(bool requested = true)
 		{
-			if (memoryReservation_)
-				Util::GpuMemoryBudget::Get().Sample(memorySampleDevice_.Get(), 0, true);
-			memoryReservation_.Reset();
 			auto& budget = Util::GpuMemoryBudget::Get();
-			if (failureLatched_ || quarantined_) {
+			if (!requested || failureLatched_ || quarantined_) {
 				budget.SetOwnerWork(Util::GpuMemoryBudget::Owner::NeuralRendering, false, 0);
 				return;
 			}
@@ -743,6 +755,13 @@ namespace NeuralRendering
 				phase == MemoryRecoveryPhase::Waiting   ? memoryRecovery_.admissionDemandBytes :
 				phase == MemoryRecoveryPhase::Probation ? MemoryRecoveryPolicy::kMinimumHeadroom :
 														  0);
+		}
+		void FinishMemoryAdmissionLocked()
+		{
+			if (memoryReservation_)
+				Util::GpuMemoryBudget::Get().Sample(memorySampleDevice_.Get(), 0, true);
+			memoryReservation_.Reset();
+			PublishMemoryBudgetWorkLocked();
 		}
 
 #ifdef DEVBENCH_BRIDGE_ENABLED
@@ -1516,6 +1535,12 @@ namespace NeuralRendering
 			snapshot_.insertionPoint = a_args.insertionPoint;
 			snapshot_.modelResolutionPercent = a_args.modelResolutionPercent;
 			snapshot_.modelSharedInputs = false;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			snapshot_.modelOutputSelected = false;
+#endif
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			snapshot_.packedCropLayout = a_args.modelResolutionHistory ? a_args.modelResolutionHistory->packedCrops : PackedCropLayout{};
+#endif
 			snapshot_.modelSourceWidth = snapshot_.modelWidth = a_args.colorWidth;
 			snapshot_.modelSourceHeight = snapshot_.modelHeight = a_args.colorHeight;
 			snapshot_.colorWidth = a_args.colorWidth;
@@ -2119,6 +2144,7 @@ namespace NeuralRendering
 
 	void Renderer::State::ResolutionChangedLocked()
 	{
+		PublishModelResolutionCeilingLocked();
 		memoryRecovery_.InvalidateCapacityLearning();
 		restorationPreviousPercent_ = 0;
 		logger::info("[DLSSNR][Memory] Pressure resolution ceiling {}%; requested {}% (session only)",
@@ -2144,7 +2170,10 @@ namespace NeuralRendering
 			memoryResolution_.ClearHealthyWindow();
 		}
 		const bool enabling = first.pressureResolutionEnabled && !memoryResolution_.enabled;
-		memoryResolution_.SetEnabled(first.pressureResolutionEnabled);
+		if (memoryResolution_.enabled != first.pressureResolutionEnabled) {
+			memoryResolution_.SetEnabled(first.pressureResolutionEnabled);
+			PublishModelResolutionCeilingLocked();
+		}
 		snapshot_.requestedModelResolutionPercent = requested;
 		snapshot_.pressureResolutionEnabled = first.pressureResolutionEnabled;
 		if (enabling && memoryRecovery_.phase == MemoryRecoveryPhase::Waiting && memoryResolution_.OnRetired(requested, GetTickCount64()))
@@ -2177,7 +2206,8 @@ namespace NeuralRendering
 		if (!resolutionRestoration_.rejected || args.empty())
 			return false;
 		const auto workingPercent = resolutionRestoration_.workingPercent;
-		(void)memoryResolution_.RejectRestoration(workingPercent);
+		if (memoryResolution_.RejectRestoration(workingPercent))
+			PublishModelResolutionCeilingLocked();
 		restorationPreviousPercent_ = 0;
 		const auto route = args.front().featureSlot / kEyeCount;
 		resolutionLatches_[route].percent = workingPercent;
@@ -2308,8 +2338,10 @@ namespace NeuralRendering
 			const auto previousCeiling = memoryResolution_.ceilingPercent;
 			if (memoryResolution_.enabled && memoryResolution_.ObserveSuccess(snapshot_.requestedModelResolutionPercent, memoryRecovery_.sample, now,
 												 Util::GpuMemoryBudget::Get().PendingBytes(Util::GpuMemoryBudget::Owner::NeuralRendering),
-												 memoryConservation_.active, memoryRecovery_.phase == MemoryRecoveryPhase::Ready))
+												 memoryConservation_.active, memoryRecovery_.phase == MemoryRecoveryPhase::Ready)) {
 				restorationPreviousPercent_ = previousCeiling;
+				PublishModelResolutionCeilingLocked();
+			}
 		} else {
 			if (memoryRecovery_.phase != MemoryRecoveryPhase::Waiting)
 				memoryRecovery_.BreakActiveObservation();
@@ -2899,6 +2931,26 @@ namespace NeuralRendering
 		return true;
 	}
 
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	PackedCropAdmissionDiagnostics* Renderer::State::BeginPackedCropAdmissionLocked(const RendererApplyArgs& args) noexcept
+	{
+		// Model proxies must not overwrite the original eye's admission decision.
+		if (args.featureSlot >= packedCropAdmission_.size() || args.modelResolutionHistory)
+			return nullptr;
+		auto& value = packedCropAdmission_[args.featureSlot];
+		value = {};
+		value.frame = args.frameId;
+		value.sourceFrame = args.sourceWorldFrame;
+		value.generation = args.generation;
+		value.modelResolutionPercent = args.modelResolutionPercent;
+		value.baselineSourcePixels = args.computeSubrect.Area();
+		value.planning = args.packedCropPlanning;
+		value.reason = args.packedCrops.count >= 2 ? PackedCropReason::NotExamined : value.planning.reason;
+		value.stage = args.packedCrops.count >= 2 ? PackedCropStage::ModelProjection : PackedCropStage::SourcePlanning;
+		return &value;
+	}
+#endif
+
 	bool Renderer::State::ApplyLocked(
 		const RendererApplyArgs& a_args,
 		RendererApplyOutcome& a_outcome)
@@ -2923,7 +2975,18 @@ namespace NeuralRendering
 	{
 		a_outcome = {};
 		// Colour reconstruction commits both eyes against one immutable input snapshot.
-		if (ModelResolution::Required(a_args[0]) || ModelResolution::Required(a_args[1]))
+		if (ModelResolution::Required(a_args[0]
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				,
+				BeginPackedCropAdmissionLocked(a_args[0])
+#endif
+					) ||
+			ModelResolution::Required(a_args[1]
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				,
+				BeginPackedCropAdmissionLocked(a_args[1])
+#endif
+					))
 			return ApplyModelResolutionLocked(a_args, a_outcome, true);
 		if (!a_memoryAdmitted && !resolutionRestoration_.active)
 			modelResolution_.ReleaseUnscaledSlots(a_args);
@@ -3057,7 +3120,13 @@ namespace NeuralRendering
 			if constexpr (kDevelopmentDiagnostics) {
 				const auto matched = std::ranges::find_if(args, [&](const auto& value) { return value.featureSlot == snapshot_.featureSlot; });
 				const auto& observed = matched != args.end() ? *matched : first;
-				const auto extent = BuildModelResolutionExtent(observed.outputWidth, observed.outputHeight, observed.modelResolutionPercent);
+				RendererApplyArgs telemetryProxy;
+				const bool projected = ModelResolution::Project(observed, telemetryProxy);
+				const auto extent = projected ? UpscalingDLSS::Extent{ telemetryProxy.outputWidth, telemetryProxy.outputHeight } : UpscalingDLSS::Extent{};
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				snapshot_.modelOutputSelected = outcome.WasOutputSelected(observed.featureSlot);
+				snapshot_.packedCropLayout = projected && telemetryProxy.modelResolutionHistory ? telemetryProxy.modelResolutionHistory->packedCrops : PackedCropLayout{};
+#endif
 				snapshot_.modelResolutionPercent = observed.modelResolutionPercent;
 				snapshot_.modelSharedInputs = sharedInputsPrepared;
 				snapshot_.modelSourceWidth = observed.outputWidth;
@@ -3084,7 +3153,12 @@ namespace NeuralRendering
 				failure)
 				return FailLocked(RendererStage::Validation, failure.result, std::move(failure.detail), input.featureSlot, false);
 			auto& proxy = projected[index];
-			if (!ModelResolution::Project(input, proxy))
+			if (!ModelResolution::Project(input, proxy
+#ifdef DEVBENCH_BRIDGE_ENABLED
+					,
+					BeginPackedCropAdmissionLocked(input)
+#endif
+						))
 				return FailLocked(RendererStage::Validation, E_INVALIDARG,
 					"model resolution requires supported colour/output grids and valid guide geometry", input.featureSlot, false);
 			resource.roi = proxy.roi.value_or(BuildRoiDescriptor(std::nullopt, proxy.computeSubrect,
@@ -3153,6 +3227,9 @@ namespace NeuralRendering
 		if (const auto removed = first.device->GetDeviceRemovedReason(); FAILED(removed))
 			return FailLocked(RendererStage::OutputCommit, removed,
 				"device removal followed NR model-resolution pair commit", first.featureSlot, true);
+		for (std::size_t index = 0; index < args.size(); ++index)
+			if (batch.selectedOutputs[index])
+				outcome.selectedOutputFeatureSlotMask |= 1u << args[index].featureSlot;
 		activeStage_ = RendererStage::Complete;
 		return true;
 	}
@@ -3160,7 +3237,14 @@ namespace NeuralRendering
 	bool Renderer::State::ApplyBatchLocked(
 		std::span<const RendererApplyArgs> args, RendererApplyOutcome& outcome, bool a_memoryAdmitted)
 	{
-		if (std::ranges::any_of(args, [](const auto& value) { return ModelResolution::Required(value); }))
+		if (std::ranges::any_of(args, [this](const auto& value) {
+				return ModelResolution::Required(value
+#ifdef DEVBENCH_BRIDGE_ENABLED
+					,
+					BeginPackedCropAdmissionLocked(value)
+#endif
+				);
+			}))
 			return ApplyModelResolutionLocked(args, outcome);
 #ifdef DEVBENCH_BRIDGE_ENABLED
 		requestedRegionCount_ = static_cast<std::uint32_t>(args.size());
@@ -4352,7 +4436,12 @@ namespace NeuralRendering
 			state_->ApplyShaderInvalidationLocked();
 			if (state_->snapshot_.stallRecovery.pending)
 				(void)state_->ServiceStallRecoveryLocked(a_requested);
-			else
+			else if (state_->failureLatched_ || state_->quarantined_)
+				state_->backendMaintenancePending_.store(false, std::memory_order_relaxed);
+			else if (state_->memoryRecovery_.phase == MemoryRecoveryPhase::Retiring) {
+				(void)state_->RetireMemoryPressureLocked();
+				state_->PublishMemoryBudgetWorkLocked(a_requested);
+			} else
 				(void)state_->ServiceRetainedBackendLocked(a_requested);
 		} catch (...) {
 			state_->QuarantineAfterUnexpectedFailureLocked(
@@ -4623,6 +4712,49 @@ namespace NeuralRendering
 		return result;
 	}
 
+	std::uint32_t Renderer::ModelResolutionCeiling() const noexcept
+	{
+		return state_->modelResolutionCeiling_.load(std::memory_order_relaxed);
+	}
+
+	Util::GpuMemoryBudget::Reservation Renderer::ReserveOutputAllocation(ID3D11Device* device, std::uint64_t bytes)
+	{
+		std::scoped_lock lock(state_->mutex_);
+		if (!device || !bytes || state_->failureLatched_ || state_->quarantined_ ||
+			(state_->device_ && !SameIdentity(state_->device_.Get(), device)))
+			return {};
+		if (state_->memoryRecovery_.phase == MemoryRecoveryPhase::Retiring) {
+			state_->snapshot_.memoryRecovery = state_->memoryRecovery_;
+			state_->PublishMemoryBudgetWorkLocked();
+			state_->backendMaintenancePending_.store(true, std::memory_order_relaxed);
+			return {};
+		}
+		auto& service = Util::GpuMemoryBudget::Get();
+		const auto initial = service.Sample(device, MemoryRecoveryPolicy::kSampleIntervalMs);
+		auto reservation = service.Reserve(Util::GpuMemoryBudget::Owner::NeuralRendering, device, bytes);
+		if (!reservation)
+			return {};
+		const auto sample = state_->SampleMemoryBudgetLocked(device, GetTickCount64(), true);
+		const auto shared = service.Sample(device, MemoryRecoveryPolicy::kSampleIntervalMs);
+		const auto now = GetTickCount64();
+		if (!sample.IsFresh(now) || !shared.Fresh(now) || shared.generation != initial.generation || shared.pendingBytes < reservation.Bytes())
+			return {};
+		// Keep all other tickets; required bytes count this replacement once.
+		const auto pending = shared.pendingBytes - reservation.Bytes();
+		if (!state_->memoryRecovery_.CanAllocateOutput(sample, bytes, now, pending)) {
+			(void)state_->memoryRecovery_.Admit(sample, bytes, now, pending);
+			state_->snapshot_.memoryRecovery = state_->memoryRecovery_;
+			state_->PublishMemoryBudgetWorkLocked();
+			if (state_->memoryRecovery_.phase == MemoryRecoveryPhase::Retiring)
+				state_->backendMaintenancePending_.store(true, std::memory_order_relaxed);
+			return {};
+		}
+		// Creation changes physical usage before the caller refreshes the shared observation.
+		state_->memorySample_.valid = false;
+		state_->nextMemorySampleMs_ = 0;
+		return reservation;
+	}
+
 	bool Renderer::NotifyDlssMemoryPressure()
 	{
 		std::scoped_lock lock(state_->mutex_);
@@ -4630,6 +4762,9 @@ namespace NeuralRendering
 			return false;
 		state_->memoryRecovery_.ReportDlssWarning(GetTickCount64());
 		state_->snapshot_.memoryRecovery = state_->memoryRecovery_;
+		state_->PublishMemoryBudgetWorkLocked();
+		if (state_->memoryRecovery_.phase == MemoryRecoveryPhase::Retiring)
+			state_->backendMaintenancePending_.store(true, std::memory_order_relaxed);
 		state_->nextMemorySampleMs_ = 0;
 		return true;
 	}
@@ -4689,6 +4824,7 @@ namespace NeuralRendering
 				{ "inputIdentity", std::to_string(reinterpret_cast<std::uintptr_t>(slot.color.resource12.Get())) },
 				{ "privateOutputIdentity", std::to_string(reinterpret_cast<std::uintptr_t>(slot.output.resource12.Get())) },
 				{ "historyIdentity", slot.historyKey.regionIdentity }, { "historyValid", slot.historyValid },
+				{ "packedCrops", PackedCropLayoutJson(slot.historyKey.modelResolutionHistory ? slot.historyKey.modelResolutionHistory->packedCrops : PackedCropLayout{}) },
 				{ "sourceTransportOwnerSlot", index },
 				{ "guideCapacity", { slot.resourceKey.guideWidth, slot.resourceKey.guideHeight } },
 				{ "outputCapacity", { slot.resourceKey.outputWidth, slot.resourceKey.outputHeight } } });
@@ -4706,7 +4842,14 @@ namespace NeuralRendering
 			else if (mask & cachedMask)
 				cachedBytes += bytes;
 		}
-		return { { "schemaVersion", 2 }, { "ownership", "private_per_eye" },
+		auto admission = json::array();
+		for (std::uint32_t slot = 0; slot < state_->packedCropAdmission_.size(); ++slot) {
+			const auto& value = state_->packedCropAdmission_[slot];
+			if (value.frame != std::numeric_limits<std::uint32_t>::max())
+				admission.push_back(PackedCropAdmissionJson(value, slot));
+		}
+		return { { "schemaVersion", 4 }, { "ownership", "private_per_eye" },
+			{ "lastModelOutputSelected", state_->snapshot_.modelOutputSelected },
 			{ "capacityFallback", { { "active", state_->capacityFallback_.rejected }, { "recoveries", state_->capacityFallback_.recoveries },
 									  { "reason", state_->capacityFallback_.reason == CapacityFailure::Pressure ? "pressure" : state_->capacityFallback_.reason == CapacityFailure::Unsupported ? "unsupported" :
 																																																  "none" },
@@ -4715,6 +4858,8 @@ namespace NeuralRendering
 			{ "activeSlotMask", activeMask }, { "cachedSlotMask", cachedMask }, { "nativeSlotMask", nativeMask },
 			{ "sharedInputLogicalBytes", inputBytes }, { "privateOutputLogicalBytes", outputBytes }, { "privateColorLogicalBytes", colorBytes },
 			{ "modelResolutionPrivateLogicalBytes", modelBytes },
+			{ "packedCoverageGuard", state_->modelResolution_.GetPackedCoverageDiagnostics() },
+			{ "packedCropAdmission", std::move(admission) },
 			{ "activeTransportLogicalBytes", activeBytes }, { "cachedOnlyTransportLogicalBytes", cachedBytes },
 			{ "activePrivateColorLogicalBytes", activeColorBytes }, { "cachedPrivateColorLogicalBytes", cachedColorBytes },
 			{ "leaseOnlyRetainedLogicalBytes", retiredLeaseBytes }, { "leaseCount", leases.size() }, { "logicalBytesKnown", bytesKnown },

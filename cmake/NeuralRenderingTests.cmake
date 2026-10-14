@@ -1,4 +1,9 @@
 add_controller_test(nr_model_resolution_policy_test NRModelResolutionPolicy tests/nr_model_resolution_policy_test.cpp)
+add_controller_test(nr_packed_crop_policy_test NRPackedCropPolicy tests/nr_packed_crop_policy_test.cpp)
+add_controller_test(nr_packed_crop_policy_production_test NRPackedCropPolicyProduction tests/nr_packed_crop_policy_test.cpp)
+target_compile_definitions(nr_packed_crop_policy_test PRIVATE DEVBENCH_BRIDGE_ENABLED)
+target_link_libraries(nr_packed_crop_policy_test PRIVATE nlohmann_json::nlohmann_json)
+add_controller_test(character_tile_crop_policy_test CharacterTileCropPolicy tests/character_tile_crop_policy_test.cpp)
 set(_nr_accounting_directory "${CMAKE_CURRENT_BINARY_DIR}/generated/nr-model-resolution")
 execute_process(COMMAND "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
     "-DOUTPUT_DIRECTORY=${_nr_accounting_directory}" -P
@@ -19,6 +24,7 @@ foreach(_target _test IN ZIP_LISTS _nr_model_targets _nr_model_tests)
     target_include_directories(${_target} PRIVATE "${_nr_accounting_directory}")
 endforeach()
 target_compile_definitions(nr_model_resolution_shader_bridge_test PRIVATE DEVBENCH_BRIDGE_ENABLED)
+set_tests_properties(${_nr_model_tests} PROPERTIES TIMEOUT 120)
 set(_neural_failure_dir "${CMAKE_CURRENT_BINARY_DIR}/neural_failure_diagnostics")
 set(_neural_failure_headers
     "${_neural_failure_dir}/neural_failure_diagnostics_under_test.h"
@@ -48,6 +54,18 @@ target_compile_definitions(neural_failure_diagnostics_on_test PRIVATE DEVBENCH_B
 
 add_controller_test(neural_stall_recovery_policy_test NeuralStallRecoveryPolicy tests/neural_stall_recovery_policy_test.cpp)
 add_controller_test(neural_memory_recovery_test NeuralMemoryRecovery tests/neural_memory_recovery_test.cpp)
+set(_neural_memory_publication_dir "${CMAKE_CURRENT_BINARY_DIR}/neural_memory_publication")
+add_custom_command(
+    OUTPUT "${_neural_memory_publication_dir}/neural_memory_publication_under_test.h"
+    COMMAND "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
+        "-DOUTPUT_DIRECTORY=${_neural_memory_publication_dir}" -P
+        "${PROJECT_SOURCE_DIR}/tests/extract_neural_memory_publication.cmake"
+    DEPENDS src/Features/Upscaling/NeuralRendering/Renderer.cpp
+        tests/extract_neural_memory_publication.cmake tests/extract_source_region.cmake
+    VERBATIM)
+target_sources(neural_memory_recovery_test PRIVATE
+    "${_neural_memory_publication_dir}/neural_memory_publication_under_test.h")
+target_include_directories(neural_memory_recovery_test PRIVATE "${_neural_memory_publication_dir}")
 add_controller_test(neural_memory_retirement_test NeuralMemoryRetirement tests/neural_memory_retirement_test.cpp)
 set(_neural_runtime_retirement_dir "${CMAKE_CURRENT_BINARY_DIR}/neural_runtime_retirement")
 add_custom_command(

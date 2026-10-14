@@ -13,6 +13,7 @@
 #include "PipelinePolicy.h"
 #include "PrewarmPolicy.h"
 #include "Runtime.h"
+#include "Utils/GpuMemoryBudget.h"
 
 #include <array>
 #include <cstddef>
@@ -194,6 +195,8 @@ namespace NeuralRendering
 		bool providerBlending = false;
 		bool useAutoMask = true;
 #ifdef DEVBENCH_BRIDGE_ENABLED
+		bool modelOutputSelected = false;
+		PackedCropLayout packedCropLayout{};
 		PrewarmPolicy prewarm{};
 		Runtime::LifecycleCounts nativeLifecycle{};
 		LifetimeFenceSnapshot prewarmSubmission{};
@@ -206,6 +209,15 @@ namespace NeuralRendering
 		MemoryRecoveryPolicy memoryRecovery{};
 		MemoryConservationPolicy memoryConservation{};
 		MemoryRetirementPolicy memoryRetirement{};
+	};
+
+	/** Private pre-DLSS reconstruction destination, published only after the complete transaction succeeds. */
+	struct ModelOutputSelection
+	{
+		Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> destination;
+		Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> mask;
+		ComputeSubrect maskSupport{};
+		bool providerBlending = false;
 	};
 
 	struct RendererApplyArgs
@@ -227,6 +239,8 @@ namespace NeuralRendering
 		ID3D11ShaderResourceView* depthGuideSRV = nullptr;
 		ID3D11Resource* motionVectors = nullptr;
 		ID3D11Resource* colorOutput = nullptr;
+		/** Optional private UAV of colorOutput for fused reduced-resolution reconstruction and selection. */
+		std::optional<ModelOutputSelection> modelOutputSelection;
 		// R8_UNORM provider-mask transport. Actor blending converts selection to protection.
 		Microsoft::WRL::ComPtr<ID3D11Resource> controlMask;
 		Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> actorSelection;
@@ -235,6 +249,10 @@ namespace NeuralRendering
 		std::uint32_t modelResolutionPercent = 100;
 		bool pressureResolutionEnabled = false;
 		bool parallelEyes = false;
+		PackedCropSources packedCrops{};
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		PackedCropPlanningDiagnostics packedCropPlanning{};
+#endif
 		CentralArea centralArea{};
 		/** Original sampling basis retained by independently scaled temporal inputs. */
 		std::optional<ModelResolutionHistory> modelResolutionHistory;
@@ -269,7 +287,15 @@ namespace NeuralRendering
 	{
 		std::uint32_t evaluationAttemptedFeatureSlotMask = 0;
 		std::uint32_t evaluationSucceededFeatureSlotMask = 0;
+		std::uint32_t selectedOutputFeatureSlotMask = 0;
 		bool memoryPressureBypass = false;
+
+		/** True only after every requested private output in the transaction is ready for publication. */
+		[[nodiscard]] bool WasOutputSelected(std::uint32_t featureSlot) const noexcept
+		{
+			return featureSlot < Runtime::kFeatureSlotCount &&
+			       (selectedOutputFeatureSlotMask & (1u << featureSlot)) != 0;
+		}
 
 		[[nodiscard]] bool WasEvaluationAttempted(
 			std::uint32_t a_featureSlot) const noexcept
@@ -327,6 +353,10 @@ namespace NeuralRendering
 		void ResetShaderCache();
 
 		[[nodiscard]] RendererSnapshot GetSnapshot() const;
+		/** Lock-free projection eligibility hint; frame-latched policy remains the authority for model quality. */
+		[[nodiscard]] std::uint32_t ModelResolutionCeiling() const noexcept;
+		/** Admit full private-output replacement overlap; keep the ticket through creation and a fresh shared sample. */
+		[[nodiscard]] Util::GpuMemoryBudget::Reservation ReserveOutputAllocation(ID3D11Device* device, std::uint64_t bytes);
 		/** Queues recovery without GPU work; the caller must gate this on requested NR. */
 		bool NotifyDlssMemoryPressure();
 #ifdef DEVBENCH_BRIDGE_ENABLED

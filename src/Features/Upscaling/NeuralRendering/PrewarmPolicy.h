@@ -1,12 +1,29 @@
 #pragma once
 
 #include "NativeEvaluationLayout.h"
+#include "PipelinePolicy.h"
 
 #include <array>
 #include <cstdint>
 
 namespace NeuralRendering
 {
+	/** Configuration eligibility is shared by execution and controls, independently of logging. */
+	template <class Settings>
+	[[nodiscard]] const char* PrewarmConfigurationBlocker(const Settings& settings, bool isVR) noexcept
+	{
+		const auto mode = ConfiguredRenderingMode(settings.neuralRenderingMode);
+		if (!isVR || mode != RenderingMode::ReducedResolution ||
+			settings.neuralRenderingModelResolutionPercent != 100 || settings.neuralRenderingPressureResolutionEnabled ||
+			settings.neuralRenderingCentralAreaPercent != 100 || settings.neuralRenderingSingleSubrectScale != 1.0f ||
+			RequiresFoveatedMask(mode, settings.neuralRenderingFovOnly, isVR, settings.neuralRenderingRenderscaleFov))
+			return "exact_route_not_supported";
+		if (settings.neuralCharacterRenderingEnabled || settings.neuralCharacterSceneStrengthsEnabled ||
+			!settings.neuralRenderingAutoMask || settings.neuralRenderingUICorrection)
+			return "creation_mask_not_available";
+		return nullptr;
+	}
+
 	/** Exact creation demand; no image, history, or successful-frame identity. */
 	struct PrewarmKey
 	{

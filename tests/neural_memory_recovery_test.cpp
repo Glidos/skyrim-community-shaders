@@ -1,11 +1,40 @@
 #include "Features/Upscaling/NeuralRendering/MemoryConservationPolicy.h"
 
+#include <array>
+#include <cstdint>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
 
 using namespace NeuralRendering;
+
+namespace Util
+{
+	struct GpuMemoryBudget
+	{
+		enum class Owner
+		{
+			NeuralRendering
+		};
+		bool priority = false;
+		std::uint64_t demand = 0;
+		unsigned writes = 0;
+
+		static GpuMemoryBudget& Get()
+		{
+			static GpuMemoryBudget instance;
+			return instance;
+		}
+
+		void SetOwnerWork(Owner, bool nextPriority, std::uint64_t nextDemand)
+		{
+			priority = nextPriority;
+			demand = nextDemand;
+			++writes;
+		}
+	};
+}
 
 namespace
 {
@@ -23,6 +52,59 @@ namespace
 	{
 		sample.sampledAtMs = nowMs;
 		return policy.Admit(sample, additionalBytes, nowMs);
+	}
+
+	struct MemoryPublicationState
+	{
+		MemoryRecoveryPolicy memoryRecovery_;
+		bool failureLatched_ = false, quarantined_ = false;
+
+#include "neural_memory_publication_under_test.h"
+	};
+
+	void TestSharedMemoryRecoveryPublication()
+	{
+		struct PhaseCase
+		{
+			MemoryRecoveryPhase phase;
+			bool priority;
+			std::uint64_t demand;
+		};
+		constexpr auto recoveryDemand = 768 * mib;
+		constexpr std::array cases{
+			PhaseCase{ MemoryRecoveryPhase::Ready, false, 0 },
+			PhaseCase{ MemoryRecoveryPhase::Retiring, true, 0 },
+			PhaseCase{ MemoryRecoveryPhase::Rebuilding, true, 0 },
+			PhaseCase{ MemoryRecoveryPhase::Waiting, false, recoveryDemand },
+			PhaseCase{ MemoryRecoveryPhase::Probation, false, MemoryRecoveryPolicy::kMinimumHeadroom }
+		};
+		auto& budget = Util::GpuMemoryBudget::Get();
+		for (const auto& expected : cases) {
+			MemoryPublicationState state;
+			state.memoryRecovery_.phase = expected.phase;
+			state.memoryRecovery_.admissionDemandBytes = recoveryDemand;
+			budget = { true, 123 * mib, 0 };
+			state.PublishMemoryBudgetWorkLocked();
+			Require(budget.writes == 1 && budget.priority == expected.priority && budget.demand == expected.demand,
+				"NR recovery publication left streaming with stale priority or refill demand");
+			Require(state.memoryRecovery_.phase == expected.phase && state.memoryRecovery_.admissionDemandBytes == recoveryDemand,
+				"Shared memory publication mutated native recovery state");
+			for (unsigned blocked = 0; blocked < 3; ++blocked) {
+				state.failureLatched_ = blocked == 1;
+				state.quarantined_ = blocked == 2;
+				budget = { true, recoveryDemand, 0 };
+				state.PublishMemoryBudgetWorkLocked(blocked != 0);
+				Require(budget.writes == 1 && !budget.priority && budget.demand == 0,
+					"Disabled, failed or quarantined NR retained shared memory priority or refill demand");
+			}
+		}
+		MemoryPublicationState waiting;
+		waiting.memoryRecovery_.phase = MemoryRecoveryPhase::Waiting;
+		waiting.memoryRecovery_.admissionDemandBytes = recoveryDemand;
+		waiting.PublishMemoryBudgetWorkLocked(false);
+		waiting.PublishMemoryBudgetWorkLocked(true);
+		Require(!budget.priority && budget.demand == recoveryDemand,
+			"Requested NR waiting to rebuild did not restore its learned refill demand");
 	}
 
 	void TestConservationHysteresis()
@@ -554,6 +636,60 @@ namespace
 			"Successful probation retained the warning or lost its diagnostic count");
 	}
 
+	void TestOutputReplacementUsesFullPeakAndPendingReservations()
+	{
+		auto sample = healthy;
+		sample.sampledAtMs = 1000;
+		constexpr auto oldOutputBytes = 400 * mib, replacementBytes = 512 * mib, outstanding = 1500 * mib;
+		MemoryRecoveryPolicy policy;
+		auto deltaPreview = policy;
+		Require(deltaPreview.CanAllocateOutput(sample, replacementBytes - oldOutputBytes, 1000, outstanding),
+			"Replacement fixture did not distinguish a credited retirement from full overlap");
+		auto noPendingPreview = policy;
+		Require(noPendingPreview.CanAllocateOutput(sample, replacementBytes, 1000),
+			"Replacement fixture did not exercise outstanding owner reservations");
+		auto fullPreview = policy;
+		Require(!fullPreview.CanAllocateOutput(sample, replacementBytes, 1000, outstanding),
+			"Private output replacement consumed pending headroom or credited the old output early");
+		Require(policy.phase == MemoryRecoveryPhase::Ready && policy.suspensions == 0 && policy.requiredBytes == 0,
+			"Optional output admission preview changed live NR recovery state");
+	}
+
+	void TestOutputScratchDoesNotAdvanceNativeRecovery()
+	{
+		MemoryRecoveryPolicy policy;
+		policy.Suspend(1000, true);
+		auto sample = healthy;
+		sample.sampledAtMs = 1250;
+		Require(!policy.CanAllocateOutput(sample, 512 * mib, 1250), "Scratch allocation ignored pending unsafe retirement");
+		policy.Retired(1250);
+		const auto deadline = policy.retryAfterMs;
+		policy.observedRecoveryDemandBytes = 256 * mib;
+		policy.knownRecoveryFloorBytes = 128 * mib;
+		sample.sampledAtMs = 1500;
+		Require(policy.CanAllocateOutput(sample, 512 * mib, 1500, 128 * mib), "Safe scratch resize waited on native recovery");
+		Require(policy.phase == MemoryRecoveryPhase::Waiting && policy.retryAfterMs == deadline &&
+					policy.rebuildAttempts == 0 && policy.retirements == 1 && policy.outOfMemoryFailures == 1 &&
+					!policy.healthyWindow && policy.observedRecoveryDemandBytes == 256 * mib && policy.knownRecoveryFloorBytes == 128 * mib,
+			"Scratch allocation advanced native recovery or changed learned demand");
+		Require(!policy.CanAllocateOutput({}, 512 * mib, 1500) && !policy.CanAllocateOutput(sample, 0, 1500) &&
+					!policy.CanAllocateOutput(sample, 512 * mib, 2001),
+			"Scratch allocation accepted missing, stale or empty demand");
+		Require(!policy.Admit(sample, 128 * mib, 1500), "Scratch creation bypassed the native recovery deadline");
+		for (auto now = 1750ull; now <= deadline; now += 250) {
+			sample.sampledAtMs = now;
+			Require(policy.CanAllocateOutput(sample, 512 * mib, now), "Repeated scratch checks consumed native cooldown");
+		}
+		Require(!policy.Admit(sample, 128 * mib, deadline), "Scratch checks supplied the native healthy window");
+		for (auto now = deadline + 250; now < deadline + MemoryRecoveryPolicy::kStableHeadroomMs; now += 250) {
+			sample.sampledAtMs = now;
+			Require(!policy.Admit(sample, 128 * mib, now), "Native recovery skipped stable headroom after scratch allocation");
+		}
+		sample.sampledAtMs = deadline + MemoryRecoveryPolicy::kStableHeadroomMs;
+		Require(policy.Admit(sample, 128 * mib, sample.sampledAtMs) && policy.phase == MemoryRecoveryPhase::Rebuilding,
+			"Native recovery did not retain its original cooldown and healthy-window protocol");
+	}
+
 	void TestRepeatedPressureBackoff()
 	{
 		MemoryRecoveryPolicy policy;
@@ -581,6 +717,7 @@ namespace
 int main()
 {
 	try {
+		TestSharedMemoryRecoveryPublication();
 		TestConservationHysteresis();
 		TestConservationNeedsFreshHeadroom();
 		TestTrimLimitSurvivesRecoveryAndRebuilds();
@@ -598,6 +735,8 @@ int main()
 		TestStartupSwitchDiscardsOldAttemptBaseline();
 		TestKnownStartupFloorGatesRecovery();
 		TestDlssWarningsRequireFreshRecovery();
+		TestOutputReplacementUsesFullPeakAndPendingReservations();
+		TestOutputScratchDoesNotAdvanceNativeRecovery();
 		TestRepeatedPressureBackoff();
 		return 0;
 	} catch (const std::exception& error) {

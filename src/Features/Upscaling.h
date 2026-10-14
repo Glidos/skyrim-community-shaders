@@ -478,8 +478,9 @@ public:
 #endif
 		bool foveatedVendorDispatch = false;
 		bool neuralRenderingEnabled = false;
-		bool neuralRenderingPrewarmEnabled = false;
-		bool neuralRenderingParallelEyes = false;
+		bool neuralRenderingPrewarmEnabled = true;
+		bool neuralRenderingParallelEyes = true;
+		bool neuralCharacterPackedCrops = true;
 		uint neuralRenderingMode = static_cast<uint>(NeuralRendering::RenderingMode::ReducedResolution);
 		// Compatibility fields are derived from shared VR FOV coverage for both placements.
 		bool neuralRenderingFovOnly = false;
@@ -4344,12 +4345,16 @@ public:
 		NeuralRendering::ComputeSubrect maskSupport{};
 		bool providerBlending = false;
 	};
-	/** Resolves immutable staged character-isolation inputs for one eye. */
+	/** Admits full C output replacement overlap; staged validation never allocates. */
+	bool EnsureReducedResolutionNeuralSelected(uint32_t eye, ID3D11Resource* source, uint32_t width, uint32_t height, bool validateStaged = false);
+	/** Allocates private C output roles before evaluation; selected outputs require renderer completion. */
+	bool PrepareReducedResolutionNeuralOutputTarget(uint32_t eye, NeuralRendering::RendererApplyArgs& args, bool fuseSelection);
 	/** Builds a complete low-resolution candidate before DLSS consumes either eye. */
 	bool PrepareReducedResolutionNeuralOutput(uint32_t eye, const NeuralRendering::RendererApplyArgs& args);
 	/** Prepares a private mono C candidate; failure leaves the original DLSS input untouched. */
 	bool PrepareFlatReducedResolutionNeuralInput(ID3D11Resource* color, ID3D11Resource* depth,
 		ID3D11Resource* motion, NeuralStereoRouteSnapshot& route) noexcept;
+	/** Resolves immutable staged character-isolation inputs for one eye. */
 	bool ResolveCharacterCompositeInputs(
 		uint32_t a_eyeIndex,
 		Streamline::DLSSViewportRole a_viewportRole,

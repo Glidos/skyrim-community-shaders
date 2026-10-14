@@ -1,4 +1,5 @@
 #include "Features/LightLimitFix/ShadowCullingPolicy.h"
+#include "Features/Upscaling/NeuralRendering/CharacterSettings.h"
 #include "Features/Upscaling/NeuralRendering/ModelResolutionPolicy.h"
 #include "Menu/SettingsActions.h"
 #include "Menu/SettingsPage.h"
@@ -408,7 +409,9 @@ struct Upscaling
 	{
 		uint32_t neuralRenderingModelResolutionPercent = 100;
 		bool neuralRenderingPressureResolutionEnabled = true;
-		bool neuralRenderingPrewarmEnabled = false;
+		bool neuralCharacterPackedCrops = true;
+		bool neuralCharacterRenderingEnabled = false;
+		uint32_t neuralCharacterCropMode = 1;
 		uint32_t neuralRenderingCentralAreaPercent = 100, neuralRenderingCentralFeatherPixels = 64;
 	};
 };

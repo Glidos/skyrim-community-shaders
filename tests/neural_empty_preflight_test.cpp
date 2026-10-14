@@ -1,4 +1,5 @@
 #include "Features/Upscaling/NeuralRendering/CharacterRendering.h"
+#include "Features/Upscaling/NeuralRendering/CharacterSettings.h"
 
 #include <mutex>
 #include <stdexcept>
@@ -45,7 +46,6 @@ struct Fixture
 static Fixture* producer;
 namespace NeuralRendering
 {
-#include "neural_authored_mode_under_test.h"
 	class CharacterRendering::State : public Fixture
 	{};
 	CharacterRendering::CharacterRendering() : state_(std::make_unique<State>()) { producer = state_.get(); }

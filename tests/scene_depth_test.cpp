@@ -7,6 +7,9 @@
 #include <optional>
 #include <stdexcept>
 
+#include "Features/Upscaling/NeuralRendering/CharacterSettings.h"
+#include "Features/Upscaling/NeuralRendering/PipelinePolicy.h"
+
 // Engine and D3D boundaries are fakes; routing, copy publication and hooks below
 // are extracted from production so regressions exercise the implemented policy.
 struct ID3D11ShaderResourceView
@@ -70,10 +73,10 @@ struct Upscaling
 {
 	bool characters = false;
 	bool dimensionsAvailable = true;
-	struct CharacterSettings
-	{
-		bool experimentalGpuMaskSupport = false;
-	} characterSettings;
+	using CharacterSettings = NeuralRendering::CharacterSettings;
+	CharacterSettings characterSettings;
+	NeuralRendering::RenderingMode renderingMode = NeuralRendering::RenderingMode::ReducedResolution;
+	NeuralRendering::RenderingMode GetNeuralRenderingMode() const { return renderingMode; }
 	CharacterSettings GetCharacterNeuralRenderingSettings() const { return characterSettings; }
 	struct
 	{
@@ -99,7 +102,7 @@ namespace NeuralRendering
 		ID3D11ShaderResourceView* depth = nullptr;
 		uint32_t width = 0, height = 0, frame = 0, mask = 0;
 		float jitterX = 0, jitterY = 0;
-		bool gpuMaskSupport = false;
+		bool gpuMaskSupport = false, tileCrops = false;
 		std::function<void()> observe = [] {};
 		static CharacterRendering& Instance()
 		{
@@ -113,7 +116,7 @@ namespace NeuralRendering
 			categories = nullptr;
 		}
 		bool CaptureAuthoredCategories(Device*, Context*, Texture* source, ID3D11ShaderResourceView* depthSource,
-			uint32_t w, uint32_t h, uint32_t f, uint32_t m, float x, float y, bool support)
+			uint32_t w, uint32_t h, uint32_t f, uint32_t m, float x, float y, bool support, bool tiles)
 		{
 			++captures;
 			categories = source;
@@ -125,6 +128,7 @@ namespace NeuralRendering
 			jitterX = x;
 			jitterY = y;
 			gpuMaskSupport = support;
+			tileCrops = tiles;
 			observe();
 			return true;
 		}
@@ -439,12 +443,14 @@ void TestCharacterCaptureOrderingAndAdmission()
 	}
 }
 
-int main()
+void TestCharacterOccupancyAdmission()
 {
 	for (bool requested : { false, true }) {
 		Fixture f;
 		globals::features::upscaling.characters = true;
+#ifdef DEVBENCH_BRIDGE_ENABLED
 		globals::features::upscaling.characterSettings.experimentalGpuMaskSupport = requested;
+#endif
 		f.Start();
 		f.Decals();
 		const auto& capture = NeuralRendering::CharacterRendering::Instance();
@@ -452,9 +458,43 @@ int main()
 #ifdef DEVBENCH_BRIDGE_ENABLED
 		Check(capture.gpuMaskSupport == requested, "DevBench support request was not forwarded");
 #else
-		Check(!capture.gpuMaskSupport, "Production must never request GPU crop/support reduction");
+		(void)requested;
+		Check(!capture.gpuMaskSupport, "Production must never request experimental GPU mask dispatch");
 #endif
+		Check(capture.tileCrops, "Actor Multi-Crop must request occupancy in production and DevBench builds");
 	}
+	for (unsigned blocked = 0; blocked < 5; ++blocked) {
+		Fixture f;
+		auto& upscaling = globals::features::upscaling;
+		upscaling.characters = true;
+		auto& settings = upscaling.characterSettings;
+		switch (blocked) {
+		case 0:
+			settings.packedCrops = false;
+			break;
+		case 1:
+			upscaling.renderingMode = NeuralRendering::RenderingMode::Foveated;
+			break;
+		case 2:
+			settings.sceneStrengthsEnabled = true;
+			break;
+		case 3:
+			settings.cropMode = static_cast<unsigned>(NeuralRendering::CharacterCropMode::Uncropped);
+			break;
+		case 4:
+			settings.maskTestMode = NeuralRendering::CharacterMaskTestMode::ForceOne;
+			break;
+		}
+		f.Start();
+		f.Decals();
+		const auto& capture = NeuralRendering::CharacterRendering::Instance();
+		Check(capture.captures == 1 && !capture.tileCrops,
+			"Unsupported occupancy conditions must retain authored capture without an extra tile pass");
+	}
+}
+
+int main()
+{
 	try {
 		TestSources();
 		TestInvalidation();
@@ -462,6 +502,7 @@ int main()
 		TestRedirection();
 		TestUnavailableResources();
 		TestCharacterCaptureOrderingAndAdmission();
+		TestCharacterOccupancyAdmission();
 		std::cout << "Scene depth: source selection, invalidation, fallback ordering, restoration and missing resources passed\n";
 		return 0;
 	} catch (const std::exception& error) {

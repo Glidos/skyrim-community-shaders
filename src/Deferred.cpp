@@ -1053,6 +1053,7 @@ void Deferred::Hooks::Main_RenderWorld_BlendedDecals::thunk(RE::BSShaderAccumula
 					renderer->GetRuntimeData().renderTargets[MASKS2];
 				auto& depthSource = renderer->GetDepthStencilData()
 				                        .depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+				const auto characterSettings = upscaling.GetCharacterNeuralRenderingSettings();
 				(void)NeuralRendering::CharacterRendering::Instance()
 					.CaptureAuthoredCategories(
 						globals::d3d::device,
@@ -1066,11 +1067,15 @@ void Deferred::Hooks::Main_RenderWorld_BlendedDecals::thunk(RE::BSShaderAccumula
 						upscaling.jitter.x,
 						upscaling.jitter.y,
 #ifdef DEVBENCH_BRIDGE_ENABLED
-						upscaling.GetCharacterNeuralRenderingSettings().experimentalGpuMaskSupport
+						characterSettings.experimentalGpuMaskSupport,
 #else
-						false
+						false,
 #endif
-					);
+						characterSettings.packedCrops &&
+							upscaling.GetNeuralRenderingMode() != NeuralRendering::RenderingMode::Foveated &&
+							!NeuralRendering::UsesSceneCharacterStrengths(characterSettings) &&
+							NeuralRendering::UsesAuthoredMask(characterSettings.maskTestMode) &&
+							characterSettings.cropMode == static_cast<std::uint32_t>(NeuralRendering::CharacterCropMode::Cropped));
 			}
 		}
 	}
