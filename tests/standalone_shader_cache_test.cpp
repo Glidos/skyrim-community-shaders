@@ -65,6 +65,7 @@ namespace Util
 }
 namespace Util::FileHelpers
 {
+	bool WriteTextFileAtomic(const std::filesystem::path&, std::string_view, std::string&, bool = true, bool = true);
 	// clang-format off
 #include "standalone_file_direct.h"
 #include "standalone_file_atomic.h"

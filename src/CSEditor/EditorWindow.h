@@ -279,6 +279,10 @@ private:
 	void LoadSettings();
 	void SanitizeSettings();
 	void ShowSettingsWindow();
+	bool AddRecordMarker();
+	std::string RenameRecordMarker(const std::string& oldName, const std::string& newName);
+	void DeleteRecordMarker(const std::string& name);
+	std::unordered_map<std::string, std::string> markerLabelBuffers;
 	void Load();
 	bool resourcesInitialized = false;
 	json j;

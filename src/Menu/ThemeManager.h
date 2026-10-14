@@ -145,6 +145,9 @@ public:
 
 	struct Constants
 	{
+		static constexpr float MIN_SCROLLBAR_SIZE = 28.0f;
+		static constexpr float MAX_SCROLLBAR_SIZE = 56.0f;
+
 		// Font size constants
 		static constexpr float DEFAULT_SCREEN_HEIGHT = 1080.0f;  // Default screen resolution to use for subsequent calculations
 		static constexpr float DEFAULT_FONT_RATIO = 0.025f;      // VR automatic sizing and VR theme style baseline
@@ -272,10 +275,12 @@ public:
 	 * @param themeSettings Theme settings to save
 	 * @param displayName Display name for the theme
 	 * @param description Description for the theme
+	 * @param error Receives the write or validation failure; the existing file is retained on write failure.
+	 * @param overwriteExisting False for creating a new theme without replacing an existing file
 	 * @return True if theme was saved successfully
 	 */
 	bool SaveTheme(const std::string& themeName, const json& themeSettings,
-		const std::string& displayName, const std::string& description);
+		const std::string& displayName, const std::string& description, std::string& error, bool overwriteExisting = true);
 
 	/**
 	 * @brief Gets theme info by name

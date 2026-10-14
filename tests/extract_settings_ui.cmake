@@ -149,3 +149,8 @@ extract_between("${source}" "void PerformanceTuningRenderer::RenderMeasurementSu
 file(READ "${OUTPUT_DIRECTORY}/settings_performance_preview_under_test.h" preview)
 string(REPLACE "PerformanceTuningRenderer::RenderMeasurementSuite" "RenderMeasurementPreview" preview "${preview}")
 file(APPEND "${OUTPUT_DIRECTORY}/settings_performance_counters_under_test.h" "\n${preview}}\n")
+
+file(READ "${PROJECT_ROOT}/src/Menu/SettingsActions.cpp" source)
+string(FIND "${source}" "namespace MenuUI" start)
+string(SUBSTRING "${source}" ${start} -1 body)
+file(WRITE "${OUTPUT_DIRECTORY}/settings_global_actions_under_test.h" "${body}")

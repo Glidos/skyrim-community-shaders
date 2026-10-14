@@ -207,7 +207,7 @@ void ThemeManager::SetupImGuiStyle(const Menu& menu)
 	const float scaleFactor = fontScale * exp2(globalScale);
 	styleCopy.ScaleAllSizes(scaleFactor);
 	// Keep scrolling targets usable at the same scale as the detail controls.
-	styleCopy.ScrollbarSize = std::max(styleCopy.ScrollbarSize, 28.0f * scaleFactor);
+	styleCopy.ScrollbarSize = std::max(styleCopy.ScrollbarSize, Constants::MIN_SCROLLBAR_SIZE * scaleFactor);
 
 	// ScaleAllSizes skips border and separator sizes — scale them manually, flooring non-zero values at 1px
 	auto scaleSize = [scaleFactor](float value) -> float {
@@ -676,58 +676,37 @@ bool ThemeManager::LoadTheme(const std::string& themeName, json& themeSettings)
 }
 
 bool ThemeManager::SaveTheme(const std::string& themeName, const json& themeSettings,
-	const std::string& displayName, const std::string& description)
+	const std::string& displayName, const std::string& description, std::string& error, bool overwriteExisting)
 {
-	if (themeName.empty()) {
-		logger::warn("Cannot save theme with empty name");
+	error.clear();
+	const auto safeFileName = Util::FileHelpers::SanitizeFileName(themeName);
+	if (safeFileName.empty() || IsPresetTheme(safeFileName)) {
+		error = "Choose a non-empty custom theme name; built-in themes cannot be overwritten.";
 		return false;
 	}
-	if (IsPresetTheme(themeName)) {
-		logger::warn("Cannot overwrite preset theme: {}", themeName);
-		return false;
-	}
-
-	// Create the full theme JSON structure
-	json fullTheme = {
-		{ "DisplayName", displayName.empty() ? themeName : displayName },
-		{ "Description", description.empty() ? "Custom user theme" : description },
-		{ "Version", "1.0.0" },
-		{ "Author", "User" },
-		{ "Theme", themeSettings }
-	};
-
-	std::string safeFileName = Util::FileHelpers::SanitizeFileName(themeName);
-	auto themesDir = GetThemesDirectory();
-	auto filePath = themesDir / (safeFileName + ".json");
-
-	logger::info("SaveTheme: Saving theme '{}' to file: {}", themeName, filePath.string());
-	logger::debug("SaveTheme: Theme has {} top-level keys", fullTheme.size());
-
+	const auto filePath = GetThemesDirectory() / (safeFileName + ".json");
+	bool written = false;
 	try {
-		// Ensure themes directory exists
-		std::filesystem::create_directories(themesDir);
-		logger::debug("SaveTheme: Themes directory ensured: {}", themesDir.string());
-
-		// Write the theme file
-		std::ofstream file(filePath);
-		if (!file.is_open()) {
-			logger::warn("Failed to create theme file: {}", filePath.string());
+		const json fullTheme = {
+			{ "DisplayName", displayName.empty() ? safeFileName : displayName },
+			{ "Description", description.empty() ? "Custom user theme" : description },
+			{ "Version", "1.0.0" },
+			{ "Author", "User" },
+			{ "Theme", themeSettings }
+		};
+		if (!Util::FileHelpers::WriteTextFileAtomic(filePath, fullTheme.dump(4), error, false, overwriteExisting)) {
+			logger::warn("Could not save theme {}: {}", safeFileName, error);
 			return false;
 		}
-
-		file << fullTheme.dump(4);  // Pretty print with 4-space indentation
-		file.close();
-
-		logger::info("Saved theme: {} to {}", themeName, filePath.string());
-
-		// Refresh themes to include the new one
+		written = true;
 		RefreshThemes();
-
-		return true;
 	} catch (const std::exception& e) {
-		logger::warn("Error saving theme {}: {}", themeName, e.what());
+		error = written ? "The theme file was saved, but its list could not refresh: " + std::string(e.what()) : e.what();
+		logger::warn("Could not save theme {}: {}", safeFileName, error);
 		return false;
 	}
+	logger::info("Saved theme: {} to {}", safeFileName, filePath.string());
+	return true;
 }
 
 const ThemeManager::ThemeInfo* ThemeManager::GetThemeInfo(const std::string& themeName) const
@@ -752,7 +731,7 @@ std::filesystem::path ThemeManager::GetThemesDirectory() const
 bool ThemeManager::IsPresetTheme(const std::string& themeName) const
 {
 	for (const char* preset : ThemePresets::names) {
-		if (themeName == preset)
+		if (Util::IEquals(themeName, preset))
 			return true;
 	}
 	return false;

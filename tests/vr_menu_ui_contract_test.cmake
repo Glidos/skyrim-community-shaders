@@ -117,7 +117,7 @@ foreach(required IN ITEMS "kMinMenuScale = 1.5f" "kMaxMenuScale = 2.0f" "kDefaul
         message(FATAL_ERROR "VR settings boundary is missing: ${required}")
     endif()
 endforeach()
-foreach(required IN ITEMS "SliderFloatOnRelease(\"Menu Scale\"" "SliderFloatOnRelease(\"Menu Distance\"" "{ \"Show Both Lasers\", &settings.ShowBothWandLasers" "GetEffectiveHMDMenuScale()")
+foreach(required IN ITEMS "SliderFloatOnRelease(\"Menu Scale\"" "SliderFloatOnRelease(\"Menu Distance\"" "Checkbox(\"Show Both Lasers\", &settings.ShowBothWandLasers" "GetEffectiveHMDMenuScale()")
     string(FIND "${_vr_source}" "${required}" found)
     if(found EQUAL -1)
         message(FATAL_ERROR "Menu controls or compensated scale are missing: ${required}")

@@ -35,6 +35,9 @@ namespace
 		Vector3 rayOrigin = Vector3::Zero;
 		Vector3 rayDirection = Vector3::Zero;
 		std::uint32_t activeFramesRemaining = 0;
+		int activeFrame = -1;
+		int keepAliveFrame = -1;
+		int sampledFrame = -1;
 		bool valid = false;
 	};
 
@@ -91,16 +94,19 @@ namespace
 	{
 		if (!IsIndividualController(a_controller))
 			a_controller = a_vr.activeWandController;
+		const float opacity = a_vr.settings.ShowBothWandLasers && a_controller != a_vr.activeWandController ?
+		                          WandInteractionPolicy::InactivePointerOpacity :
+		                          1.0f;
 		bool pressed = a_controller == a_vr.activeWandController && ImGui::GetCurrentContext() && ImGui::GetIO().MouseDown[ImGuiMouseButton_Left];
 		if (g_ocuPointerFrame.valid) {
 			pressed = IsIndividualController(a_controller) &&
 			          (g_ocuPointerFrame.snapshot.hands[GetPhysicalHand(a_vr, a_controller)].flags & ocu_pointer::TriggerDown);
 			const auto& style = g_ocuPointerFrame.snapshot.style;
 			const auto* color = a_dot ? style.dotColor[pressed ? 1 : 0] : style.beamColor[pressed ? 1 : 0];
-			return ImVec4(color[0], color[1], color[2], color[3]);
+			return ImVec4(color[0], color[1], color[2], color[3] * opacity);
 		}
 		const auto* color = a_dot ? kWandDotColors[pressed ? 1 : 0] : kWandBeamColors[pressed ? 1 : 0];
-		return ImVec4(color[0], color[1], color[2], color[3]);
+		return ImVec4(color[0], color[1], color[2], color[3] * opacity);
 	}
 
 	PolicyHand ToPolicyHand(ControllerDevice a_controller)
@@ -125,6 +131,9 @@ namespace
 		const Vector3& a_rayDirection)
 	{
 		auto& history = g_wandPoseHistory[GetControllerSlot(a_controller)];
+		const int frame = ImGui::GetFrameCount();
+		const bool firstSample = history.sampledFrame != frame;
+		history.sampledFrame = frame;
 		bool moved = true;
 		if (!a_forceCursorUpdate && history.valid && history.controllerIndex == a_controllerIndex) {
 			const float positionDeltaSq = (a_rayOrigin - history.rayOrigin).LengthSquared();
@@ -144,10 +153,16 @@ namespace
 
 		if (a_forceCursorUpdate || moved) {
 			history.activeFramesRemaining = kWandCursorActiveFrames;
-			return WandPoseUpdateMode::Active;
+			history.activeFrame = frame;
 		}
-		if (history.activeFramesRemaining > 0) {
-			--history.activeFramesRemaining;
+		// Trigger and ownership consumers must see the same movement for this frame.
+		if (history.activeFrame == frame)
+			return WandPoseUpdateMode::Active;
+		if (history.activeFramesRemaining > 0 || history.keepAliveFrame == frame) {
+			if (firstSample) {
+				history.keepAliveFrame = frame;
+				--history.activeFramesRemaining;
+			}
 			return WandPoseUpdateMode::KeepAlive;
 		}
 		return WandPoseUpdateMode::None;

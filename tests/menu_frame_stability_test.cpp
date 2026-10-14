@@ -45,6 +45,7 @@ struct ThemeManager
 	struct Constants
 	{
 		static constexpr float DEFAULT_GLOBAL_SCALE = 0;
+		static constexpr float MIN_SCROLLBAR_SIZE = 28;
 		static constexpr float DEFAULT_SCREEN_HEIGHT = 1080;
 		static constexpr float DEFAULT_FONT_RATIO = 0.025f;
 	};
@@ -88,8 +89,8 @@ struct SettingsWindowLayout
 	bool constrainedByTopStatusWindow = false;
 };
 static ImVec2 ApplyStatusLayout(ImVec2 windowPos, ImVec2 windowSizeForOverlap,
-	bool willBeDocked = false, bool vrMenuLayoutUnlocked = false,
-	SettingsWindowLayout defaultWindowLayout = {})
+	bool willBeDocked = false,
+	SettingsWindowLayout defaultWindowLayout = {}, bool resetLayout = false)
 {
 	const std::string title = "CommunityShaders";
 	const ImVec2 defaultWindowPos(200, 250);
@@ -171,11 +172,19 @@ static bool CheckTraceMenuPosition()
 	passed = passed && vrStyle.FontSizeBase == vrMenu.theme.Style.FontSizeBase &&
 	         vrStyle.FontScaleDpi == vrMenu.theme.Style.FontScaleDpi &&
 	         vrStyle._NextFrameFontSizeBase == vrMenu.theme.Style._NextFrameFontSizeBase;
-	const auto lockedVR = ApplyStatusLayout(original, size, false, false, { true });
+	const auto lockedVR = ApplyStatusLayout(original, size, false, { true });
 	const auto restoredVR = ApplyStatusLayout(lockedVR, size);
-	const auto unlockedVR = ApplyStatusLayout(original, size, false, true, { true });
-	passed = passed && lockedVR.x == 200 && lockedVR.y == 250 && restoredVR.x == 200 && restoredVR.y == 250 &&
-	         unlockedVR.x == original.x && unlockedVR.y == original.y;
+	if (lockedVR.x != 200 || lockedVR.y != 250 || restoredVR.x != original.x || restoredVR.y != original.y) {
+		std::puts("FAIL: VR status layout must restore the saved placement after avoiding status panels");
+		passed = false;
+	}
+	ApplyStatusLayout(original, size, false, { true });
+	const ImVec2 resetPosition(900, 600);
+	const auto resetVR = ApplyStatusLayout(resetPosition, size, false, {}, true);
+	if (resetVR.x != resetPosition.x || resetVR.y != resetPosition.y) {
+		std::puts("FAIL: resetting layout restores a stale pre-status position");
+		passed = false;
+	}
 	REL::Module::vr = false;
 	Menu::singleton = &vrMenu;
 	passed = passed && HomePageRenderer::ShouldShowFirstTimeSetup();

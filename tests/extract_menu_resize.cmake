@@ -19,7 +19,7 @@ extract_between("${_menu}"
 )
 extract_between("${_menu}"
     "\t// Determine window flags based on docking state"
-    "\tImGui::Begin(title.c_str(), &IsEnabled, windowFlags);"
+    "\tif (ImGui::Begin(title.c_str(), &IsEnabled, windowFlags))"
     "menu_resize_flags_under_test.h"
 )
 extract_between("${_menu}"

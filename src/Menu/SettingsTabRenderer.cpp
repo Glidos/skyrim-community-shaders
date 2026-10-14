@@ -205,7 +205,9 @@ namespace
 	{
 		auto& ts = globals::menu->GetSettings().Theme;
 		ImGui::PushStyleColor(ImGuiCol_Text, ts.StatusPalette.InfoColor);
-		ImGui::TextWrapped("Global Save Settings does not save theme edits. Save them in Themes.");
+		ImGui::TextWrapped(globals::menu->HasUnsavedTheme() ?
+							   "Theme edits are applied but not saved. Use Save Theme or Save As New Theme in Themes." :
+							   "Theme appearance is up to date. Global Save Settings stores your theme selection; Themes saves appearance edits.");
 		ImGui::PopStyleColor();
 		ImGui::Spacing();
 	}
@@ -515,9 +517,11 @@ void SettingsTabRenderer::RenderThemesTab()
 	static MenuUI::ActionFeedback feedback;
 	const auto showFeedback = SKSE::stl::scope_exit([&] { feedback.Draw(); });
 	auto& themeSettings = globals::menu->GetSettings().Theme;
+	RenderSaveInfoText();
 
 	// Static variables for popup state and new theme creation
 	static Util::ConfirmationPopup deleteThemePopup("Delete Theme", "", "Delete", "Cancel");
+	static std::string pendingDeleteTheme;
 	static bool showCreateThemePopup = false;
 	static MenuUI::ActionFeedback createFeedback;
 	static char newThemeName[128] = "";
@@ -566,15 +570,9 @@ void SettingsTabRenderer::RenderThemesTab()
 		items.push_back(displayNames.back().c_str());
 	}
 
-	// Find current selection index - default to "Default" if no theme selected
-	int currentItem = 0;  // Default to first theme (Default Dark)
+	// Keep an unnamed or missing theme unselected until a preset is applied.
+	int currentItem = -1;
 	std::string currentThemePreset = globals::menu->GetSettings().SelectedThemePreset;
-
-	// If no theme is selected, default to "Default"
-	if (currentThemePreset.empty()) {
-		currentThemePreset = "Default";
-		globals::menu->GetSettings().SelectedThemePreset = "Default";
-	}
 
 	for (size_t i = 0; i < themes.size(); ++i) {
 		if (themes[i].name == currentThemePreset) {
@@ -586,10 +584,15 @@ void SettingsTabRenderer::RenderThemesTab()
 	// Theme preset dropdown
 	if (ComboWithFont("##ThemePreset", &currentItem, items.data(), static_cast<int>(items.size()), Menu::FontRole::Body)) {
 		std::string selectedTheme = themes[currentItem].name;
-		if (selectedTheme != currentThemePreset && globals::menu->LoadThemePreset(selectedTheme)) {
-			// Theme loaded successfully, update UI
-			currentThemePreset = selectedTheme;
-			showUpdateFeedback = false;
+		if (selectedTheme != currentThemePreset) {
+			if (globals::menu->LoadThemePreset(selectedTheme)) {
+				currentThemePreset = selectedTheme;
+				showUpdateFeedback = false;
+				feedback = {};
+			} else {
+				currentItem = -1;
+				feedback = { "Could not apply the selected theme. Your current appearance is retained.", true };
+			}
 		}
 	}
 
@@ -597,11 +600,16 @@ void SettingsTabRenderer::RenderThemesTab()
 		themeManager->RefreshThemes();
 		// Ensure a valid theme is still selected
 		const auto* themeInfo = themeManager->GetThemeInfo(currentThemePreset);
-		if (!themeInfo) {
-			currentThemePreset = "Default";
-			globals::menu->GetSettings().SelectedThemePreset = "Default";
+		if (!themeInfo && !currentThemePreset.empty()) {
+			if (globals::menu->LoadThemePreset("Default")) {
+				currentThemePreset = "Default";
+				feedback = { "The selected theme is missing. Default has been applied." };
+			} else {
+				feedback = { "The selected theme is missing and Default could not load. Your current appearance is retained.", true };
+			}
 		}
 
+		currentItem = -1;
 		for (size_t i = 0; i < themes.size(); ++i) {
 			if (themes[i].name == currentThemePreset) {
 				currentItem = static_cast<int>(i);
@@ -640,10 +648,10 @@ void SettingsTabRenderer::RenderThemesTab()
 	ImGui::Spacing();
 
 	const bool isPreset = IsPresetThemeSelected();
-	const auto* currentThemeInfo = themeManager->GetThemeInfo(currentThemePreset);
+	auto* currentThemeInfo = themeManager->GetThemeInfo(currentThemePreset);
 
 	if (!isPreset) {
-		if (Util::ButtonWithFlash("Save")) {
+		if (Util::ButtonWithFlash("Save Theme")) {
 			if (currentThemeInfo) {
 				// Get current settings
 				json currentThemeJson;
@@ -683,13 +691,17 @@ void SettingsTabRenderer::RenderThemesTab()
 				logger::info("Attempting to update theme: '{}'", currentThemePreset);
 
 				// Overwrite the current theme with updated settings
+				std::string saveError;
 				if (themeManager->SaveTheme(currentThemePreset, currentThemeJson["Theme"],
-						currentThemeInfo->displayName, currentThemeInfo->description)) {
+						currentThemeInfo->displayName, currentThemeInfo->description, saveError)) {
+					globals::menu->AcceptCurrentThemeAsSaved();
+					feedback = {};
 					logger::info("Theme '{}' updated successfully", currentThemePreset);
 					updateSuccess = true;
 					showUpdateFeedback = true;
 				} else {
 					logger::error("Failed to update theme: '{}'", currentThemePreset);
+					feedback = { saveError, true };
 					updateSuccess = false;
 					showUpdateFeedback = true;
 					changedSettings.clear();
@@ -701,6 +713,7 @@ void SettingsTabRenderer::RenderThemesTab()
 				changedSettings.clear();
 			}
 		}
+		currentThemeInfo = themeManager->GetThemeInfo(currentThemePreset);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
 			ImGui::Text("Updates the currently selected theme (%s) with your current settings", currentThemePreset.c_str());
 		}
@@ -720,6 +733,7 @@ void SettingsTabRenderer::RenderThemesTab()
 	if (!isPreset && currentThemeInfo && !currentThemeInfo->filePath.empty()) {
 		ImGui::SameLine();
 		if (Util::ErrorButtonWithFlash("Delete")) {
+			pendingDeleteTheme = currentThemePreset;
 			deleteThemePopup.message =
 				"Are you sure you want to delete the theme '" +
 				(currentThemeInfo->displayName.empty() ? currentThemePreset : currentThemeInfo->displayName) +
@@ -765,19 +779,20 @@ void SettingsTabRenderer::RenderThemesTab()
 		ImGui::Text("Create a new theme with your current settings:");
 		ImGui::Separator();
 
-		auto safeNewThemeName = Util::FileHelpers::SanitizeFileName(newThemeName);
-		bool isThemeNameEmpty = safeNewThemeName.empty();
+		std::string safeNewThemeName;
+		bool isThemeNameEmpty = false;
 		bool isDuplicateName = false;
 		bool isDuplicateDisplayName = false;
-
-		for (const auto& t : themes) {
-			if (Util::IEquals(t.name, safeNewThemeName))
-				isDuplicateName = true;
-			if (strlen(newThemeDisplayName) > 0 && Util::IEquals(t.displayName, newThemeDisplayName))
-				isDuplicateDisplayName = true;
-			if (isDuplicateName && isDuplicateDisplayName)
-				break;
-		}
+		const auto validateName = [&] {
+			safeNewThemeName = Util::FileHelpers::SanitizeFileName(newThemeName);
+			isThemeNameEmpty = safeNewThemeName.empty();
+			isDuplicateName = isDuplicateDisplayName = false;
+			for (const auto& theme : themes) {
+				isDuplicateName |= Util::IEquals(theme.name, safeNewThemeName);
+				isDuplicateDisplayName |= newThemeDisplayName[0] != 0 && Util::IEquals(theme.displayName, newThemeDisplayName);
+			}
+		};
+		validateName();
 		bool isThemeNameError = isThemeNameEmpty || isDuplicateName;
 
 		// Highlight the input field if invalid and validation error is shown
@@ -834,6 +849,7 @@ void SettingsTabRenderer::RenderThemesTab()
 
 		// Buttons
 		if (Util::ButtonWithFlash("Create Theme")) {
+			validateName();
 			if (!isThemeNameEmpty && !isDuplicateName && !isDuplicateDisplayName) {
 				// Valid theme name, reset error state and proceed
 				showValidationError = false;
@@ -847,17 +863,19 @@ void SettingsTabRenderer::RenderThemesTab()
 
 				logger::info("Attempting to save new theme: '{}' with display name: '{}'", safeNewThemeName, displayName);
 
-				if (themeManager->SaveTheme(std::string(newThemeName), currentThemeJson["Theme"], displayName, description)) {
+				std::string saveError;
+				if (themeManager->SaveTheme(safeNewThemeName, currentThemeJson["Theme"], displayName, description, saveError, false)) {
 					logger::info("Theme saved successfully. Loading theme preset: '{}'", safeNewThemeName);
 					// Theme created successfully, load it and exit create mode
-					globals::menu->LoadThemePreset(safeNewThemeName);
+					if (!globals::menu->LoadThemePreset(safeNewThemeName))
+						feedback = { "Theme file saved, but it could not be applied. Your current appearance is retained.", true };
 					showValidationError = false;
 					showCreateThemePopup = false;
 					ImGui::CloseCurrentPopup();
 					logger::info("Theme creation complete. Total themes: {}", themeManager->GetThemes().size());
 				} else {
 					logger::error("Failed to save theme: '{}'", newThemeName);
-					createFeedback = { "Could not save this theme. Check that the theme folder is writable and try again.", true };
+					createFeedback = { saveError, true };
 				}
 			} else {
 				// Empty theme name, show validation error
@@ -873,16 +891,22 @@ void SettingsTabRenderer::RenderThemesTab()
 		createFeedback.Draw();
 	}
 
-	if (deleteThemePopup.Draw() && currentThemeInfo && !currentThemeInfo->filePath.empty()) {
-		auto result = Util::FileHelpers::SafeDelete(currentThemeInfo->filePath, "Theme '" + currentThemePreset + "'");
-		if (result.success) {
-			themeManager->RefreshThemes();
-			globals::menu->LoadThemePreset("Default");
-			currentThemePreset = "Default";
+	if (deleteThemePopup.Draw()) {
+		const auto* target = themeManager->GetThemeInfo(pendingDeleteTheme);
+		if (!target || target->filePath.empty()) {
+			feedback = { "The theme to delete is no longer available. Refresh the theme list.", true };
 		} else {
-			logger::warn("Failed to delete theme '{}': {}", currentThemePreset, result.errorMessage);
-			feedback = { result.errorMessage, true };
+			auto result = Util::FileHelpers::SafeDelete(target->filePath, "Theme '" + pendingDeleteTheme + "'");
+			if (result.success) {
+				themeManager->RefreshThemes();
+				if (globals::menu->GetSettings().SelectedThemePreset == pendingDeleteTheme &&
+					!globals::menu->LoadThemePreset("Default"))
+					feedback = { "Theme deleted, but Default could not load. Your current appearance is retained.", true };
+			} else {
+				feedback = { result.errorMessage, true };
+			}
 		}
+		pendingDeleteTheme.clear();
 	}
 }
 
@@ -1089,12 +1113,17 @@ void SettingsTabRenderer::RenderStylingTab()
 	SeparatorTextWithFont("Layout", Menu::FontRole::Subheading);
 
 	Util::Widgets::SliderFloat2("Window Padding", (float*)&style.WindowPadding, 0.0f, 20.0f, "%.0f");
-	Util::Widgets::SliderFloat2("Frame Padding", (float*)&style.FramePadding, 0.0f, 20.0f, "%.0f");
+	Util::Widgets::SliderFloat2("Frame Padding", (float*)&style.FramePadding, 0.0f, 40.0f, "%.0f");
+	Util::AddTooltip("Applied immediately. Detail controls keep enough vertical padding for readable text.");
 	Util::Widgets::SliderFloat2("Item Spacing", (float*)&style.ItemSpacing, 0.0f, 20.0f, "%.0f");
 	Util::Widgets::SliderFloat2("Item Inner Spacing", (float*)&style.ItemInnerSpacing, 0.0f, 20.0f, "%.0f");
 	Util::Widgets::SliderFloat("Indent Spacing", &style.IndentSpacing, 0.0f, 30.0f, "%.0f");
-	Util::Widgets::SliderFloat("Scrollbar Size", &style.ScrollbarSize, 1.0f, 20.0f, "%.0f");
-	Util::Widgets::SliderFloat("Grab Min Size", &style.GrabMinSize, 1.0f, 20.0f, "%.0f");
+	float scrollbarSize = std::max(style.ScrollbarSize, ThemeManager::Constants::MIN_SCROLLBAR_SIZE);
+	if (Util::Widgets::SliderFloat("Scrollbar Size", &scrollbarSize, ThemeManager::Constants::MIN_SCROLLBAR_SIZE, ThemeManager::Constants::MAX_SCROLLBAR_SIZE, "%.0f"))
+		style.ScrollbarSize = scrollbarSize;
+	Util::AddTooltip("Applied immediately. The minimum keeps scrolling targets usable in VR.");
+	Util::Widgets::SliderFloat("Grab Min Size", &style.GrabMinSize, 1.0f, 64.0f, "%.0f");
+	Util::AddTooltip("Applied immediately. Detail sliders also enforce a text-sized minimum handle.");
 
 	SeparatorTextWithFont("Scrollbar Opacity", Menu::FontRole::Subheading);
 	Util::Widgets::SliderFloat("Track Opacity", &themeSettings.ScrollbarOpacity.Background, 0.0f, 1.0f, "%.2f");

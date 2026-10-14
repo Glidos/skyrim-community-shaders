@@ -1,5 +1,6 @@
 #include "AdvancedSettingsRenderer.h"
 #include "Menu/SettingsPage.h"
+#include "SettingsActions.h"
 #include "Utils/WinApi.h"
 
 #include <algorithm>
@@ -196,16 +197,7 @@ void AdvancedSettingsRenderer::RenderShaderCacheControls()
 		ImGui::Text("Dump shaders at startup for reverse engineering. Unneeded for normal use.");
 	}
 
-	const bool capturing = shaderCache->IsCapturingActiveShaders();
-	const bool awaitingMenuClose = shaderCache->IsAwaitingMenuCloseCapture();
-	ImGui::BeginDisabled(capturing || awaitingMenuClose);
-	if (ImGui::Button("Clear Shader Cache", { -1, 0 })) {
-		Util::RequestClearShaderCacheConfirmation(Util::ResolveShaderCacheClearScope());
-	}
-	ImGui::EndDisabled();
-	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::TextWrapped("%s", Util::GetClearShaderCacheTooltip());
-	}
+	MenuUI::DrawGlobalSettingsButton(MenuUI::GlobalSettingsAction::ClearShaderCache, "Clear Shader Cache", { -1, 0 });
 	if (auto count = shaderCache->GetLastScopedClearCount(); count > 0) {
 		ImGui::TextDisabled(
 			"Last smart clear: %zu shader(s) (%.1f ms)",

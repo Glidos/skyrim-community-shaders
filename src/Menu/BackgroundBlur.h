@@ -9,8 +9,8 @@ struct ImVec2;
 namespace BackgroundBlur
 {
 	/**
-	 * @brief Initializes blur shaders and GPU resources
-	 * @return True if initialization succeeded
+	 * @brief Initializes blur shaders and GPU resources; a successful no-op in VR
+	 * @return False on resource failure; VR returns true without enabling blur
 	 */
 	bool Initialize();
 
@@ -47,7 +47,7 @@ namespace BackgroundBlur
 
 	/**
 	 * @brief Checks if blur is enabled
-	 * @return True if blur intensity > 0
+	 * @return True if requested and GPU resources are initialized
 	 */
 	bool IsEnabled();
 

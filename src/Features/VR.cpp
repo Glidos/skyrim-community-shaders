@@ -1524,33 +1524,18 @@ namespace
 			}
 		};
 
-		bool mouseNavigation = !effectiveWandNavigation;
-		if (Util::Widgets::Checkbox("Mouse Navigation", &mouseNavigation)) {
-			setWandNavigation(false);
-		}
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::TextUnformatted("Use thumbstick-driven cursor navigation for the CSX menu.");
-		}
+		int navigation = effectiveWandNavigation ? 1 : 0;
+		if (MenuUI::ChoiceSetting("Navigation", &navigation, "Thumbstick cursor\0Wand pointing\0"))
+			setWandNavigation(navigation == 1);
+		Util::AddTooltip("Choose thumbstick cursor movement or point at the menu with a controller.");
 
-		bool wandNavigation = vr.CanUseWandPointing();
-		const std::array<MenuUI::ToggleChoice, 2> wandOptions{ {
-			{ "Wand Navigation", &wandNavigation, "Use controller ray-cast pointing for the CSX menu." },
-			{ "Show Both Lasers", &settings.ShowBothWandLasers, "Show both controller lasers in Wand Navigation. Either hand can click; a drag stays with the hand that started it." },
-		} };
 		{
-			MenuUI::DetailGrid wandGrid("WandNavigationOptions", 2, MenuUI::ToggleColumnWidth(wandOptions));
-			wandGrid.Next();
-			if (Util::Widgets::Checkbox(wandOptions[0].label, wandOptions[0].value))
-				setWandNavigation(true);
-			Util::AddTooltip(wandOptions[0].tooltip);
-
-			wandGrid.Next();
-			{
-				auto disabled = Util::DisableGuard(!vr.CanUseWandPointing());
-				Util::Widgets::Checkbox(wandOptions[1].label, wandOptions[1].value);
-			}
-			Util::AddTooltip(wandOptions[1].tooltip, ImGuiHoveredFlags_AllowWhenDisabled);
+			auto disabled = Util::DisableGuard(!vr.CanUseWandPointing());
+			Util::Widgets::Checkbox("Show Both Lasers", &settings.ShowBothWandLasers);
 		}
+		Util::AddTooltip("The brighter laser controls the cursor. Aim and press the other hand's trigger to take control. A drag stays with the hand that started it.", ImGuiHoveredFlags_AllowWhenDisabled);
+		if (vr.CanUseWandPointing() && settings.ShowBothWandLasers)
+			MenuUI::DetailNote("Bright laser: active hand. Aim and press either trigger to take control; keep using that hand until you release the drag.");
 
 		if (vr.CanUseWandPointing()) {
 			ImGui::SetNextItemWidth(220.0f);

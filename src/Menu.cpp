@@ -773,6 +773,7 @@ void Menu::LoadTheme(json& o_json)
 
 		// Apply background blur enabled state from theme
 		BackgroundBlur::SetEnabled(settings.Theme.BackgroundBlurEnabled);
+		AcceptCurrentThemeAsSaved();
 	}
 }
 void Menu::SaveTheme(json& o_json)
@@ -787,8 +788,24 @@ void Menu::SaveTheme(json& o_json)
 		settings.Theme.FontName = defaults.File;
 	}
 
-	o_json["Theme"] = settings.Theme;
-	PaletteToJson(o_json["Theme"], settings.Theme.FullPalette);
+	o_json["Theme"] = CaptureThemeSnapshot();
+}
+
+json Menu::CaptureThemeSnapshot() const
+{
+	json snapshot = settings.Theme;
+	PaletteToJson(snapshot, settings.Theme.FullPalette);
+	return snapshot;
+}
+
+bool Menu::HasUnsavedTheme() const
+{
+	return savedThemeSnapshot.is_null() || CaptureThemeSnapshot() != savedThemeSnapshot;
+}
+
+void Menu::AcceptCurrentThemeAsSaved()
+{
+	savedThemeSnapshot = CaptureThemeSnapshot();
 }
 
 std::vector<std::string> Menu::DiscoverThemes()
@@ -846,6 +863,8 @@ bool Menu::LoadThemePreset(const std::string& themeName)
 			// Apply background blur enabled state from theme
 			BackgroundBlur::SetEnabled(settings.Theme.BackgroundBlurEnabled);
 
+			AcceptCurrentThemeAsSaved();
+			RequestSettingsDirtyCheck();
 			logger::info("Applied theme preset: {}", themeName);
 			return true;
 		} catch (const std::exception& e) {
@@ -1134,8 +1153,7 @@ void Menu::DrawSettings()
 		windowFlags |= ImGuiWindowFlags_NoResize;
 	}
 
-	ImGui::Begin(title.c_str(), &IsEnabled, windowFlags);
-	{
+	if (ImGui::Begin(title.c_str(), &IsEnabled, windowFlags)) {
 		ImGui::SetScrollX(0.0f);
 		ImGui::SetScrollY(0.0f);
 
@@ -1476,6 +1494,19 @@ static std::vector<InputCombo> DeriveCSEditorKey(const std::vector<InputCombo>& 
 	return { InputCombo::Keyboard(VK_SHIFT), InputCombo::Keyboard(baseKey) };
 }
 
+bool Menu::ConsumeNestedEscape(bool a_down, bool a_up)
+{
+	const auto& context = *ImGui::GetCurrentContext();
+	const bool nested = context.ActiveId != 0 || context.IO.WantTextInput ||
+	                    ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+	if (a_down)
+		escapeConsumed = nested;
+	const bool consumed = escapeConsumed || nested;
+	if (a_up)
+		escapeConsumed = false;
+	return consumed;
+}
+
 void Menu::ProcessInputEventQueue()
 {
 	std::unique_lock<std::shared_mutex> mutex(_inputEventMutex);
@@ -1513,9 +1544,7 @@ void Menu::ProcessInputEventQueue()
 				if (ew && ew->previewMode == EditorWindow::PreviewMode::FreeCamera) {
 					ew->AdjustFlySpeed(event.keyCode == 8 ? 1.0f : -1.0f);
 				}
-			} else if (!flying) {
-				if (event.keyCode > 5)
-					event.keyCode = 5;
+			} else if (!flying && event.keyCode < ImGuiMouseButton_COUNT) {
 				io.AddMouseButtonEvent(event.keyCode, event.IsPressed());
 			}
 		}
@@ -1531,8 +1560,11 @@ void Menu::ProcessInputEventQueue()
 			                                (key == VK_RETURN || key == VK_ESCAPE);
 
 			if (event.IsDown() && !wasCapturingHotkey && HomePageRenderer::TryCompleteFirstTimeSetupFromInput(key)) {
+				escapeConsumed = key == VK_ESCAPE;
 				continue;
 			}
+
+			const bool nestedEscape = key == VK_ESCAPE && ConsumeNestedEscape(event.IsDown(), event.IsUp());
 
 			auto shaderCache = globals::shaderCache;
 			const bool screenshotHotkeyActive =
@@ -1599,6 +1631,7 @@ void Menu::ProcessInputEventQueue()
 			};
 
 			if (!event.IsPressed()) {
+				const bool comboFired = _comboFiredKeys.erase(key) != 0;
 				// Skip key release if it was used to close the first-time setup dialog
 				if (HomePageRenderer::ShouldSkipKeyRelease(key)) {
 					io.AddKeyEvent(Util::Input::VirtualKeyToImGuiKey(key), event.IsPressed());
@@ -1677,17 +1710,17 @@ void Menu::ProcessInputEventQueue()
 				if (closedFirstTimeSetup) {
 					continue;
 				}
-				if (!handled) {
+				if (!handled && !nestedEscape) {
 					// Single-key hotkeys fire on key-up; combos already fired on key-down.
 					// If this key's key-down already fired a combo, suppress the single-key
 					// binding so releasing the modifier first does not trigger it as well.
-					if (_comboFiredKeys.erase(key) == 0)
+					if (!comboFired)
 						dispatchHotkeyActions(false);
 				}
 
 				// Handle ESC key for menu and editor window
 				auto* editorWindow = EditorWindow::GetSingleton();
-				if (key == VK_ESCAPE) {
+				if (key == VK_ESCAPE && !handled && !nestedEscape) {
 					if (editorWindow && editorWindow->IsInPreviewMode()) {
 						editorWindow->ExitPreviewMode();
 					} else if (editorWindow && editorWindow->open && editorWindow->ShouldHandleEscapeKey()) {
@@ -1696,7 +1729,7 @@ void Menu::ProcessInputEventQueue()
 						CloseMenu();
 					}
 				}
-			} else if (event.IsDown() && !wasCapturingHotkey) {
+			} else if (event.IsDown() && !wasCapturingHotkey && !nestedEscape) {
 				// Fire combo hotkeys on the key-down transition so they respond on
 				// press rather than release. IsDown() (not IsPressed()) ensures we
 				// trigger only once instead of every frame the key is held.
@@ -1720,7 +1753,7 @@ void Menu::ProcessInputEventQueue()
 			// Always forward key-up events. Suppress key-down during active hotkeys,
 			// and during hotkey capture except setup close keys (Enter/Escape).
 			const bool isKeyDown = event.IsPressed();
-			const bool suppressForwarding = isKeyDown && (isHotkey || (wasCapturingHotkey && !allowSetupCloseKey));
+			const bool suppressForwarding = isKeyDown && ((isHotkey && !nestedEscape) || (wasCapturingHotkey && !allowSetupCloseKey));
 			if (!suppressForwarding) {
 				// DirectInput loses key-up events after alt-tab; validate against OS state.
 				bool pressed = isKeyDown && (GetAsyncKeyState(key) & Constants::KEY_PRESSED_MASK);

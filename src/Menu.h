@@ -126,6 +126,10 @@ public:
 	void Init();
 	void DrawSettings();
 	bool HasUnsavedSettings() const { return settingsDirty; }
+	/** Theme edits are saved separately from global settings. */
+	bool HasUnsavedTheme() const;
+	/** Accepts a successfully loaded or written theme as the edit baseline. */
+	void AcceptCurrentThemeAsSaved();
 	/** Whether a feature differs from the last successfully saved settings. */
 	bool HasUnsavedFeatureSettings(const std::string& name) const { return dirtySettingsSections.contains(name); }
 	void RequestSettingsDirtyCheck() { settingsDirtyCheckRequested = true; }
@@ -515,6 +519,8 @@ public:
 private:
 	Settings settings;
 	json settingsDirtyBaseline = json::object();
+	json savedThemeSnapshot;
+	json CaptureThemeSnapshot() const;
 	bool settingsDirtyBaselineInitialized = false;
 	bool settingsDirty = false;
 	std::unordered_set<std::string> dirtySettingsSections;
@@ -540,6 +546,7 @@ private:
 	// Keys whose key-down already fired a combo hotkey. Their matching key-up is
 	// suppressed so a shared single-key binding does not also fire after modifier release.
 	std::unordered_set<uint32_t> _comboFiredKeys;
+	bool escapeConsumed = false;
 
 	Menu() = default;
 
@@ -550,6 +557,7 @@ private:
 
 	void addToEventQueue(KeyEvent e);
 	void ProcessInputEventQueue();
+	bool ConsumeNestedEscape(bool a_down, bool a_up);
 	bool IsCapturingHotkeyInput() const;
 	winrt::com_ptr<IDXGIAdapter3> dxgiAdapter3;
 };

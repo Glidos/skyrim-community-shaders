@@ -329,7 +329,8 @@ namespace Util
 			const std::filesystem::path& path,
 			std::string_view contents,
 			std::string& errorMessage,
-			bool allowDirectFallback)
+			bool allowDirectFallback,
+			bool overwriteExisting)
 		{
 			errorMessage.clear();
 
@@ -369,13 +370,15 @@ namespace Util
 			if (!MoveFileExW(
 					stagingPath.c_str(),
 					path.c_str(),
-					MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+					(overwriteExisting ? MOVEFILE_REPLACE_EXISTING : 0) | MOVEFILE_WRITE_THROUGH)) {
 				const auto windowsError = GetLastError();
 				std::error_code cleanupError;
 				std::filesystem::remove(stagingPath, cleanupError);
 
-				if (!allowDirectFallback) {
-					errorMessage = std::format("Could not atomically replace {} (Windows error {}). The original file was retained.", path.string(), windowsError);
+				if (!allowDirectFallback || !overwriteExisting) {
+					errorMessage = overwriteExisting ?
+					                   std::format("Could not atomically replace {} (Windows error {}). The original file was retained.", path.string(), windowsError) :
+					                   std::format("Could not create {} (Windows error {}). Existing files were not replaced.", path.string(), windowsError);
 					return false;
 				}
 

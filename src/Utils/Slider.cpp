@@ -30,8 +30,10 @@ namespace Util::Widgets
 			{
 				ImGui::PushFont(ImGui::GetFont(), ImGui::GetFontSize() * (scaleText ? controlTextScale : 1.0f));
 				const float font = ImGui::GetFontSize();
-				ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, { ImGui::GetStyle().FramePadding.x, font * controlPadding });
-				ImGui::PushStyleVar(ImGuiStyleVar_GrabMinSize, font * handleRadius * 2);
+				const float grab = std::max(ImGui::GetStyle().GrabMinSize, font * handleRadius * 2);
+				const float padding = std::max({ ImGui::GetStyle().FramePadding.y, font * controlPadding, (grab - font) * .5f });
+				ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, { ImGui::GetStyle().FramePadding.x, padding });
+				ImGui::PushStyleVar(ImGuiStyleVar_GrabMinSize, grab);
 			}
 			~ControlStyle()
 			{
@@ -337,7 +339,7 @@ namespace Util::Widgets
 				const float ratio = SliderPosition(type, *value, minimum, maximum, (flags & ImGuiSliderFlags_Logarithmic) != 0, geometry.epsilon, geometry.deadzone);
 				const float centre = geometry.start + (geometry.finish - geometry.start) * ratio;
 				const float y = (trackMin.y + trackMax.y) * .5f;
-				const float radius = ImGui::GetFontSize() * handleRadius;
+				const float radius = std::min(ImGui::GetStyle().GrabMinSize, std::max(1.0f, trackMax.x - trackMin.x - 4.0f)) * .5f;
 				const float thickness = std::max(2.0f, ImGui::GetFontSize() * .3f);
 				auto* draw = ImGui::GetWindowDrawList();
 				draw->AddLine({ geometry.start, y }, { geometry.finish, y }, ImGui::GetColorU32(ImGuiCol_Text), thickness);

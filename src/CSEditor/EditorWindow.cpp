@@ -19,6 +19,8 @@
 #include <atomic>
 #include <cmath>
 #include <functional>
+#include <imgui_stdlib.h>
+#include <optional>
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(EditorWindow::Settings::PaletteColorEntry, r, g, b, useCount, lastUsedTime, isFavorite)
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(EditorWindow::Settings::PaletteValueEntry, name, value, useCount, lastUsedTime, isFavorite)
@@ -1633,6 +1635,7 @@ void EditorWindow::SaveSettings()
 
 void EditorWindow::LoadSettings()
 {
+	markerLabelBuffers.clear();
 	if (!j.empty())
 		settings = j;
 	SanitizeSettings();
@@ -1781,37 +1784,23 @@ void EditorWindow::ShowSettingsWindow()
 
 				auto& recordMarkers = settings.recordMarkers;
 
-				// Store markers to delete (can't delete while iterating)
-				static std::string markerToDelete;
-				markerToDelete.clear();
-
-				// Store rename info (old name -> new name)
-				static std::pair<std::string, std::string> renameInfo;
-				static bool needsRename = false;
-
-				// Store separate buffers for each marker
-				static std::unordered_map<std::string, std::array<char, 256>> labelBuffers;
+				std::string markerToDelete;
+				std::optional<std::pair<std::string, std::string>> renameInfo;
+				std::erase_if(markerLabelBuffers, [&](const auto& entry) { return !recordMarkers.contains(entry.first); });
 
 				for (auto& recordMarker : recordMarkers) {
+					ImGui::PushID(&recordMarker);
+					const SKSE::stl::scope_exit restoreMarkerId([] { ImGui::PopID(); });
 					ImGui::TableNextRow();
 					ImGui::TableSetColumnIndex(0);
 
-					// Editable label - use separate buffer for each marker
-					auto& labelBuffer = labelBuffers[recordMarker.first];
-					if (labelBuffer[0] == '\0' || labelBuffers.find(recordMarker.first) == labelBuffers.end()) {
-						strncpy_s(labelBuffer.data(), labelBuffer.size(), recordMarker.first.c_str(), labelBuffer.size() - 1);
-						labelBuffer[labelBuffer.size() - 1] = '\0';
-					}
-
+					auto& labelBuffer = markerLabelBuffers.try_emplace(recordMarker.first, recordMarker.first).first->second;
 					ImGui::SetNextItemWidth(-1);
-					if (ImGui::InputText(std::format("##Label{}", recordMarker.first).c_str(), labelBuffer.data(), labelBuffer.size(), ImGuiInputTextFlags_EnterReturnsTrue)) {
-						// Mark for rename only on Enter
-						renameInfo = { recordMarker.first, std::string(labelBuffer.data()) };
-						needsRename = true;
-					}
+					if (ImGui::InputText("##Label", &labelBuffer, ImGuiInputTextFlags_EnterReturnsTrue))
+						renameInfo = { recordMarker.first, labelBuffer };
 
 					ImGui::TableSetColumnIndex(1);
-					ImGui::ColorEdit3(std::format("Color##{}", recordMarker.first).c_str(), (float*)&recordMarker.second);
+					ImGui::ColorEdit3("Color", (float*)&recordMarker.second);
 					if (ImGui::IsItemDeactivatedAfterEdit()) {
 						Save();
 					}
@@ -1825,55 +1814,24 @@ void EditorWindow::ShowSettingsWindow()
 					deleteActive.w = 1.0f;
 					{
 						auto styledButton = Util::StyledButtonWrapper(deleteColor, deleteHovered, deleteActive);
-						if (ImGui::Button(std::format("Delete##{}", recordMarker.first).c_str(), ImVec2(-1, 0))) {
+						if (ImGui::Button("Delete", ImVec2(-1, 0))) {
 							markerToDelete = recordMarker.first;
 						}
 					}
 				}
 
-				// Process rename
-				if (needsRename && renameInfo.first != renameInfo.second && !renameInfo.second.empty()) {
-					// Check if new name doesn't already exist
-					if (recordMarkers.find(renameInfo.second) == recordMarkers.end()) {
-						auto color = recordMarkers[renameInfo.first];
-						recordMarkers.erase(renameInfo.first);
-						recordMarkers[renameInfo.second] = color;
-
-						// Update any records that were using the old marker name
-						for (auto& [recordId, markerName] : settings.markedRecords) {
-							if (markerName == renameInfo.first) {
-								markerName = renameInfo.second;
-							}
-						}
-
-						Save();
-					}
-					needsRename = false;
+				if (renameInfo) {
+					const auto error = RenameRecordMarker(renameInfo->first, renameInfo->second);
+					if (!error.empty())
+						ShowNotification(error, Util::Colors::GetWarning());
 				}
-
-				// Process deletion
-				if (!markerToDelete.empty()) {
-					recordMarkers.erase(markerToDelete);
-
-					// Remove any records that were using this marker
-					for (auto it = settings.markedRecords.begin(); it != settings.markedRecords.end();) {
-						if (it->second == markerToDelete) {
-							it = settings.markedRecords.erase(it);
-						} else {
-							++it;
-						}
-					}
-
-					Save();
-				}
+				if (!markerToDelete.empty())
+					DeleteRecordMarker(markerToDelete);
 
 				ImGui::TableNextRow();
 				ImGui::TableSetColumnIndex(0);
-
-				if (recordMarkers.size() < maxRecordMarkers && ImGui::Selectable("Add new marker")) {
-					recordMarkers.insert({ std::format("New marker {}", recordMarkers.size()), { 0.5f, 0.5f, 0.5f, 1.0f } });
-					Save();
-				}
+				if (recordMarkers.size() < maxRecordMarkers && ImGui::Selectable("Add new marker") && !AddRecordMarker())
+					ShowNotification("No marker could be added.", Util::Colors::GetWarning());
 
 				ImGui::EndTable();
 			}
@@ -1882,6 +1840,56 @@ void EditorWindow::ShowSettingsWindow()
 	}
 
 	ImGui::End();
+}
+
+bool EditorWindow::AddRecordMarker()
+{
+	auto& markers = settings.recordMarkers;
+	if (markers.size() >= maxRecordMarkers)
+		return false;
+	std::string name;
+	for (size_t ordinal = 0;; ++ordinal) {
+		name = std::format("New marker {}", ordinal);
+		if (!markers.contains(name))
+			break;
+	}
+	if (!markers.emplace(name, ImVec4(0.5f, 0.5f, 0.5f, 1.0f)).second)
+		return false;
+	markerLabelBuffers.erase(name);
+	Save();
+	return true;
+}
+
+std::string EditorWindow::RenameRecordMarker(const std::string& oldName, const std::string& newName)
+{
+	auto& markers = settings.recordMarkers;
+	const auto source = markers.find(oldName);
+	if (source == markers.end())
+		return "The marker no longer exists.";
+	if (newName.empty())
+		return "Marker names cannot be empty.";
+	if (oldName == newName)
+		return {};
+	if (!markers.emplace(newName, source->second).second)
+		return "A marker with that name already exists.";
+	markers.erase(source);
+	for (auto& [recordId, markerName] : settings.markedRecords) {
+		if (markerName == oldName)
+			markerName = newName;
+	}
+	markerLabelBuffers.erase(oldName);
+	markerLabelBuffers.erase(newName);
+	Save();
+	return {};
+}
+
+void EditorWindow::DeleteRecordMarker(const std::string& name)
+{
+	if (settings.recordMarkers.erase(name) == 0)
+		return;
+	markerLabelBuffers.erase(name);
+	std::erase_if(settings.markedRecords, [&](const auto& record) { return record.second == name; });
+	Save();
 }
 
 void EditorWindow::Save()
@@ -1893,10 +1901,13 @@ void EditorWindow::Save()
 	try {
 		SaveSettings();
 		std::string errorMessage;
-		if (!Util::FileHelpers::WriteTextFileAtomic(file, j.dump(1), errorMessage))
+		if (!Util::FileHelpers::WriteTextFileAtomic(file, j.dump(1), errorMessage)) {
 			logger::warn("Failed to save settings file ({}): {}", file.string(), errorMessage);
+			ShowNotification("Editor settings not saved: " + errorMessage, Util::Colors::GetError());
+		}
 	} catch (const std::exception& e) {
 		logger::warn("Error serializing settings file ({}): {}", file.string(), e.what());
+		ShowNotification("Editor settings not saved: " + std::string(e.what()), Util::Colors::GetError());
 	}
 }
 

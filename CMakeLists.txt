@@ -1808,6 +1808,7 @@ if(BUILD_CONTROLLER_TESTS)
             "${_settings_ui_dir}/settings_model_resolution_under_test.h"
             "${_settings_ui_dir}/menu_settings_under_test.h"
             "${_settings_ui_dir}/settings_footer_under_test.h"
+            "${_settings_ui_dir}/settings_global_actions_under_test.h"
             "${_settings_ui_dir}/settings_restore_under_test.h"
             "${_settings_ui_dir}/settings_renderdoc_under_test.h"
             "${_settings_ui_dir}/settings_renderdoc_frames_under_test.h"
@@ -1837,6 +1838,7 @@ if(BUILD_CONTROLLER_TESTS)
             "${PROJECT_SOURCE_DIR}/tests/extract_settings_ui.cmake"
         DEPENDS
             src/Menu/FeatureListRenderer.cpp
+            src/Menu/SettingsActions.cpp
             src/Menu/ExternalSettingsPage.h
             src/Menu/StabilizerPage.cpp
             src/Menu/SettingsPage.cpp
@@ -1873,6 +1875,7 @@ if(BUILD_CONTROLLER_TESTS)
             "${_settings_ui_dir}/settings_model_resolution_under_test.h"
             "${_settings_ui_dir}/menu_settings_under_test.h"
             "${_settings_ui_dir}/settings_footer_under_test.h"
+            "${_settings_ui_dir}/settings_global_actions_under_test.h"
             "${_settings_ui_dir}/settings_restore_under_test.h"
             "${_settings_ui_dir}/settings_renderdoc_under_test.h"
             "${_settings_ui_dir}/settings_renderdoc_frames_under_test.h"
@@ -3779,6 +3782,7 @@ if(BUILD_CONTROLLER_TESTS)
     )
     include(tests/menu_frame_stability.cmake)
     include(tests/menu_resize.cmake)
+    include(tests/ui_regressions.cmake)
     add_controller_test(
         shader_cache_disable_policy_test
         ShaderCacheDisablePolicy

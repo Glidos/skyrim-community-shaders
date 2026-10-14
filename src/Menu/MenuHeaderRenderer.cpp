@@ -56,19 +56,6 @@ namespace
 		return GetHeaderActionIconSize(a_uiScale);
 	}
 
-	float GetUndockedIconSpacing(float a_uiScale)
-	{
-		return ThemeManager::Constants::UNDOCKED_ICON_ITEM_SPACING * a_uiScale;
-	}
-
-	float GetUndockedActionButtonSize(float a_uiScale)
-	{
-		const auto& style = ImGui::GetStyle();
-		const float iconSize = GetHeaderActionIconSize(a_uiScale);
-		const float paddingReduction = ThemeManager::Constants::UNDOCKED_ICON_PADDING_REDUCTION * a_uiScale;
-		return std::max(0.0f, iconSize - paddingReduction) + style.FramePadding.x * 2.0f;
-	}
-
 	float GetSteamVRResizeHandleSize(float a_uiScale)
 	{
 		const float baseHandleSize = std::max(ImGui::GetFontSize() * 1.15f, 18.0f) * a_uiScale;
@@ -191,36 +178,15 @@ void MenuHeaderRenderer::RenderHeader(
 		if (ImGui::BeginTable("##ActionButtons", 4, ImGuiTableFlags_SizingStretchSame)) {
 			// Save Settings Button
 			ImGui::TableNextColumn();
-			if (Util::ButtonWithFlash("Save Settings", { -1, 0 })) {
-				globals::state->Save();
-			}
+			MenuUI::DrawGlobalSettingsButton(MenuUI::GlobalSettingsAction::Save, "Save CSX Settings", { -1, 0 });
 
 			// Restore Saved Settings Button
 			ImGui::TableNextColumn();
-			if (Util::ButtonWithFlash("Restore Saved Settings", { -1, 0 })) {
-				globals::state->Load();
-				globals::features::llf::particleLights.GetConfigs();
-			}
+			MenuUI::DrawGlobalSettingsButton(MenuUI::GlobalSettingsAction::Load, "Restore Saved Settings", { -1, 0 });
 
 			// Clear Shader Cache Button
 			ImGui::TableNextColumn();
-			{
-				const bool capturing = shaderCache->IsCapturingActiveShaders();
-				const bool awaitingMenuClose = shaderCache->IsAwaitingMenuCloseCapture();
-				ImGui::BeginDisabled(capturing || awaitingMenuClose);
-				const std::string label = awaitingMenuClose ?
-				                              "Close the menu to finish" :
-				                          capturing ?
-				                              std::format("Capturing... {}", shaderCache->GetActiveShaderCaptureFramesRemaining()) :
-				                              "Clear Shader Cache";
-				if (ImGui::Button(label.c_str(), { -1, 0 })) {
-					Util::RequestClearShaderCacheConfirmation(Util::ResolveShaderCacheClearScope());
-				}
-				ImGui::EndDisabled();
-			}
-			if (auto _tt = Util::HoverTooltipWrapper()) {
-				ImGui::TextWrapped("%s", Util::GetClearShaderCacheTooltip());
-			}
+			MenuUI::DrawGlobalSettingsButton(MenuUI::GlobalSettingsAction::ClearShaderCache, "Clear Shader Cache", { -1, 0 });
 
 			// Error message toggle if needed
 			if (shaderCache->GetFailedTasks()) {
@@ -279,9 +245,9 @@ std::vector<MenuHeaderRenderer::ActionIcon> MenuHeaderRenderer::BuildActionIcons
 			uiIcons.saveSettings.texture,
 			"Save Settings",
 			[]() {
-				globals::state->Save();
+				MenuUI::InvokeGlobalSettingsAction(MenuUI::GlobalSettingsAction::Save);
 			},
-			ActionIcon::Glyph::SaveSettings });
+			ActionIcon::Glyph::SaveSettings, MenuUI::GlobalSettingsAction::Save });
 	}
 	if (uiIcons.loadSettings.texture) {
 		actionIcons.push_back({ "HeaderRestoreSavedSettings",
@@ -289,10 +255,9 @@ std::vector<MenuHeaderRenderer::ActionIcon> MenuHeaderRenderer::BuildActionIcons
 			uiIcons.loadSettings.texture,
 			"Restore Saved Settings",
 			[]() {
-				globals::state->Load();
-				globals::features::llf::particleLights.GetConfigs();
+				MenuUI::InvokeGlobalSettingsAction(MenuUI::GlobalSettingsAction::Load);
 			},
-			ActionIcon::Glyph::LoadSettings });
+			ActionIcon::Glyph::LoadSettings, MenuUI::GlobalSettingsAction::Load });
 	}
 	if (uiIcons.clearCache.texture) {
 		actionIcons.push_back({ "HeaderClearShaderCache",
@@ -300,9 +265,9 @@ std::vector<MenuHeaderRenderer::ActionIcon> MenuHeaderRenderer::BuildActionIcons
 			uiIcons.clearCache.texture,
 			Util::GetClearShaderCacheTooltip(),
 			[]() {
-				Util::RequestClearShaderCacheConfirmation(Util::ResolveShaderCacheClearScope());
+				MenuUI::InvokeGlobalSettingsAction(MenuUI::GlobalSettingsAction::ClearShaderCache);
 			},
-			ActionIcon::Glyph::ClearCache });
+			ActionIcon::Glyph::ClearCache, MenuUI::GlobalSettingsAction::ClearShaderCache });
 	}
 
 	return actionIcons;
@@ -326,142 +291,69 @@ void MenuHeaderRenderer::DrawActionIcon(ImDrawList* draw, const ActionIcon& icon
 	}
 }
 
-void MenuHeaderRenderer::RenderDockedIcons(const std::vector<ActionIcon>& actionIcons, float uiScale)
+void MenuHeaderRenderer::DrawActionButton(const ActionIcon& icon, ImVec2 minimum, ImVec2 maximum, float iconInset)
 {
-	if (actionIcons.empty())
+	auto* window = ImGui::GetCurrentWindow();
+	if (window->SkipItems || (!icon.texture && icon.glyph == ActionIcon::Glyph::Texture))
 		return;
-
-	// Get window position and calculate title bar area
-	ImVec2 windowPos = ImGui::GetWindowPos();
-	ImVec2 windowSize = ImGui::GetWindowSize();
-	float titleBarHeight = ImGui::GetFrameHeight();
-	const float iconSize = GetDockedActionIconSize(uiScale, titleBarHeight);
-	const float iconSpacing = ThemeManager::Constants::DOCKED_ICON_SPACING * uiScale;
-	const float rightMargin = ThemeManager::Constants::DOCKED_RIGHT_MARGIN * uiScale;
-
-	// Use foreground draw list to draw over the title bar
-	ImDrawList* fgDrawList = ImGui::GetForegroundDrawList();
-
-	// Calculate icon positions (right to left from close button)
-	float iconX = windowPos.x + windowSize.x - rightMargin;
-	float iconY = windowPos.y + (titleBarHeight - iconSize) * 0.5f;
-
-	// Draw icons from right to left
-	for (auto it = actionIcons.rbegin(); it != actionIcons.rend(); ++it) {
-		iconX -= iconSize + iconSpacing;
-
-		// Slightly reduce the icon rendering area to minimize any transparent padding
-		const float paddingReduction = ThemeManager::Constants::DOCKED_ICON_PADDING_REDUCTION * uiScale;
-		ImVec2 iconMin(iconX + paddingReduction, iconY + paddingReduction);
-		ImVec2 iconMax(iconX + iconSize - paddingReduction, iconY + iconSize - paddingReduction);
-
-		// Use the full area for mouse interaction (including padding)
-		ImVec2 interactionMin(iconX, iconY);
-		ImVec2 interactionMax(iconX + iconSize, iconY + iconSize);
-
-		// Check mouse interaction against full area
-		ImVec2 mousePos = ImGui::GetMousePos();
-		bool isHovered = mousePos.x >= interactionMin.x && mousePos.x <= interactionMax.x &&
-		                 mousePos.y >= interactionMin.y && mousePos.y <= interactionMax.y;
-		const bool hasActiveFlash = it->flashId && Util::IsButtonFlashActive(it->flashId);
-
-		// Only render if texture is valid
-		if (it->texture || it->glyph != ActionIcon::Glyph::Texture) {
-			// Draw icon with hover effect, using reduced area to minimize padding
-			ImU32 tintColor;
-			if (globals::menu->GetSettings().Theme.UseMonochromeIcons) {
-				// Use theme text color for monochrome icons
-				ImVec4 textColor = globals::menu->GetSettings().Theme.Palette.Text;
-				if (!isHovered && !hasActiveFlash) {
-					textColor.w *= 0.85f;  // Slightly reduce alpha when not hovered
-				}
-				tintColor = ImGui::GetColorU32(textColor);
-			} else {
-				// Use white/gray tint for colored icons
-				tintColor = (isHovered || hasActiveFlash) ? IM_COL32(255, 255, 255, 255) : IM_COL32(220, 220, 220, 220);
-			}
-			DrawActionIcon(fgDrawList, *it, iconMin, iconMax, tintColor);
-		}
-
-		if (isHovered || hasActiveFlash) {
-			ImVec4 feedbackColor = hasActiveFlash ?
-			                           Util::GetButtonFlashColor(ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered)) :
-			                           ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered);
-			feedbackColor.w = hasActiveFlash ? 0.34f : 0.18f;
-			fgDrawList->AddRectFilled(interactionMin, interactionMax, ImGui::GetColorU32(feedbackColor));
-		}
-
-		// Handle interaction
-		if (isHovered) {
-			if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-				it->callback();
-				if (it->flashId) {
-					Util::TriggerButtonFlash(it->flashId);
-				}
-			}
-
-			// Set tooltip manually since we're drawing outside normal ImGui flow
-			ImGui::SetTooltip("%s", it->tooltip);
-		}
+	const auto* reason = MenuUI::GetGlobalSettingsActionBlockReason(icon.action);
+	const auto disabled = Util::DisableGuard(reason != nullptr);
+	auto& context = *ImGui::GetCurrentContext();
+	auto* hoveredWindow = context.HoveredWindow;
+	// A docked title bar belongs to its host; popup and active-item checks still apply.
+	if (window->DockNode && window->DockTabIsVisible && hoveredWindow == window->DockNode->HostWindow)
+		context.HoveredWindow = window;
+	const SKSE::stl::scope_exit restoreHovered([&] { context.HoveredWindow = hoveredWindow; });
+	const ImRect bounds(minimum, maximum);
+	const auto id = window->GetID(icon.id);
+	if (!ImGui::ItemAdd(bounds, id))
+		return;
+	bool hovered = false, held = false;
+	const bool clicked = ImGui::ButtonBehavior(bounds, id, &hovered, &held, ImGuiButtonFlags_MouseButtonLeft);
+	auto* draw = window->DrawList;
+	const bool flash = icon.flashId && Util::IsButtonFlashActive(icon.flashId);
+	if (hovered || held || flash) {
+		auto color = ImGui::GetStyleColorVec4(held ? ImGuiCol_ButtonActive : ImGuiCol_ButtonHovered);
+		if (flash)
+			color = Util::GetButtonFlashColor(color);
+		color.w *= held || flash ? .34f : .18f;
+		draw->AddRectFilled(minimum, maximum, ImGui::GetColorU32(color));
 	}
+	ImVec4 tint = globals::menu->GetTheme().UseMonochromeIcons ?
+	                  globals::menu->GetTheme().Palette.Text :
+	                  ImVec4(1, 1, 1, 1);
+	if (!hovered && !held && !flash)
+		tint.w *= .85f;
+	DrawActionIcon(draw, icon, { minimum.x + iconInset, minimum.y + iconInset },
+		{ maximum.x - iconInset, maximum.y - iconInset }, ImGui::GetColorU32(tint));
+	ImGui::RenderNavCursor(bounds, id);
+	if (clicked) {
+		icon.callback();
+		if (icon.flashId)
+			Util::TriggerButtonFlash(icon.flashId);
+	}
+	const auto* help = icon.action == MenuUI::GlobalSettingsAction::None ? icon.tooltip : MenuUI::GetGlobalSettingsActionHelp(icon.action);
+	Util::AddTooltip(reason ? reason : help, ImGuiHoveredFlags_AllowWhenDisabled);
 }
 
-void MenuHeaderRenderer::RenderUndockedIcons(const std::vector<ActionIcon>& actionIcons, float uiScale)
+void MenuHeaderRenderer::RenderDockedIcons(const std::vector<ActionIcon>& actionIcons, float uiScale)
 {
-	if (actionIcons.empty())
+	auto* window = ImGui::GetCurrentWindow();
+	const auto* node = window->DockNode;
+	if (actionIcons.empty() || window->SkipItems || !window->DockTabIsVisible || !node || !node->TabBar || node->IsHiddenTabBar() || node->IsNoTabBar())
 		return;
-
-	// Undocked: Draw icons as ImageButtons in a table column
-	const float iconSize = GetHeaderActionIconSize(uiScale);
-	const float paddingReduction = ThemeManager::Constants::UNDOCKED_ICON_PADDING_REDUCTION * uiScale;
-	const float imageExtent = std::max(0.0f, iconSize - paddingReduction);
-	const ImVec2 imageSize(imageExtent, imageExtent);
-
-	// Setup button styling for transparent background with hover effects
-	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(GetUndockedIconSpacing(uiScale), 0.0f));
-	ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);  // Remove button borders
-	auto iconButtonStyle = Util::TransparentIconButtonStyle();
-
-	// Get tint color for monochrome icons
-	ImVec4 tintColor = ImVec4(1, 1, 1, 1);
-	if (globals::menu->GetSettings().Theme.UseMonochromeIcons) {
-		tintColor = globals::menu->GetSettings().Theme.Palette.Text;
+	const auto titleBar = node->TabBar->BarRect;
+	const float titleBarHeight = titleBar.GetHeight();
+	const float iconSize = GetDockedActionIconSize(uiScale, titleBarHeight);
+	const float spacing = ThemeManager::Constants::DOCKED_ICON_SPACING * uiScale;
+	float x = titleBar.Max.x - ThemeManager::Constants::DOCKED_RIGHT_MARGIN * uiScale;
+	const float y = titleBar.Min.y + (titleBarHeight - iconSize) * .5f;
+	ImGui::PushClipRect(titleBar.Min, titleBar.Max, false);
+	const SKSE::stl::scope_exit restoreClip([] { ImGui::PopClipRect(); });
+	for (auto it = actionIcons.rbegin(); it != actionIcons.rend(); ++it) {
+		x -= iconSize + spacing;
+		DrawActionButton(*it, { x, y }, { x + iconSize, y + iconSize });
 	}
-
-	// Draw action icons as ImageButtons
-	for (size_t i = 0; i < actionIcons.size(); ++i) {
-		const auto& icon = actionIcons[i];
-
-		// Skip if texture is null
-		if (!icon.texture && icon.glyph == ActionIcon::Glyph::Texture) {
-			continue;
-		}
-
-		std::string buttonId = std::format("##{}", icon.id);
-
-		// Use ImageButton with reduced image size to minimize padding
-		const bool clicked = icon.glyph != ActionIcon::Glyph::Texture ?
-		                         ImGui::InvisibleButton(buttonId.c_str(), imageSize) :
-		                     icon.flashId ?
-		                         Util::ImageButtonWithFlash(icon.flashId, icon.texture, imageSize, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), tintColor) :
-		                         ImGui::ImageButton(buttonId.c_str(), icon.texture, imageSize, ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), tintColor);
-		if (icon.glyph != ActionIcon::Glyph::Texture)
-			DrawActionIcon(ImGui::GetWindowDrawList(), icon, ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ImGui::GetColorU32(tintColor));
-		if (clicked) {
-			icon.callback();
-		}
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::Text("%s", icon.tooltip);
-		}
-
-		// Add SameLine except for the last button
-		if (i < actionIcons.size() - 1) {
-			ImGui::SameLine();
-		}
-	}
-
-	// Restore default style
-	ImGui::PopStyleVar(2);  // Pop both style variables: ItemSpacing and FrameBorderSize
 }
 
 void MenuHeaderRenderer::RenderSteamVRDockHandle(float uiScale, ImGuiID dockSpaceId)
@@ -742,37 +634,9 @@ void MenuHeaderRenderer::RenderStableHeader(const std::string& title, bool showL
 
 		const ImVec2 buttonMin(iconX, actionsY - actionIconSize * 0.5f);
 		const ImVec2 buttonMax(buttonMin.x + actionIconSize, buttonMin.y + actionIconSize);
-		const ImVec2 imageMin(buttonMin.x + paddingReduction * 0.5f, buttonMin.y + paddingReduction * 0.5f);
-		const ImVec2 imageMax(buttonMax.x - paddingReduction * 0.5f, buttonMax.y - paddingReduction * 0.5f);
-
 		ImGui::SetCursorScreenPos(buttonMin);
-		ImGui::PushID(static_cast<int>(i));
-		const bool clicked = ImGui::InvisibleButton("##StableHeaderAction", ImVec2(actionIconSize, actionIconSize));
-		const bool hovered = ImGui::IsItemHovered();
-		const bool hasActiveFlash = icon.flashId && Util::IsButtonFlashActive(icon.flashId);
-		if (clicked) {
-			icon.callback();
-			if (icon.flashId) {
-				Util::TriggerButtonFlash(icon.flashId);
-			}
-		}
-		if (hovered || hasActiveFlash) {
-			ImVec4 feedbackColor = hasActiveFlash ?
-			                           Util::GetButtonFlashColor(ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered)) :
-			                           ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered);
-			feedbackColor.w = hasActiveFlash ? 0.34f : 0.18f;
-			drawList->AddRectFilled(buttonMin, buttonMax, ImGui::GetColorU32(feedbackColor));
-		}
-		if (hovered) {
-			ImGui::SetTooltip("%s", icon.tooltip);
-		}
-
-		ImVec4 tintColor = ImVec4(1, 1, 1, 1);
-		if (menu->GetSettings().Theme.UseMonochromeIcons) {
-			tintColor = menu->GetSettings().Theme.Palette.Text;
-		}
-		DrawActionIcon(drawList, icon, imageMin, imageMax, ImGui::GetColorU32(tintColor));
-		ImGui::PopID();
+		ImGui::ItemSize(ImVec2(actionIconSize, actionIconSize));
+		DrawActionButton(icon, buttonMin, buttonMax, paddingReduction * .5f);
 
 		iconX += actionIconSize + iconSpacing;
 	}

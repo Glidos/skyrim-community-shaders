@@ -4,6 +4,8 @@
 
 namespace WandInteractionPolicy
 {
+	inline constexpr float InactivePointerOpacity = 0.35f;
+
 	enum class Hand
 	{
 		None,

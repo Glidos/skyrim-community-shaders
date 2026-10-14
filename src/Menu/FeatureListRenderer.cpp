@@ -1,5 +1,6 @@
 #include "FeatureListRenderer.h"
 #include "Menu/MenuHeaderRenderer.h"
+#include "Menu/SettingsActions.h"
 #include "Menu/SettingsPage.h"
 #include "Menu/StabilizerPage.h"
 
@@ -229,9 +230,9 @@ namespace
 		const auto& palette = menu.GetTheme().StatusPalette;
 		const bool error = external ? external->error : menu.IsSettingsSaveMessageError() && !menu.GetSettingsSaveMessage().empty();
 		const bool dirty = external ? external->dirty : menu.HasUnsavedSettings();
-		const char* status = external ? external->status.c_str() : error ? "Settings not saved" :
-		                                                       dirty     ? "Unsaved changes" :
-		                                                                   "Settings saved";
+		const char* status = external ? external->status.c_str() : error ? "CSX settings not saved" :
+		                                                       dirty     ? "Unsaved CSX settings" :
+		                                                                   "CSX settings saved";
 		const std::string detail = external ? external->detail : error ? menu.GetSettingsSaveMessage() :
 		                                                     dirty     ? "Save to keep your current choices." :
 		                                                                 "Your choices are up to date.";
@@ -250,9 +251,7 @@ namespace
 		ImGui::SetCursorScreenPos(statusStart);
 		ImGui::Dummy({ layout.statusWidth, font * footerStatusHeight });
 		Util::AddTooltip(detail.c_str());
-		const char* blockedHelp = external ? nullptr : PerformanceTuningRenderer::HasActiveMeasurements() ? "Finish or cancel the performance comparison before saving, loading or restoring settings." :
-		                                           globals::state->IsPersistentMutationBlocked()          ? "Wait for the current game save or load to finish before changing settings." :
-		                                                                                                    nullptr;
+		const char* blockedHelp = external ? nullptr : MenuUI::GetGlobalSettingsActionBlockReason(MenuUI::GlobalSettingsAction::Save);
 		const auto actionsGuard = Util::DisableGuard(blockedHelp != nullptr);
 		const auto addActionTooltip = [&](const char* help) {
 			Util::AddTooltip(blockedHelp ? blockedHelp : help, ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled);
@@ -273,22 +272,20 @@ namespace
 			if (external)
 				DrawExternalAction(0, *external, layout.contentWidth);
 			else if (SettingsActionButton(0, nullptr, layout.contentWidth))
-				globals::state->Save();
+				MenuUI::InvokeGlobalSettingsAction(MenuUI::GlobalSettingsAction::Save);
 		}
 		if (!external)
-			addActionTooltip("Save all your CSX settings.");
+			addActionTooltip(MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::Save));
 		ImGui::SetCursorScreenPos({ start.x + layout.actionsLeft + layout.actionOffsets[1].x, actionsY + layout.actionOffsets[1].y });
 		{
 			const auto secondaryStyle = Util::StyledButtonWrapper(secondary, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered), ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
 			if (external)
 				DrawExternalAction(1, *external, layout.contentWidth);
-			else if (SettingsActionButton(1, nullptr, layout.contentWidth)) {
-				globals::state->Load();
-				globals::features::llf::particleLights.GetConfigs();
-			}
+			else if (SettingsActionButton(1, nullptr, layout.contentWidth))
+				MenuUI::InvokeGlobalSettingsAction(MenuUI::GlobalSettingsAction::Load);
 		}
 		if (!external)
-			addActionTooltip("Replace current changes with your saved CSX settings.");
+			addActionTooltip(MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::Load));
 		ImGui::SetCursorScreenPos({ start.x + layout.actionsLeft + layout.actionOffsets[2].x, actionsY + layout.actionOffsets[2].y });
 		{
 			const auto outlineStyle = Util::StyledButtonWrapper({ 0, 0, 0, 0 }, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered), ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
@@ -299,12 +296,9 @@ namespace
 				if (blockedHelp)
 					addActionTooltip(blockedHelp);
 			} else {
-				if (SettingsActionButton(2, nullptr, layout.contentWidth)) {
-					std::string restoreError;
-					if (!globals::state->RestoreDefaultSettings(restoreError))
-						globals::menu->ReportSettingsSaveResult(false, std::move(restoreError));
-				}
-				addActionTooltip("Restore installed CSX defaults for the menu, shaders and loaded features. Save to keep these changes.");
+				if (SettingsActionButton(2, nullptr, layout.contentWidth))
+					MenuUI::InvokeGlobalSettingsAction(MenuUI::GlobalSettingsAction::RestoreDefaults);
+				addActionTooltip(MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::RestoreDefaults));
 			}
 		}
 		ImGui::SetCursorScreenPos({ footerStart.x, footerStart.y + height });

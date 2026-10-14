@@ -1,5 +1,6 @@
 #include "Features/LightLimitFix/ShadowCullingPolicy.h"
 #include "Features/Upscaling/NeuralRendering/ModelResolutionPolicy.h"
+#include "Menu/SettingsActions.h"
 #include "Menu/SettingsPage.h"
 #include "Utils/FeatureProfiling.h"
 #include "Utils/NumericEntry.h"
@@ -63,7 +64,12 @@ namespace globals
 		void SetUserEnabled(bool value) { enabled = value; }
 	} profilerStorage;
 	auto* profiler = &profilerStorage;
-	int shaderCacheStorage = 0;
+	struct FakeShaderCache
+	{
+		bool awaiting = false, capturing = false;
+		bool IsAwaitingMenuCloseCapture() const { return awaiting; }
+		bool IsCapturingActiveShaders() const { return capturing; }
+	} shaderCacheStorage;
 	auto* shaderCache = &shaderCacheStorage;
 	struct FakeMenu
 	{
@@ -263,6 +269,11 @@ namespace Util
 		}
 	}
 	bool HoverTooltipWrapper() { return false; }
+	const char* GetClearShaderCacheTooltip() { return "Clear compiled shaders"; }
+	int cacheRequests = 0;
+	int ResolveShaderCacheClearScope() { return 0; }
+	void RequestClearShaderCacheConfirmation(int) { ++cacheRequests; }
+	bool ButtonWithFlash(const char* label, ImVec2 size) { return ImGui::Button(label, size); }
 	std::map<std::string, ImRect> controls;
 	std::map<std::string, ImGuiHoveredFlags> tooltipFlags;
 	void AddTooltip(const char* help, ImGuiHoveredFlags flags = 0)
@@ -380,6 +391,7 @@ bool TryGetDisplayCpuMs(const ProfilingRenderer::PerformanceTimingSummary& summa
 	return summary.hasGameCpu;
 }
 #include "settings_footer_under_test.h"
+#include "settings_global_actions_under_test.h"
 std::vector<Feature*> BuildPerformanceFeatureList() { return {}; }
 std::vector<std::string> BuildPerformanceFeaturePrefixes(const std::vector<Feature*>& features)
 {
@@ -2206,7 +2218,7 @@ int main()
 						const auto available = ImGui::GetContentRegionAvail().x;
 						const auto height = SettingsFooterHeight("Home");
 						DrawSettingsFooter("Home");
-						for (const char* help : { "Save all your CSX settings.", "Replace current changes with your saved CSX settings.", "Restore installed CSX defaults for the menu, shaders and loaded features. Save to keep these changes." }) {
+						for (const char* help : { MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::Save), MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::Load), MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::RestoreDefaults) }) {
 							const auto bounds = Util::controls.at(help);
 							require(bounds.Min.x > start.x + layout.backgroundLeft && bounds.Max.x < start.x + available, "all footer actions are inset from the aligned outer edges");
 							require(bounds.Max.y < start.y + height, "every footer action fits the reserved height");
@@ -2225,18 +2237,18 @@ int main()
 			frame(draw);
 			frame(draw);
 			const auto calls = globals::stateStorage.applies;
-			click(Util::controls.at("Restore installed CSX defaults for the menu, shaders and loaded features. Save to keep these changes.").GetCenter(), draw);
+			click(Util::controls.at(MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::RestoreDefaults)).GetCenter(), draw);
 			frame(draw);
 			require(globals::stateStorage.applies == calls + 1, "Home Restore defaults actually invokes the runtime restore once");
 			globals::stateStorage.applyFailures = 1;
-			click(Util::controls.at("Restore installed CSX defaults for the menu, shaders and loaded features. Save to keep these changes.").GetCenter(), draw);
+			click(Util::controls.at(MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::RestoreDefaults)).GetCenter(), draw);
 			require(globals::menuStorage.messageError && !globals::menuStorage.message.empty(), "restoration failures remain visible in the footer");
 			globals::menuStorage.ClearSettingsSaveResult();
 			frame(draw);
 			const std::array actionCentres{
-				Util::controls.at("Save all your CSX settings.").GetCenter(),
-				Util::controls.at("Replace current changes with your saved CSX settings.").GetCenter(),
-				Util::controls.at("Restore installed CSX defaults for the menu, shaders and loaded features. Save to keep these changes.").GetCenter()
+				Util::controls.at(MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::Save)).GetCenter(),
+				Util::controls.at(MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::Load)).GetCenter(),
+				Util::controls.at(MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::RestoreDefaults)).GetCenter()
 			};
 			for (const bool measurement : { false, true }) {
 				globals::stateStorage.blocked = !measurement;
@@ -2248,6 +2260,28 @@ int main()
 			}
 			globals::stateStorage.blocked = false;
 			PerformanceTuningRenderer::measuring = false;
+		}
+		{
+			for (const bool capturing : { false, true }) {
+				globals::shaderCacheStorage.awaiting = !capturing;
+				globals::shaderCacheStorage.capturing = capturing;
+				const auto before = Util::cacheRequests;
+				MenuUI::InvokeGlobalSettingsAction(MenuUI::GlobalSettingsAction::ClearShaderCache);
+				require(Util::cacheRequests == before, "cache clear cannot interrupt pending or active capture");
+			}
+			globals::shaderCacheStorage.awaiting = globals::shaderCacheStorage.capturing = false;
+			const auto before = Util::cacheRequests;
+			MenuUI::InvokeGlobalSettingsAction(MenuUI::GlobalSettingsAction::ClearShaderCache);
+			require(Util::cacheRequests == before + 1, "available cache action opens confirmation");
+			float sliderValue = .5f;
+			frame([&] {
+				ImGui::PushStyleVar(ImGuiStyleVar_GrabMinSize, 64.0f);
+				ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 4));
+				Util::Widgets::SliderFloat("Large handle", &sliderValue, 0, 1);
+				require(ImGui::GetItemRectSize().y >= 64, "large theme handle fits the slider hit area");
+				require(ImGui::GetStyle().GrabMinSize == 64 && ImGui::GetStyle().FramePadding.y == 4, "slider restores caller style");
+				ImGui::PopStyleVar(2);
+			});
 		}
 		{
 			for (const bool enabled : { false, true }) {

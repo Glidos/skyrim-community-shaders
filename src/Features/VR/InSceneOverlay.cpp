@@ -17,6 +17,7 @@
 #include "Menu.h"
 #include "State.h"
 #include "Util.h"
+#include "Utils/DeviceContextState.h"
 #include "Utils/VRUtils.h"
 #include <DirectXMath.h>
 #include <SimpleMath.h>
@@ -216,43 +217,6 @@ namespace
 		}
 		return (support & D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW) != 0;
 	}
-
-	class ScopedDeviceContextState
-	{
-	public:
-		ScopedDeviceContextState(ID3D11DeviceContext1* a_context, ID3DDeviceContextState* a_isolatedState) :
-			context(a_context)
-		{
-			if (!context || !a_isolatedState)
-				return;
-
-			context->SwapDeviceContextState(a_isolatedState, previousState.put());
-			active = true;
-		}
-
-		ScopedDeviceContextState(const ScopedDeviceContextState&) = delete;
-		ScopedDeviceContextState& operator=(const ScopedDeviceContextState&) = delete;
-
-		~ScopedDeviceContextState()
-		{
-			Restore();
-		}
-
-		explicit operator bool() const noexcept { return active; }
-
-		void Restore() noexcept
-		{
-			if (!active)
-				return;
-			active = false;
-			context->SwapDeviceContextState(previousState.get(), nullptr);
-		}
-
-	private:
-		ID3D11DeviceContext1* context = nullptr;
-		winrt::com_ptr<ID3DDeviceContextState> previousState;
-		bool active = false;
-	};
 
 	bool EnsureMenuTextureSRV(
 		ID3D11Texture2D* texture,
@@ -2223,23 +2187,8 @@ void VR::InitInSceneResources()
 		return;
 	}
 
-	winrt::com_ptr<ID3D11Device1> device1;
-	const auto context1Result = context->QueryInterface(__uuidof(ID3D11DeviceContext1), temp.immediateContext.put_void());
-	const auto device1Result = device->QueryInterface(__uuidof(ID3D11Device1), device1.put_void());
-	if (SUCCEEDED(context1Result) && SUCCEEDED(device1Result)) {
-		const D3D_FEATURE_LEVEL featureLevel = device->GetFeatureLevel();
-		const UINT contextFlags = device->GetCreationFlags() & D3D11_CREATE_DEVICE_SINGLETHREADED;
-		if (FAILED(device1->CreateDeviceContextState(
-				contextFlags,
-				&featureLevel,
-				1,
-				D3D11_SDK_VERSION,
-				__uuidof(ID3D11Device),
-				nullptr,
-				temp.overlayContextState.put()))) {
-			temp.immediateContext = nullptr;
-		}
-	}
+	Util::CreateIsolatedDeviceContextState(device, context, temp.immediateContext,
+		temp.overlayContextState, "VR::InSceneOverlayContext");
 	if (!temp.immediateContext || !temp.overlayContextState) {
 		logger::warn("VR: Exact D3D11 state isolation is unavailable; direct in-scene overlay rendering will remain disabled");
 	}
@@ -2753,7 +2702,7 @@ void VR::RenderInSceneOverlay(vr::EVREye eye, ID3D11Texture2D* targetTexture, co
 		return;
 	}
 
-	ScopedDeviceContextState isolatedGraphicsState(
+	Util::ScopedDeviceContextState isolatedGraphicsState(
 		inSceneResources.immediateContext.get(),
 		inSceneResources.overlayContextState.get());
 	if (!isolatedGraphicsState) {

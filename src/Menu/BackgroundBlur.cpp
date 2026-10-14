@@ -6,6 +6,8 @@
 #include "../Globals.h"
 #include "../State.h"
 #include "../Util.h"
+#include "GpuPass.h"
+#include "Utils/DeviceContextState.h"
 
 #include <algorithm>
 #include <cmath>
@@ -31,6 +33,8 @@ namespace BackgroundBlur
 		bool enabled = false;
 
 		// DirectX resources (RAII managed)
+		winrt::com_ptr<ID3D11DeviceContext1> isolatedContext;
+		winrt::com_ptr<ID3DDeviceContextState> isolatedState;
 		winrt::com_ptr<ID3D11VertexShader> vertexShader;
 		winrt::com_ptr<ID3D11PixelShader> horizontalPixelShader;
 		winrt::com_ptr<ID3D11PixelShader> verticalPixelShader;
@@ -71,6 +75,10 @@ namespace BackgroundBlur
 
 	bool Initialize()
 	{
+		// Context-state creation changes API detection even when no blur is rendered.
+		if (globals::game::isVR)
+			return true;
+
 		std::lock_guard<std::mutex> lock(resourceMutex);
 
 		if (initialized || initializationFailed) {
@@ -83,6 +91,12 @@ namespace BackgroundBlur
 			return false;
 		}
 
+		if (!Util::CreateIsolatedDeviceContextState(device, globals::d3d::context, isolatedContext, isolatedState, "Menu::BlurContext")) {
+			logger::warn("Background blur disabled: exact D3D11 state isolation is unavailable");
+			initializationFailed = true;
+			return false;
+		}
+
 		// Compile vertex shader from horizontal blur file (both share same vertex shader)
 		vertexShader.attach(static_cast<ID3D11VertexShader*>(Util::CompileShader(L"Data\\Shaders\\Menu\\BackgroundBlurHorizontal.hlsl", {}, "vs_5_0", "VS_Main")));
 		if (!vertexShader) {
@@ -90,6 +104,7 @@ namespace BackgroundBlur
 			initializationFailed = true;
 			return false;
 		}
+		Util::SetResourceName(vertexShader.get(), "Menu::BlurVS");
 
 		// Compile horizontal pixel shader
 		horizontalPixelShader.attach(static_cast<ID3D11PixelShader*>(Util::CompileShader(L"Data\\Shaders\\Menu\\BackgroundBlurHorizontal.hlsl", {}, "ps_5_0", "PS_Main")));
@@ -98,6 +113,7 @@ namespace BackgroundBlur
 			initializationFailed = true;
 			return false;
 		}
+		Util::SetResourceName(horizontalPixelShader.get(), "Menu::BlurHorizontalPS");
 
 		// Compile vertical pixel shader
 		verticalPixelShader.attach(static_cast<ID3D11PixelShader*>(Util::CompileShader(L"Data\\Shaders\\Menu\\BackgroundBlurVertical.hlsl", {}, "ps_5_0", "PS_Main")));
@@ -106,6 +122,7 @@ namespace BackgroundBlur
 			initializationFailed = true;
 			return false;
 		}
+		Util::SetResourceName(verticalPixelShader.get(), "Menu::BlurVerticalPS");
 
 		// Create constant buffer
 		D3D11_BUFFER_DESC bufferDesc = {};
@@ -119,6 +136,7 @@ namespace BackgroundBlur
 			initializationFailed = true;
 			return false;
 		}
+		Util::SetResourceName(constantBuffer.get(), "Menu::BlurConstants");
 
 		// Create sampler state
 		D3D11_SAMPLER_DESC samplerDesc = {};
@@ -136,6 +154,7 @@ namespace BackgroundBlur
 			initializationFailed = true;
 			return false;
 		}
+		Util::SetResourceName(samplerState.get(), "Menu::BlurSampler");
 
 		// Create blend state
 		D3D11_BLEND_DESC blendDesc = {};
@@ -154,11 +173,12 @@ namespace BackgroundBlur
 			initializationFailed = true;
 			return false;
 		}
+		Util::SetResourceName(blendState.get(), "Menu::BlurBlend");
 
 		// Create scissor-enabled rasterizer state
 		D3D11_RASTERIZER_DESC rsDesc = {};
 		rsDesc.FillMode = D3D11_FILL_SOLID;
-		rsDesc.CullMode = D3D11_CULL_BACK;
+		rsDesc.CullMode = D3D11_CULL_NONE;
 		rsDesc.FrontCounterClockwise = FALSE;
 		rsDesc.DepthClipEnable = TRUE;
 		rsDesc.ScissorEnable = TRUE;
@@ -169,6 +189,7 @@ namespace BackgroundBlur
 			initializationFailed = true;
 			return false;
 		}
+		Util::SetResourceName(scissorRasterizerState.get(), "Menu::BlurScissor");
 
 		initialized = true;
 		return true;
@@ -219,6 +240,7 @@ namespace BackgroundBlur
 			logger::error("Failed to create downsample texture");
 			return;
 		}
+		Util::SetResourceName(downsampleTexture.get(), "Menu::BlurDownsample");
 
 		hr = device->CreateRenderTargetView(downsampleTexture.get(), nullptr, downsampleRTV.put());
 		if (FAILED(hr)) {
@@ -226,6 +248,7 @@ namespace BackgroundBlur
 			downsampleTexture = nullptr;
 			return;
 		}
+		Util::SetResourceName(downsampleRTV.get(), "Menu::BlurDownsample RTV");
 
 		hr = device->CreateShaderResourceView(downsampleTexture.get(), nullptr, downsampleSRV.put());
 		if (FAILED(hr)) {
@@ -234,6 +257,7 @@ namespace BackgroundBlur
 			downsampleRTV = nullptr;
 			return;
 		}
+		Util::SetResourceName(downsampleSRV.get(), "Menu::BlurDownsample SRV");
 
 		// Create first blur texture (at downsampled resolution)
 		hr = device->CreateTexture2D(&texDesc, nullptr, blurTexture1.put());
@@ -244,6 +268,7 @@ namespace BackgroundBlur
 			downsampleSRV = nullptr;
 			return;
 		}
+		Util::SetResourceName(blurTexture1.get(), "Menu::BlurHorizontal");
 
 		// Create second blur texture
 		hr = device->CreateTexture2D(&texDesc, nullptr, blurTexture2.put());
@@ -255,6 +280,7 @@ namespace BackgroundBlur
 			downsampleSRV = nullptr;
 			return;
 		}
+		Util::SetResourceName(blurTexture2.get(), "Menu::BlurVertical");
 
 		// Create render target views
 		hr = device->CreateRenderTargetView(blurTexture1.get(), nullptr, blurRTV1.put());
@@ -267,6 +293,7 @@ namespace BackgroundBlur
 			downsampleSRV = nullptr;
 			return;
 		}
+		Util::SetResourceName(blurRTV1.get(), "Menu::BlurHorizontal RTV");
 
 		hr = device->CreateRenderTargetView(blurTexture2.get(), nullptr, blurRTV2.put());
 		if (FAILED(hr)) {
@@ -279,6 +306,7 @@ namespace BackgroundBlur
 			downsampleSRV = nullptr;
 			return;
 		}
+		Util::SetResourceName(blurRTV2.get(), "Menu::BlurVertical RTV");
 
 		// Create shader resource views
 		hr = device->CreateShaderResourceView(blurTexture1.get(), nullptr, blurSRV1.put());
@@ -293,6 +321,7 @@ namespace BackgroundBlur
 			downsampleSRV = nullptr;
 			return;
 		}
+		Util::SetResourceName(blurSRV1.get(), "Menu::BlurHorizontal SRV");
 
 		hr = device->CreateShaderResourceView(blurTexture2.get(), nullptr, blurSRV2.put());
 		if (FAILED(hr)) {
@@ -307,6 +336,7 @@ namespace BackgroundBlur
 			downsampleSRV = nullptr;
 			return;
 		}
+		Util::SetResourceName(blurSRV2.get(), "Menu::BlurVertical SRV");
 
 		textureWidth = width;
 		textureHeight = height;
@@ -327,7 +357,7 @@ namespace BackgroundBlur
 			return;
 		}
 
-		if (!blurTexture1 || !blurTexture2) {
+		if (!downsampleRTV || !downsampleSRV || !blurRTV1 || !blurRTV2 || !blurSRV1 || !blurSRV2) {
 			return;
 		}
 
@@ -335,25 +365,19 @@ namespace BackgroundBlur
 		D3D11_TEXTURE2D_DESC sourceDesc;
 		sourceTexture->GetDesc(&sourceDesc);
 
-		// Create SRV for source
-		ID3D11ShaderResourceView* sourceSRV = nullptr;
-		HRESULT hr = globals::d3d::device->CreateShaderResourceView(sourceTexture, nullptr, &sourceSRV);
-		if (FAILED(hr)) {
+		winrt::com_ptr<ID3D11ShaderResourceView> sourceSRV;
+		if (FAILED(globals::d3d::device->CreateShaderResourceView(sourceTexture, nullptr, sourceSRV.put()))) {
 			logger::error("Failed to create source SRV for blur");
 			return;
 		}
-
-		// Save current state
-		ID3D11RenderTargetView* originalRTV = nullptr;
-		ID3D11DepthStencilView* originalDSV = nullptr;
-		context->OMGetRenderTargets(1, &originalRTV, &originalDSV);
-
-		D3D11_VIEWPORT originalViewport;
-		UINT numViewports = 1;
-		context->RSGetViewports(&numViewports, &originalViewport);
-
-		ID3D11RasterizerState* originalRS = nullptr;
-		context->RSGetState(&originalRS);
+		Util::SetResourceName(sourceSRV.get(), "Menu::BlurSource SRV");
+		Util::ScopedDeviceContextState stateGuard(isolatedContext.get(), isolatedState.get());
+		if (!stateGuard)
+			return;
+		CS_GPU_PASS("Menu::BackgroundBlur");
+		context->ClearState();
+		context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		auto sourceSRVPtr = sourceSRV.get();
 
 		// Downsample source to quarter resolution with bilinear filtering
 		D3D11_VIEWPORT downsampleViewport = {};
@@ -382,7 +406,7 @@ namespace BackgroundBlur
 
 		context->PSSetConstantBuffers(0, 1, &constantBufferPtr);
 		context->PSSetShader(horizontalPixelShader.get(), nullptr, 0);
-		context->PSSetShaderResources(0, 1, &sourceSRV);
+		context->PSSetShaderResources(0, 1, &sourceSRVPtr);
 		context->Draw(3, 0);
 
 		ID3D11ShaderResourceView* nullSRV = nullptr;
@@ -434,7 +458,8 @@ namespace BackgroundBlur
 
 		// Final composition: upscale from quarter-res with scissor test
 		// Bilinear sampler smooths the upscale automatically
-		context->RSSetViewports(1, &originalViewport);
+		const D3D11_VIEWPORT outputViewport{ 0, 0, static_cast<float>(sourceDesc.Width), static_cast<float>(sourceDesc.Height), 0, 1 };
+		context->RSSetViewports(1, &outputViewport);
 
 		D3D11_RECT scissorRect;
 		scissorRect.left = static_cast<LONG>((std::max)(0.0f, menuMin.x));
@@ -454,29 +479,14 @@ namespace BackgroundBlur
 		context->PSSetShaderResources(0, 1, &srv2Ptr);
 		context->Draw(3, 0);
 		context->PSSetShaderResources(0, 1, &nullSRV);
-
-		// Restore state
-		context->OMSetRenderTargets(1, &originalRTV, originalDSV);
-		context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
-		context->PSSetShaderResources(0, 1, &nullSRV);
-		context->RSSetState(originalRS);
-		context->RSSetScissorRects(0, nullptr);
-
-		// Cleanup
-		if (sourceSRV)
-			sourceSRV->Release();
-		if (originalRTV)
-			originalRTV->Release();
-		if (originalDSV)
-			originalDSV->Release();
-		if (originalRS)
-			originalRS->Release();
 	}
 
 	void Cleanup()
 	{
 		std::lock_guard<std::mutex> lock(resourceMutex);
 
+		isolatedState = nullptr;
+		isolatedContext = nullptr;
 		vertexShader = nullptr;
 		horizontalPixelShader = nullptr;
 		verticalPixelShader = nullptr;
@@ -529,14 +539,10 @@ namespace BackgroundBlur
 
 	void RenderBackgroundBlur()
 	{
-		if (!enabled || globals::game::isVR) {
+		if (!IsEnabled() || initializationFailed) {
 			return;
 		}
 		if (!globals::state || !globals::state->startupMenuBlurSourceReady) {
-			return;
-		}
-
-		if (!initialized || initializationFailed) {
 			return;
 		}
 
@@ -546,28 +552,15 @@ namespace BackgroundBlur
 			return;
 		}
 
-		// Get current render target
-		ID3D11RenderTargetView* currentRTV = nullptr;
-		context->OMGetRenderTargets(1, &currentRTV, nullptr);
-
-		if (!currentRTV) {
+		winrt::com_ptr<ID3D11RenderTargetView> currentRTV;
+		context->OMGetRenderTargets(1, currentRTV.put(), nullptr);
+		if (!currentRTV)
 			return;
-		}
-
-		// Get render target texture and its dimensions
-		ID3D11Resource* currentRT = nullptr;
-		currentRTV->GetResource(&currentRT);
-
-		ID3D11Texture2D* currentTexture = nullptr;
-		HRESULT hr = currentRT->QueryInterface(__uuidof(ID3D11Texture2D), (void**)&currentTexture);
-
-		if (FAILED(hr) || !currentTexture) {
-			if (currentRT)
-				currentRT->Release();
-			if (currentRTV)
-				currentRTV->Release();
+		winrt::com_ptr<ID3D11Resource> currentRT;
+		currentRTV->GetResource(currentRT.put());
+		auto currentTexture = currentRT.try_as<ID3D11Texture2D>();
+		if (!currentTexture)
 			return;
-		}
 
 		D3D11_TEXTURE2D_DESC texDesc;
 		currentTexture->GetDesc(&texDesc);
@@ -582,9 +575,6 @@ namespace BackgroundBlur
 		// Find ImGui windows that need blur
 		ImGuiContext* ctx = ImGui::GetCurrentContext();
 		if (!ctx || ctx->Windows.Size == 0) {
-			currentTexture->Release();
-			currentRT->Release();
-			currentRTV->Release();
 			return;
 		}
 
@@ -623,13 +613,8 @@ namespace BackgroundBlur
 			ImVec2 windowMax = windowRect.Max;
 
 			// Perform blur for this window area
-			PerformBlur(currentTexture, currentRTV, windowMin, windowMax);
+			PerformBlur(currentTexture.get(), currentRTV.get(), windowMin, windowMax);
 		}
-
-		// Cleanup
-		currentTexture->Release();
-		currentRT->Release();
-		currentRTV->Release();
 	}
 
 }  // namespace BackgroundBlur
