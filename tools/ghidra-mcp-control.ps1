@@ -12,6 +12,9 @@ param(
     [ValidatePattern("^[A-Za-z0-9_.-]+$")]
     [string] $ProjectName = "SkyrimVRMcp",
     [string] $ProgramPath,
+    [switch] $SkipAnalysis,
+    [ValidateSet("analyze-headless", "pyghidra-headless")]
+    [string] $LauncherMode = "analyze-headless",
     [ValidatePattern('^[^\\/:*?"<>|]+$')]
     [string] $ProgramName = "SkyrimVR.exe",
     [ValidateRange(1, 65535)]
@@ -584,11 +587,34 @@ function New-StatusResult {
     $activeProgramPath = if ($Probe.activeProgram) {
         [string] $Probe.activeProgram.path
     } else { $null }
+    if ($env:OS -eq "Windows_NT" -and
+        $activeProgramPath -match '^/[A-Za-z]:[/\\]') {
+        # Ghidra stores drive paths with the leading slash from a file URI.
+        $activeProgramPath = $activeProgramPath.Substring(1)
+    }
     $activeProgramSha256 = if ($Probe.activeProgram) {
-        [string] $Probe.activeProgram.sha256
+        [string] (Get-OptionalProperty -Value $Probe.activeProgram -Name "sha256")
     } else { $null }
+    $programHashVerified = $false
+    $programHashVerificationSource = $null
+    if ($expectedProgramSha256 -and $activeProgramSha256) {
+        $programHashVerified = $activeProgramSha256.Equals(
+            $expectedProgramSha256,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+        $programHashVerificationSource = "active-program-metadata"
+    } elseif ($expectedProgramPath -and $expectedProgramSha256 -and
+        $ownedListener -eq $true -and $artifactMatchesImport -eq $true -and
+        (Test-Path -LiteralPath $expectedProgramPath -PathType Leaf) -and
+        (Test-SessionArtifactMatchesExpected -Session $Session) -and
+        $Probe.activeProgram -and
+        [string] $Probe.activeProgram.name -eq [string] $Session.programName) {
+        # list_binaries omits hashes; bind the owned import to its artifact receipt.
+        $programHashVerified = $true
+        $programHashVerificationSource = "managed-import-receipt"
+    }
     $programMatchesExpectation = $null
-    if ($expectedProgramPath) {
+    if ($expectedProgramPath -and $Probe.binaryListReady) {
         $programMatchesExpectation = $Probe.binaryListReady -and
             $artifactMatchesImport -ne $false -and
             $activeProgramPath -and
@@ -596,11 +622,7 @@ function New-StatusResult {
                 [IO.Path]::GetFullPath($expectedProgramPath),
                 [StringComparison]::OrdinalIgnoreCase
             ) -and
-            (-not $expectedProgramSha256 -or
-                ($activeProgramSha256 -and $activeProgramSha256.Equals(
-                    $expectedProgramSha256,
-                    [StringComparison]::OrdinalIgnoreCase
-                )))
+            (-not $expectedProgramSha256 -or $programHashVerified)
         if (-not $programMatchesExpectation) {
             $effectiveOk = $false
             $resultErrors.Add(
@@ -643,6 +665,7 @@ function New-StatusResult {
         } else { $null })
         programMatchesExpectation = $programMatchesExpectation
         artifactMatchesImport = $artifactMatchesImport
+        programHashVerificationSource = $programHashVerificationSource
         artifactRefresh = $(if ($Session) {
             Get-OptionalProperty -Value $Session -Name "artifactRefresh"
         } else { $null })
@@ -757,6 +780,12 @@ try {
                 $ProjectName = $savedProjectName
             }
         }
+        if (-not $PSBoundParameters.ContainsKey("LauncherMode")) {
+            $savedLauncherMode = Get-OptionalProperty -Value $session -Name "launcherMode"
+            if ($savedLauncherMode) {
+                $LauncherMode = $savedLauncherMode
+            }
+        }
         if (-not $PSBoundParameters.ContainsKey("ProgramPath")) {
             $ProgramPath = Get-OptionalProperty `
                 -Value $session `
@@ -869,6 +898,11 @@ try {
         return
     }
 
+    if ($trackedProcess -and $PSBoundParameters.ContainsKey("LauncherMode") -and
+        $LauncherMode -ne (Get-OptionalProperty -Value $session -Name "launcherMode")) {
+        throw "Stop the managed Ghidra session before changing its launcher mode."
+    }
+
     if ($trackedProcess -and $programPathExplicit -and
         -not (Test-SessionArtifactMatchesExpected -Session $session)) {
         $artifactRefresh = [pscustomobject][ordered]@{
@@ -964,16 +998,16 @@ try {
     $resolvedGhidraRoot = Resolve-ExistingDirectory `
         -Path $GhidraInstallDir `
         -Description "Ghidra installation"
-    $analyzeHeadlessName = if ($env:OS -eq "Windows_NT") {
-        "analyzeHeadless.bat"
+    $analyzeHeadlessName = if ($LauncherMode -eq "pyghidra-headless") {
+        if ($env:OS -eq "Windows_NT") { "pyghidraRun.bat" } else { "pyghidraRun" }
     } else {
-        "analyzeHeadless"
+        if ($env:OS -eq "Windows_NT") { "analyzeHeadless.bat" } else { "analyzeHeadless" }
     }
     $analyzeHeadless = Join-Path `
         $resolvedGhidraRoot `
         "support\$analyzeHeadlessName"
     if (-not (Test-Path -LiteralPath $analyzeHeadless -PathType Leaf)) {
-        throw "Ghidra AnalyzeHeadless launcher was not found: $analyzeHeadless"
+        throw "Ghidra headless launcher was not found: $analyzeHeadless"
     }
 
     $resolvedJavaHome = Resolve-JavaHome -RequestedJavaHome $JavaHome
@@ -1050,6 +1084,9 @@ try {
     )
     $mode = if (-not $projectExists -or $refreshProgram) { "import" } else { "process" }
     $arguments = [Collections.Generic.List[string]]::new()
+    if ($LauncherMode -eq "pyghidra-headless") {
+        $arguments.Add("--headless")
+    }
     $arguments.Add($resolvedProjectDirectory)
     $arguments.Add($ProjectName)
     if ($mode -eq "import") {
@@ -1061,6 +1098,8 @@ try {
     } else {
         $arguments.Add("-process")
         $arguments.Add($ProgramName)
+    }
+    if ($mode -eq "process" -or $SkipAnalysis) {
         $arguments.Add("-noanalysis")
     }
     $arguments.Add("-scriptPath")
@@ -1075,7 +1114,7 @@ try {
     $launch = [ordered]@{
         schemaVersion = 1
         launcher = $analyzeHeadless
-        launcherMode = "analyze-headless"
+        launcherMode = $LauncherMode
         arguments = @($arguments)
         javaHome = $resolvedJavaHome
         workingDirectory = $repositoryRoot
@@ -1092,6 +1131,8 @@ try {
     $startInfo.WorkingDirectory = $repositoryRoot
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
+    # Headless launchers must see EOF instead of waiting for console input.
+    $startInfo.RedirectStandardInput = $true
     foreach ($argument in @(
         "-NoLogo",
         "-NoProfile",
@@ -1108,6 +1149,7 @@ try {
     if (-not $process.Start()) {
         throw "Unable to start the Ghidra headless host."
     }
+    $process.StandardInput.Close()
 
     $session = [ordered]@{
         schemaVersion = 1
@@ -1124,7 +1166,7 @@ try {
         programSha256 = $resolvedProgramSha256
         artifactRefresh = $artifactRefresh
         programName = $ProgramName
-        launcherMode = "analyze-headless"
+        launcherMode = $LauncherMode
         mode = $mode
         completionFile = $completionFile
         stdoutLog = $stdoutLog
