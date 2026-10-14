@@ -432,6 +432,8 @@ public:
 	[[nodiscard]] float GetEffectiveHMDMenuScale() const;
 	/** Set bounded HMD distance and recenter a fixed-world menu after an edit. */
 	void SetMenuDistance(float a_metres);
+	/** Restore menu placement and desktop geometry without changing rendering settings. */
+	void ResetMenuLayout();
 	/** Beam visibility follows tracked hands independently of menu intersections. */
 	[[nodiscard]] bool ShouldShowWandBeam(ControllerDevice a_controller) const;
 	/** Return the locked or saved HMD-relative offset. */

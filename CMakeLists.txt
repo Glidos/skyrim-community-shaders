@@ -1803,6 +1803,8 @@ if(BUILD_CONTROLLER_TESTS)
             "${_settings_ui_dir}/settings_widget_under_test.h"
             "${_settings_ui_dir}/settings_widget_declarations.h"
             "${_settings_ui_dir}/settings_lighting_pages_under_test.h"
+            "${_settings_ui_dir}/settings_shadow_culling_under_test.h"
+            "${_settings_ui_dir}/settings_llf_shadows_under_test.h"
             "${_settings_ui_dir}/settings_model_resolution_under_test.h"
             "${_settings_ui_dir}/menu_settings_under_test.h"
             "${_settings_ui_dir}/settings_footer_under_test.h"
@@ -1841,6 +1843,8 @@ if(BUILD_CONTROLLER_TESTS)
             src/Menu.h
             src/Menu.cpp
             src/Features/VolumetricLighting.cpp
+            src/Features/LightLimitFix.cpp
+            src/Features/LightLimitFix/ShadowCulling.cpp
             src/Features/FoliageLighting.cpp
             src/Features/FoliageLighting.h
             src/Features/SubsurfaceScattering.cpp
@@ -1864,6 +1868,8 @@ if(BUILD_CONTROLLER_TESTS)
             "${_settings_ui_dir}/settings_widget_under_test.h"
             "${_settings_ui_dir}/settings_widget_declarations.h"
             "${_settings_ui_dir}/settings_lighting_pages_under_test.h"
+            "${_settings_ui_dir}/settings_shadow_culling_under_test.h"
+            "${_settings_ui_dir}/settings_llf_shadows_under_test.h"
             "${_settings_ui_dir}/settings_model_resolution_under_test.h"
             "${_settings_ui_dir}/menu_settings_under_test.h"
             "${_settings_ui_dir}/settings_footer_under_test.h"

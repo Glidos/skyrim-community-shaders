@@ -965,7 +965,7 @@ bool VR::ShouldShowAutoHideOverlay() const
 	                      globals::state &&
 	                      globals::state->isMainMenuOpen &&
 	                      globals::menu &&
-	                      !globals::menu->IsEnabled;
+	                      !globals::menu->IsMenuSessionOpen();
 	if (!eligible) {
 		return false;
 	}
@@ -987,7 +987,7 @@ void VR::MarkAutoHideOverlayPresented()
 		!globals::state ||
 		!globals::state->isMainMenuOpen ||
 		!globals::menu ||
-		globals::menu->IsEnabled) {
+		globals::menu->IsMenuSessionOpen()) {
 		return;
 	}
 
@@ -997,7 +997,7 @@ void VR::MarkAutoHideOverlayPresented()
 bool VR::ShouldPresentOverlayInHeadset() const
 {
 	return globals::menu &&
-	       (globals::menu->IsEnabled ||
+	       (globals::menu->IsMenuSessionOpen() ||
 			   IsClosedMenuStatusOverlayActive() ||
 			   globals::menu->overlayVisible ||
 			   ShouldShowAutoHideOverlay() ||
@@ -1533,19 +1533,27 @@ namespace
 			ImGui::TextUnformatted("Use thumbstick-driven cursor navigation for the CSX menu.");
 		}
 
-		ImGui::SameLine();
+		bool wandNavigation = vr.CanUseWandPointing();
+		const std::array<MenuUI::ToggleChoice, 2> wandOptions{ {
+			{ "Wand Navigation", &wandNavigation, "Use controller ray-cast pointing for the CSX menu." },
+			{ "Show Both Lasers", &settings.ShowBothWandLasers, "Show both controller lasers in Wand Navigation. Either hand can click; a drag stays with the hand that started it." },
+		} };
+		{
+			MenuUI::DetailGrid wandGrid("WandNavigationOptions", 2, MenuUI::ToggleColumnWidth(wandOptions));
+			wandGrid.Next();
+			if (Util::Widgets::Checkbox(wandOptions[0].label, wandOptions[0].value))
+				setWandNavigation(true);
+			Util::AddTooltip(wandOptions[0].tooltip);
 
-		bool wandNavigation = effectiveWandNavigation;
-		if (Util::Widgets::Checkbox("Wand Navigation", &wandNavigation)) {
-			setWandNavigation(true);
-		}
-		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::TextUnformatted("Use controller ray-cast pointing for the CSX menu.");
+			wandGrid.Next();
+			{
+				auto disabled = Util::DisableGuard(!vr.CanUseWandPointing());
+				Util::Widgets::Checkbox(wandOptions[1].label, wandOptions[1].value);
+			}
+			Util::AddTooltip(wandOptions[1].tooltip, ImGuiHoveredFlags_AllowWhenDisabled);
 		}
 
-		if (effectiveWandNavigation) {
-			Util::Widgets::Checkbox("Show Both Lasers", &settings.ShowBothWandLasers);
-			Util::AddTooltip("Show both controller lasers. Either hand can click; a drag stays with the hand that started it.");
+		if (vr.CanUseWandPointing()) {
 			ImGui::SetNextItemWidth(220.0f);
 			Util::Widgets::SliderFloatOnRelease(
 				"Wand Aim Pitch Trim",
@@ -1772,7 +1780,7 @@ namespace
 		if (Util::Widgets::Checkbox("Unlock Menu Position and Size", &layoutUnlocked))
 			vr.SetMenuLayoutUnlocked(layoutUnlocked);
 		if (auto _tt = Util::HoverTooltipWrapper()) {
-			ImGui::TextWrapped("Unlock desktop move/resize/docking and saved HMD placement/grip dragging. Relocking keeps saved HMD settings.");
+			ImGui::TextWrapped("Unlock desktop move/resize/docking with the mouse, and saved HMD placement/grip dragging. Relocking keeps saved HMD settings.");
 		}
 	}
 
@@ -1791,8 +1799,16 @@ namespace
 			if (!settings.UnlockMenuPositionAndSize) {
 				ImGui::TextWrapped("The headset menu opens 2.25 metres ahead at eye height. It remains vertical and turns to face you.");
 			} else {
+				const bool showOnHMD = settings.attachMode == VR::Settings::OverlayAttachMode::HMDOnly ||
+				                       settings.attachMode == VR::Settings::OverlayAttachMode::Both;
+				if (showOnHMD) {
+					float distance = -settings.VRMenuOffsetZ;
+					if (Util::Widgets::SliderFloatOnRelease("Menu Distance", &distance, VR::Config::kMinMenuDistance, VR::Config::kMaxMenuDistance, "%.2f m", ImGuiSliderFlags_AlwaysClamp))
+						vr.SetMenuDistance(distance);
+					Util::AddTooltip("Moves the headset menu while preserving its apparent size. Applies when released.");
+				}
 				Util::Widgets::SliderFloatOnRelease("Menu Scale", &settings.VRMenuScale, VR::Config::kMinMenuScale, VR::Config::kMaxMenuScale, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-				ImGui::TextWrapped("Move/resize the desktop window directly. Grip-drag the HMD menu; Menu Scale sets its size.");
+				ImGui::TextWrapped("Move/resize the desktop window with the mouse. Grip-drag the HMD menu; Menu Scale sets its size.");
 				Util::Widgets::Checkbox("Enable Controller Grip Drag", &settings.EnableDragToReposition);
 
 				const char* positioningMethods[] = { "HMD Relative", "Fixed World Position" };
@@ -1809,14 +1825,6 @@ namespace
 					vr.ResetMenuInputRuntimeState();
 				}
 
-				const bool showOnHMD = settings.attachMode == VR::Settings::OverlayAttachMode::HMDOnly ||
-				                       settings.attachMode == VR::Settings::OverlayAttachMode::Both;
-				if (showOnHMD) {
-					float distance = -settings.VRMenuOffsetZ;
-					if (Util::Widgets::SliderFloatOnRelease("Menu Distance", &distance, VR::Config::kMinMenuDistance, VR::Config::kMaxMenuDistance, "%.2f m", ImGuiSliderFlags_AlwaysClamp))
-						vr.SetMenuDistance(distance);
-					Util::AddTooltip("Moves the headset menu while preserving its apparent size. Applies when released.");
-				}
 				if (showOnHMD && settings.VRMenuPositioningMethod == 0) {
 					ImGui::SeparatorText("HMD-relative offset");
 					Util::Widgets::SliderFloat("Horizontal##HMDMenuOffset", &settings.VRMenuOffsetX, VR::Config::kMinMenuOffset, VR::Config::kMaxMenuOffset, "%.2f m");
@@ -1859,6 +1867,10 @@ namespace
 	{
 		if (!CanConfigureMenuLayout())
 			return;
+		if (ImGui::Button("Reset Menu"))
+			globals::features::vr.ResetMenuLayout();
+		Util::AddTooltip("Restore menu size, distance and placement, and centre the desktop window.");
+		ImGui::Spacing();
 		DrawHeadsetMenuSettings();
 		MenuUI::SectionHeading("Desktop");
 		DrawKeepDesktopWindowFocusedForVRMenuSetting();
@@ -3006,6 +3018,30 @@ void VR::SetMenuDistance(float a_metres)
 		SetFixedOverlayToCurrentHMD();
 }
 
+void VR::ResetMenuLayout()
+{
+	const Settings defaults{};
+	settings.VRMenuScale = defaults.VRMenuScale;
+	settings.VRMenuPositioningMethod = defaults.VRMenuPositioningMethod;
+	settings.VRMenuOffsetX = defaults.VRMenuOffsetX;
+	settings.VRMenuOffsetY = defaults.VRMenuOffsetY;
+	settings.VRMenuOffsetZ = defaults.VRMenuOffsetZ;
+	settings.attachMode = defaults.attachMode;
+	settings.VRMenuAttachController = defaults.VRMenuAttachController;
+	settings.VRMenuControllerOffsetX = defaults.VRMenuControllerOffsetX;
+	settings.VRMenuControllerOffsetY = defaults.VRMenuControllerOffsetY;
+	settings.VRMenuControllerOffsetZ = defaults.VRMenuControllerOffsetZ;
+	fixedWorldOverlayPosition = {};
+	savedUnlockedFixedWorldOverlayPosition = {};
+	SetFixedOverlayToCurrentHMD();
+	InvalidatePresentedMenuSurfaces();
+	ResetMenuInputRuntimeState();
+	if (auto* menu = globals::menu) {
+		menu->resetLayout = true;
+		menu->RequestSettingsDirtyCheck();
+	}
+}
+
 Vector3 VR::GetEffectiveHMDMenuOffset() const
 {
 	if (IsClosedMenuStatusOverlayActive()) {
@@ -3452,7 +3488,7 @@ void VR::HideOverlaysIfPresent()
 
 void VR::UpdateMenuDesktopWindowManagement(bool force)
 {
-	const bool menuActive = globals::menu && globals::menu->IsEnabled;
+	const bool menuActive = globals::menu && globals::menu->IsMenuSessionOpen();
 	const bool wantsVROverlay = GetEffectiveMenuAttachMode() != AttachMode::None;
 	const bool shouldManage =
 		settings.KeepDesktopWindowFocusedForVRMenu &&
@@ -3748,7 +3784,7 @@ void VR::SubmitOverlayFrame()
 	const bool shouldUseInSceneOverlay = ShouldUseInSceneOverlay();
 	const bool presentationUpscalingActive = globals::features::upscaling.IsPresentationUpscalingActive();
 	const bool standaloneWandBeam = CanUseWandPointing() && !ocuPointerAvailable &&
-	                                globals::menu->IsEnabled && !globals::features::renderDoc.ShouldBlockUpscaling();
+	                                globals::menu->IsMenuSessionOpen() && !globals::features::renderDoc.ShouldBlockUpscaling();
 	if (shouldUseInSceneOverlay || presentationUpscalingActive || standaloneWandBeam) {
 		InstallSubmitHook();
 	}
@@ -3798,7 +3834,7 @@ void VR::SubmitOverlayFrame()
 	}
 
 	// Update drag logic for all modes - only when overlay is visible
-	auto& enabled = globals::menu->IsEnabled;
+	const bool enabled = globals::menu->IsMenuSessionOpen();
 	const bool shouldRenderOverlay = ShouldPresentOverlayInHeadset();
 	static bool wasMenuEnabled = false;
 	const bool menuJustOpened = enabled && !wasMenuEnabled;

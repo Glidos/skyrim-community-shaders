@@ -51,6 +51,13 @@ endforeach()
 file(WRITE "${OUTPUT_DIRECTORY}/settings_lighting_pages_under_test.h" "${prefixes}")
 
 include("${CMAKE_CURRENT_LIST_DIR}/extract_source_region.cmake")
+file(READ "${PROJECT_ROOT}/src/Features/LightLimitFix/ShadowCulling.cpp" source)
+string(REPLACE "Util::Widgets::Checkbox(" "TrackedShadowCheckbox(" source "${source}")
+string(REPLACE "Util::Widgets::SliderFloat(" "TrackedShadowSlider(" source "${source}")
+extract_between("${source}" "\tvoid DrawSettings(Settings& settings, bool advanced)" "\tnlohmann::json Status(" "settings_shadow_culling_under_test.h")
+file(READ "${PROJECT_ROOT}/src/Features/LightLimitFix.cpp" source)
+string(REPLACE "Util::Widgets::Checkbox(" "TrackedShadowCheckbox(" source "${source}")
+extract_between("${source}" "\t\tif (page.Is(\"shadows\")) {" "\n\t}\n\tauto shaderCache = globals::shaderCache;" "settings_llf_shadows_under_test.h")
 file(READ "${PROJECT_ROOT}/src/Features/Upscaling.cpp" source)
 extract_between("${source}"
     "\tvoid DrawNeuralIntegerSetting("

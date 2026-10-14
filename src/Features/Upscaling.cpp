@@ -49318,13 +49318,13 @@ void Upscaling::PresentVRMenuDesktopMirror(IDXGISwapChain* a_swapChain)
 		return;
 	}
 
-	// A non-poisoned current transaction must have published this frame before
-	// its layer may alter the desktop. A poisoned transaction deliberately keeps
-	// the last complete committed layer instead of exposing partial content.
 	const bool currentTransaction = vrMenuFrameTransaction.frame == frame;
-	if (currentTransaction &&
-		!vrMenuFrameTransaction.poisoned &&
-		vrMenuFrameTransaction.capturedOperations != 0 &&
+	if (!currentTransaction || !vrMenuFrameTransaction.OwnsPresentationWork())
+		return;
+
+	// Replay only owned menu work; untouched frames retain the game's mirror.
+	// A failed owned transaction may retain the last complete layer.
+	if (!vrMenuFrameTransaction.poisoned &&
 		(!vrMenuFrameTransaction.sealed || vrMenuCommittedLayerFrame != frame)) {
 		return;
 	}

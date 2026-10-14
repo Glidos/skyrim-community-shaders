@@ -253,8 +253,9 @@ namespace LightLimitFixDetail::ShadowCulling
 	}
 	void DrawSettings(Settings& settings, bool advanced)
 	{
-		auto disabled = Util::DisableGuard(!available.load());
 		ImGui::SeparatorText("Shadow culling");
+		ImGui::TextWrapped("Native shadow maps; independent of contact shadows.");
+		auto disabled = Util::DisableGuard(!available.load());
 		if (conflict)
 			ImGui::TextWrapped("SPS owns shadow culling. Disable SPS and restart to use CSX native culling.");
 		else if (!failure.empty())

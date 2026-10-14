@@ -691,3 +691,15 @@ string(JSON _grass_collision_status_type GET "${_descriptor}" outputSchema prope
 if(NOT _grass_collision_status_type STREQUAL "number")
     message(FATAL_ERROR "Grass collision strength is missing from menu status")
 endif()
+
+foreach(reset_contract IN ITEMS
+    "action != \"reset_menu_layout\""
+    "} else if (action == \"reset_menu_layout\")"
+    "globals::features::vr.ResetMenuLayout();"
+    "document[\"inputSchema\"][\"properties\"][\"action\"][\"enum\"].push_back(\"reset_menu_layout\")"
+)
+    string(FIND "${_bridge}" "${reset_contract}" reset_contract_position)
+    if(reset_contract_position EQUAL -1)
+        message(FATAL_ERROR "Menu reset must be admitted, dispatched and advertised: ${reset_contract}")
+    endif()
+endforeach()

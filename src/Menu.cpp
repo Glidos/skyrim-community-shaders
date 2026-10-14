@@ -245,6 +245,32 @@ namespace
 		return std::max(2.0f, ThemeManager::Constants::OVERLAY_WINDOW_POSITION * Util::GetUIScale() * 0.5f);
 	}
 
+	bool ClampSettingsWindowToCanvas(ImVec2& a_center, ImVec2& a_size, const SettingsWindowLayout& a_fallback)
+	{
+		const auto* viewport = ImGui::GetMainViewport();
+		if (!viewport || !std::isfinite(viewport->WorkSize.x) || !std::isfinite(viewport->WorkSize.y) ||
+			viewport->WorkSize.x <= 0 || viewport->WorkSize.y <= 0)
+			return false;
+
+		const float padding = GetVRMenuSafePadding();
+		const ImVec2 minimum{ viewport->WorkPos.x + padding, viewport->WorkPos.y + padding };
+		const ImVec2 span{ std::max(1.0f, viewport->WorkSize.x - padding * 2), std::max(1.0f, viewport->WorkSize.y - padding * 2) };
+		auto fitAxis = [](float center, float size, float fallbackCenter, float fallbackSize, float minimum, float span, float minSize) {
+			size = std::isfinite(size) && size > 0 ? size : fallbackSize;
+			center = std::isfinite(center) ? center : fallbackCenter;
+			size = std::clamp(size, std::min(minSize, span), span);
+			// Clamp the remaining travel, avoiding reversed bounds when the window fills the canvas.
+			const float offset = std::clamp(center - minimum - size * .5f, 0.0f, span - size);
+			return ImVec2(minimum + offset + size * .5f, size);
+		};
+		const auto x = fitAxis(a_center.x, a_size.x, a_fallback.center.x, a_fallback.size.x, minimum.x, span.x, ImGui::GetStyle().WindowMinSize.x);
+		const auto y = fitAxis(a_center.y, a_size.y, a_fallback.center.y, a_fallback.size.y, minimum.y, span.y, ImGui::GetStyle().WindowMinSize.y);
+		const bool changed = a_center.x != x.x || a_center.y != y.x || a_size.x != x.y || a_size.y != y.y;
+		a_center = { x.x, y.x };
+		a_size = { x.y, y.y };
+		return changed;
+	}
+
 	float GetVRSettingsWindowAspect()
 	{
 		switch (globals::features::vr.GetEffectiveMenuAttachMode()) {
@@ -1015,6 +1041,11 @@ void Menu::DrawSettings()
 		}
 	}
 
+	if (resetLayout) {
+		windowPos = defaultWindowPos;
+		windowSizeForOverlap = defaultWindowSize;
+	}
+
 	// SteamVR's undocked first open should start from the current default centered
 	// layout instead of inheriting stale saved placement from an older layout.
 	const bool forceSteamVRFirstUndockedLayout =
@@ -1032,6 +1063,10 @@ void Menu::DrawSettings()
 	static ImVec2 preTopStatusWindowPos;
 	bool restoreAfterTopStatusWindow = false;
 	bool autoOffsetForTopStatusWindow = false;
+	if (resetLayout) {
+		menuWasOffsetForTopStatusWindow = false;
+		vrTopStatusWindowLayoutWasActive = false;
+	}
 	if (!willBeDocked) {
 		const bool useVRTopStatusWindowLayout =
 			REL::Module::IsVR() &&
@@ -1074,7 +1109,8 @@ void Menu::DrawSettings()
 	const bool lockVRMenuToCanvas = VRMenuPositioningPolicy::ShouldLockDesktopCanvas(
 		REL::Module::IsVR(),
 		vrMenuLayoutUnlocked);
-	if (lockVRMenuToCanvas) {
+	const bool resetVRWindowLayout = REL::Module::IsVR() && resetLayout;
+	if (lockVRMenuToCanvas || resetVRWindowLayout) {
 		windowPos = defaultWindowPos;
 		windowSizeForOverlap = defaultWindowSize;
 		willBeDocked = false;
@@ -1084,10 +1120,23 @@ void Menu::DrawSettings()
 			ImGui::DockContextProcessUndockWindow(ImGui::GetCurrentContext(), existingWindow);
 		}
 	}
-	const auto windowPosCond = (lockVRMenuToCanvas || autoOffsetForTopStatusWindow || restoreAfterTopStatusWindow || forceSteamVRFirstUndockedLayout) ? ImGuiCond_Always : layoutCond;
+	const bool repairVRWindowBounds = REL::Module::IsVR() && !willBeDocked &&
+	                                  ClampSettingsWindowToCanvas(windowPos, windowSizeForOverlap, defaultWindowLayout);
+	const bool headsetPointer = REL::Module::IsVR() && globals::features::vr.IsMenuPointerInHeadset();
+	if (headsetPointer) {
+		auto* context = ImGui::GetCurrentContext();
+		auto* menuWindow = ImGui::FindWindowByName(title.c_str());
+		if (context->MovingWindow && context->MovingWindow->RootWindow == menuWindow) {
+			if (context->ActiveId == menuWindow->MoveId)
+				ImGui::ClearActiveID();
+			context->MovingWindow = nullptr;
+		}
+	}
+
+	const auto windowPosCond = (lockVRMenuToCanvas || repairVRWindowBounds || autoOffsetForTopStatusWindow || restoreAfterTopStatusWindow || forceSteamVRFirstUndockedLayout) ? ImGuiCond_Always : layoutCond;
 	ImGui::SetNextWindowPos(windowPos, windowPosCond, centeredPivot);
-	const auto windowSizeCond = (lockVRMenuToCanvas || repairSteamVRLegacyWindowSize || autoOffsetForTopStatusWindow || restoreAfterTopStatusWindow || forceSteamVRFirstUndockedLayout) ? ImGuiCond_Always : layoutCond;
-	ImGui::SetNextWindowSize(defaultWindowSize, windowSizeCond);
+	const auto windowSizeCond = (lockVRMenuToCanvas || repairVRWindowBounds || repairSteamVRLegacyWindowSize || autoOffsetForTopStatusWindow || restoreAfterTopStatusWindow || forceSteamVRFirstUndockedLayout) ? ImGuiCond_Always : layoutCond;
+	ImGui::SetNextWindowSize(repairVRWindowBounds ? windowSizeForOverlap : defaultWindowSize, windowSizeCond);
 	if (forceSteamVRFirstUndockedLayout) {
 		steamVRUndockedFirstOpenLayoutApplied = true;
 	}
@@ -1098,6 +1147,8 @@ void Menu::DrawSettings()
 	if (lockVRMenuToCanvas) {
 		windowFlags |= ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking;
 	}
+	if (headsetPointer)
+		windowFlags |= ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoDocking;
 	const bool steamVRUndockedWindow = useSteamVRWindowControls && !willBeDocked;
 
 	// Only hide title bar when not docked

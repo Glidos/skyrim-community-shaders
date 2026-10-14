@@ -600,7 +600,7 @@ vr::TrackedDeviceIndex_t VR::GetWandPointingControllerIndex() const
 void VR::UpdateCursorFromWandPointing(bool a_forceCursorUpdate, ControllerDevice a_preferredController)
 {
 	RefreshOCUPointerState();
-	if (!CanUseWandPointing() || !globals::menu || !globals::menu->IsEnabled)
+	if (!CanUseWandPointing() || !globals::menu || !globals::menu->IsMenuSessionOpen())
 		return;
 	ImGuiIO& io = ImGui::GetIO();
 	io.WantSetMousePos = false;
@@ -753,7 +753,7 @@ void VR::ResetWandPointingRuntimeState()
 void VR::RefreshOCUPointerState()
 {
 	const bool enabled = CanUseWandPointing() && !settings.VRMenuControllerDiagnosticsTestMode &&
-	                     globals::menu && globals::menu->IsEnabled && ShouldPresentOverlayInHeadset() &&
+	                     globals::menu && globals::menu->IsMenuSessionOpen() && ShouldPresentOverlayInHeadset() &&
 	                     GetEffectiveMenuAttachMode() != Settings::OverlayAttachMode::None;
 	auto* compositor = enabled ? RE::BSOpenVR::GetIVRCompositor() : nullptr;
 	const auto trackingOrigin = compositor ? static_cast<std::uint32_t>(compositor->GetTrackingSpace()) : 0u;
@@ -777,7 +777,7 @@ void VR::RefreshOCUPointerState()
 
 bool VR::ShouldShowWandBeam(ControllerDevice a_controller) const
 {
-	if (!CanUseWandPointing() || settings.VRMenuControllerDiagnosticsTestMode || !globals::menu || !globals::menu->IsEnabled ||
+	if (!CanUseWandPointing() || settings.VRMenuControllerDiagnosticsTestMode || !globals::menu || !globals::menu->IsMenuSessionOpen() ||
 		!ShouldPresentOverlayInHeadset() || GetEffectiveMenuAttachMode() == Settings::OverlayAttachMode::None || !IsIndividualController(a_controller))
 		return false;
 	const auto& hand = wandHandStates[GetControllerSlot(a_controller)];

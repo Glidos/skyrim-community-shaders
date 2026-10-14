@@ -1,6 +1,7 @@
 set(_menu_resize_test_dir "${CMAKE_CURRENT_BINARY_DIR}/generated/menu-resize")
 set(_menu_resize_test_headers
     "${_menu_resize_test_dir}/menu_resize_helpers_under_test.h"
+    "${_menu_resize_test_dir}/menu_canvas_under_test.h"
     "${_menu_resize_test_dir}/menu_resize_under_test.h"
     "${_menu_resize_test_dir}/menu_resize_flags_under_test.h"
     "${_menu_resize_test_dir}/menu_resize_dispatch_under_test.h"

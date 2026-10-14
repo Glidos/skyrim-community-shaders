@@ -13,6 +13,11 @@ extract_between("${_header}"
 )
 file(READ "${PROJECT_ROOT}/src/Menu.cpp" _menu)
 extract_between("${_menu}"
+    "\tbool ClampSettingsWindowToCanvas("
+    "\tfloat GetVRSettingsWindowAspect()"
+    "menu_canvas_under_test.h"
+)
+extract_between("${_menu}"
     "\t// Determine window flags based on docking state"
     "\tImGui::Begin(title.c_str(), &IsEnabled, windowFlags);"
     "menu_resize_flags_under_test.h"

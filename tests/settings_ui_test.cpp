@@ -1,3 +1,4 @@
+#include "Features/LightLimitFix/ShadowCullingPolicy.h"
 #include "Features/Upscaling/NeuralRendering/ModelResolutionPolicy.h"
 #include "Menu/SettingsPage.h"
 #include "Utils/FeatureProfiling.h"
@@ -6,6 +7,7 @@
 #include "Utils/VRFrameTiming.h"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -412,6 +414,62 @@ struct VolumetricLighting : Feature
 	void DrawSettings();
 };
 #include "settings_lighting_pages_under_test.h"
+
+struct ShadowControlObservation
+{
+	ImVec2 center;
+	bool disabled;
+	float alpha;
+};
+std::map<std::string, ShadowControlObservation> shadowControls;
+void ObserveShadowControl(const char* label)
+{
+	const auto minimum = ImGui::GetItemRectMin();
+	shadowControls[label] = { { minimum.x + ImGui::GetFrameHeight() * .5f, minimum.y + ImGui::GetFrameHeight() * .5f },
+		(GImGui->LastItemData.ItemFlags & ImGuiItemFlags_Disabled) != 0, ImGui::GetStyle().Alpha };
+}
+bool TrackedShadowCheckbox(const char* label, bool* value)
+{
+	const bool changed = Util::Widgets::Checkbox(label, value);
+	ObserveShadowControl(label);
+	return changed;
+}
+bool TrackedShadowSlider(const char* label, float* value, float minimum, float maximum, const char* format)
+{
+	const bool changed = Util::Widgets::SliderFloat(label, value, minimum, maximum, format);
+	ObserveShadowControl(label);
+	return changed;
+}
+namespace LightLimitFixDetail::ShadowCulling
+{
+	std::atomic_bool available{ true };
+	bool conflict = false;
+	std::string failure;
+#include "settings_shadow_culling_under_test.h"
+}
+struct LLFShadowsFixture
+{
+	struct
+	{
+		bool ContactShadowsInteriorsOnly = false, EnableParticleContactShadows = false;
+		unsigned ContactShadowQuality = 1, ContactShadowClusterBudget = 4, StrictContactShadowBudget = 4, ParticleContactShadowBudget = 1;
+		LightLimitFixDetail::ShadowCulling::Settings ShadowCulling;
+	} settings;
+	bool contact = true;
+	bool IsContactShadowsRequested() const { return contact; }
+	void SetContactShadowsEnabled(bool value) { contact = value; }
+	void Draw()
+	{
+		using uint = unsigned;
+		constexpr int kContactShadowQualityOptionCount = 3, kContactShadowQualityMax = 2;
+		constexpr int kContactShadowClusterBudgetMin = 0, kContactShadowClusterBudgetMax = 16, kStrictContactShadowBudgetMax = 16, kParticleContactShadowBudgetMax = 16;
+		struct
+		{
+			bool Is(const char*) const { return true; }
+		} page;
+#include "settings_llf_shadows_under_test.h"
+	}
+};
 
 using uint = unsigned int;
 struct float3
@@ -1847,6 +1905,37 @@ int main()
 		click(Util::controls.at("Keep the previous value.").GetCenter(), drawSlider);
 		require(GImGui->OpenPopupStack.empty() && value == .5f, "an unavailable setting must still allow keypad cancellation");
 		disabled = false;
+		{
+			using namespace LightLimitFixDetail::ShadowCulling;
+			for (const bool sps : { false, true }) {
+				conflict = sps;
+				available = !sps;
+				for (const bool contact : { false, true }) {
+					LLFShadowsFixture shadows;
+					shadows.contact = contact;
+					const auto draw = [&] { shadows.Draw(); };
+					frame(draw);
+					frame(draw);
+					const auto original = shadows.settings.ShadowCulling;
+					for (const char* control : { "Sun shadows", "Torch shadows", "Distant NPC shadows", "Indoor torches", "Object distance", "NPC distance" }) {
+						const auto observed = shadowControls.at(control);
+						require(observed.disabled == sps, "SPS alone gates native shadow controls independently of contact shadows");
+						require(!sps || observed.alpha < shadowControls.at("Enable Point Light Contact Shadows").alpha, "SPS greys native shadow controls while leaving contact shadows bright");
+						if (sps)
+							click(observed.center, draw);
+					}
+					require(shadows.settings.ShadowCulling == original, "disabled shadow controls reject clicks and preserve preferences");
+					click(shadowControls.at("Enable Point Light Contact Shadows").center, draw);
+					require(shadows.contact != contact, "contact shadows stay editable when SPS is installed");
+					if (!sps) {
+						click(shadowControls.at("Sun shadows").center, draw);
+						require(shadows.settings.ShadowCulling.sun != original.sun, "native shadow controls remain editable without SPS");
+					}
+				}
+			}
+			conflict = false;
+			available = true;
+		}
 		bool checked = true;
 		bool checkboxDisabled = false;
 		ImVec2 checkboxCentre;

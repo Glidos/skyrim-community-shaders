@@ -1079,14 +1079,10 @@ void LightLimitFix::DrawSettings()
 	MenuUI::SettingsPage page("LightLimitFix", {
 												   { "particles", "Particles", "Choose which small light effects illuminate the scene.", "Small effects that emit light", true, true, "Choose light sources" },
 												   { "placed", "Placed lights", "Choose lighting from supported objects.", "Lighting from placed objects", true, true, nullptr, nullptr, nullptr, globals::features::inverseSquareLighting.loaded },
-												   { "shadows", "Shadows", "Refine contact shadows after choosing your lights.", "Contact-shadow quality", true, true, "Refine light interaction" },
+												   { "shadows", "Shadows", "Refine contact shadows and native shadow-map culling.", "Contact shadows and shadow culling", true, true, "Refine light interaction" },
 												   { "effects", "Heat distortion", "Refine heat distortion around lights.", "Refraction around lights", true, true, nullptr },
-												   { "performance", "Performance", "Reduce distant shadow-map work.", "Optional shadow culling", true, true, nullptr },
 												   { "diagnostics", "Diagnostics", "Inspect light counts and diagnostic views.", "Light counts and buffer views", true, false, nullptr },
 											   });
-
-	if (page.Is("performance"))
-		LightLimitFixDetail::ShadowCulling::DrawSettings(settings.ShadowCulling, true);
 
 	{
 		// Heat warp / refraction strength (moved from Advanced Settings)
@@ -1197,6 +1193,7 @@ void LightLimitFix::DrawSettings()
 		}
 
 		if (page.Is("shadows")) {
+			ImGui::SeparatorText("Contact shadows");
 			bool contactShadows = IsContactShadowsRequested();
 			if (Util::Widgets::Checkbox("Enable Point Light Contact Shadows", &contactShadows))
 				SetContactShadowsEnabled(contactShadows);
@@ -1205,44 +1202,46 @@ void LightLimitFix::DrawSettings()
 					"Add short screen-space contact shadows to LLF point lights. A cached per-cluster list limits ray marches.");
 			}
 
-			const auto shadowsDisabled = Util::DisableGuard(!contactShadows);
-			Util::Widgets::Checkbox("Interiors Only", &settings.ContactShadowsInteriorsOnly);
-			if (auto _tt = Util::HoverTooltipWrapper()) {
-				ImGui::Text("Only run LLF contact shadows in interior cells.");
-			}
+			{
+				const auto shadowsDisabled = Util::DisableGuard(!contactShadows);
+				Util::Widgets::Checkbox("Interiors Only", &settings.ContactShadowsInteriorsOnly);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("Only run LLF contact shadows in interior cells.");
+				}
 
-			const char* qualityOptions[] = { "Low", "Medium", "High" };
-			int contactShadowQuality = static_cast<int>(settings.ContactShadowQuality);
-			if (MenuUI::ChoiceSetting("Quality", &contactShadowQuality, qualityOptions, kContactShadowQualityOptionCount)) {
-				settings.ContactShadowQuality = static_cast<uint>(std::clamp(contactShadowQuality, 0, static_cast<int>(kContactShadowQualityMax)));
-			}
+				const char* qualityOptions[] = { "Low", "Medium", "High" };
+				int contactShadowQuality = static_cast<int>(settings.ContactShadowQuality);
+				if (MenuUI::ChoiceSetting("Quality", &contactShadowQuality, qualityOptions, kContactShadowQualityOptionCount)) {
+					settings.ContactShadowQuality = static_cast<uint>(std::clamp(contactShadowQuality, 0, static_cast<int>(kContactShadowQualityMax)));
+				}
 
-			int contactShadowClusterBudget = static_cast<int>(settings.ContactShadowClusterBudget);
-			if (Util::Widgets::SliderInt("Cached Lights per Cluster", &contactShadowClusterBudget, static_cast<int>(kContactShadowClusterBudgetMin), static_cast<int>(kContactShadowClusterBudgetMax))) {
-				settings.ContactShadowClusterBudget = static_cast<uint>(contactShadowClusterBudget);
-			}
-			if (auto _tt = Util::HoverTooltipWrapper()) {
-				ImGui::Text("Maximum cached point/particle contact-shadow lights per cluster. 0 disables clustered contact shadows.");
-			}
+				int contactShadowClusterBudget = static_cast<int>(settings.ContactShadowClusterBudget);
+				if (Util::Widgets::SliderInt("Cached Lights per Cluster", &contactShadowClusterBudget, static_cast<int>(kContactShadowClusterBudgetMin), static_cast<int>(kContactShadowClusterBudgetMax))) {
+					settings.ContactShadowClusterBudget = static_cast<uint>(contactShadowClusterBudget);
+				}
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text("Maximum cached point/particle contact-shadow lights per cluster. 0 disables clustered contact shadows.");
+				}
 
-			int strictContactShadowBudget = static_cast<int>(settings.StrictContactShadowBudget);
-			if (Util::Widgets::SliderInt("Strict Light Budget", &strictContactShadowBudget, 0, static_cast<int>(kStrictContactShadowBudgetMax))) {
-				settings.StrictContactShadowBudget = static_cast<uint>(strictContactShadowBudget);
-			}
+				int strictContactShadowBudget = static_cast<int>(settings.StrictContactShadowBudget);
+				if (Util::Widgets::SliderInt("Strict Light Budget", &strictContactShadowBudget, 0, static_cast<int>(kStrictContactShadowBudgetMax))) {
+					settings.StrictContactShadowBudget = static_cast<uint>(strictContactShadowBudget);
+				}
 
-			Util::Widgets::Checkbox("Enable Particle Contact Shadows", &settings.EnableParticleContactShadows);
-			if (auto _tt = Util::HoverTooltipWrapper()) {
-				ImGui::Text(
-					"Adds cheaper contact shadows for particle lights.\n"
-					"Keep the particle budget low for fire, smoke, and magic-heavy scenes.");
-			}
+				Util::Widgets::Checkbox("Enable Particle Contact Shadows", &settings.EnableParticleContactShadows);
+				if (auto _tt = Util::HoverTooltipWrapper()) {
+					ImGui::Text(
+						"Adds cheaper contact shadows for particle lights.\n"
+						"Keep the particle budget low for fire, smoke, and magic-heavy scenes.");
+				}
 
-			int particleContactShadowBudget = static_cast<int>(settings.ParticleContactShadowBudget);
-			if (Util::Widgets::SliderInt("Particle Budget per Cluster", &particleContactShadowBudget, 0, static_cast<int>(kParticleContactShadowBudgetMax))) {
-				settings.ParticleContactShadowBudget = static_cast<uint>(particleContactShadowBudget);
+				int particleContactShadowBudget = static_cast<int>(settings.ParticleContactShadowBudget);
+				if (Util::Widgets::SliderInt("Particle Budget per Cluster", &particleContactShadowBudget, 0, static_cast<int>(kParticleContactShadowBudgetMax))) {
+					settings.ParticleContactShadowBudget = static_cast<uint>(particleContactShadowBudget);
+				}
 			}
-
 			ImGui::Spacing();
+			LightLimitFixDetail::ShadowCulling::DrawSettings(settings.ShadowCulling, true);
 		}
 	}
 	auto shaderCache = globals::shaderCache;

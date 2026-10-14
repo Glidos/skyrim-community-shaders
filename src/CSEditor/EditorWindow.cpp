@@ -1,6 +1,8 @@
 #include "EditorWindow.h"
 
 #include "Features/CSEditor.h"
+#include "Features/Upscaling.h"
+#include "Features/VR.h"
 #include "InteriorOnlyPanel.h"
 #include "Menu.h"
 #include "PaletteWindow.h"
@@ -1517,6 +1519,13 @@ void EditorWindow::UpdateOpenState()
 {
 	if (open == wasOpen)
 		return;
+
+	if (globals::game::isVR) {
+		auto& vr = globals::features::vr;
+		vr.ResetMenuInputRuntimeState();
+		vr.InvalidatePresentedMenuSurfaces();
+		globals::features::upscaling.NotifyVRMenuPresentationContextChange(open ? "cs-editor-open" : "cs-editor-close");
+	}
 
 	if (open) {
 		DisableVanityCamera();

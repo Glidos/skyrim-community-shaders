@@ -8,7 +8,7 @@ namespace LightLimitFixDetail::ShadowCulling
 	void Install();
 	/** Publish immutable stereo demand and retained native shadow-camera identities. */
 	void Update(const Settings& settings, bool featureEnabled);
-	/** Draw the shared Light Limit Fix performance controls. */
+	/** Draw shared native shadow-culling controls, disabled when unavailable. */
 	void DrawSettings(Settings& settings, bool advanced);
 	/** Report requested versus available controls; diagnostics compile out of production. */
 	nlohmann::json Status(const Settings& settings);

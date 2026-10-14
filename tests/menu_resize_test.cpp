@@ -7,6 +7,23 @@
 #include <cstdio>
 #include <cstdlib>
 #include <initializer_list>
+#include <limits>
+
+namespace globals
+{
+	namespace game
+	{
+		bool isVR = true;
+	}
+	namespace features
+	{
+		struct VRPointer
+		{
+			bool inHeadset = false;
+			bool IsMenuPointerInHeadset() const { return inHeadset; }
+		} vr;
+	}
+}
 
 class MenuHeaderRenderer
 {
@@ -19,6 +36,13 @@ public:
 namespace
 {
 #include "menu_resize_helpers_under_test.h"
+	struct SettingsWindowLayout
+	{
+		ImVec2 center;
+		ImVec2 size;
+	};
+	float GetVRMenuSafePadding() { return 4.0f; }
+#include "menu_canvas_under_test.h"
 }
 #include "menu_resize_under_test.h"
 
@@ -35,6 +59,7 @@ namespace
 	ImGuiWindow* DrawMenu(bool lockVRMenuToCanvas, bool useSteamVRWindowControls, bool openComposite, const ResizeLayout& layout)
 	{
 		const bool willBeDocked = false;
+		const bool headsetPointer = globals::game::isVR && globals::features::vr.IsMenuPointerInHeadset();
 		const bool useOpenCompositeStableHeader = openComposite && !useSteamVRWindowControls;
 #include "menu_resize_flags_under_test.h"
 		ImGui::SetNextWindowPos(layout.position, lockVRMenuToCanvas ? ImGuiCond_Always : ImGuiCond_FirstUseEver);
@@ -142,9 +167,72 @@ namespace
 	}
 }
 
+bool CheckCanvasRecovery()
+{
+	ImGui::CreateContext();
+	auto* viewport = ImGui::GetMainViewport();
+	viewport->WorkPos = { 40, 60 };
+	viewport->WorkSize = { 1920, 1080 };
+	const SettingsWindowLayout fallback{ { 1000, 600 }, { 900, 700 } };
+	bool passed = true;
+	for (const auto originalCenter : { ImVec2(1000, 600), ImVec2(-8000, 9000), ImVec2(std::numeric_limits<float>::quiet_NaN(), INFINITY) }) {
+		for (const auto originalSize : { ImVec2(900, 700), ImVec2(5000, 5000), ImVec2(0, -1), ImVec2(INFINITY, std::numeric_limits<float>::quiet_NaN()) }) {
+			auto center = originalCenter;
+			auto size = originalSize;
+			ClampSettingsWindowToCanvas(center, size, fallback);
+			const bool bounded = std::isfinite(center.x) && std::isfinite(center.y) && std::isfinite(size.x) && std::isfinite(size.y) &&
+			                     size.x > 0 && size.y > 0 && center.x - size.x * .5f >= 44 && center.y - size.y * .5f >= 64 &&
+			                     center.x + size.x * .5f <= 1956 && center.y + size.y * .5f <= 1136;
+			passed = bounded && !ClampSettingsWindowToCanvas(center, size, fallback) && passed;
+		}
+	}
+	ImVec2 center = fallback.center, size = fallback.size;
+	passed = !ClampSettingsWindowToCanvas(center, size, fallback) && passed;
+	viewport->WorkSize = { 20, 20 };
+	ImGui::GetStyle().WindowMinSize = { 100, 100 };
+	passed = ClampSettingsWindowToCanvas(center, size, fallback) && size.x == 12 && size.y == 12 && passed;
+	viewport->WorkSize = { 0, 0 };
+	passed = !ClampSettingsWindowToCanvas(center, size, fallback) && passed;
+	ImGui::DestroyContext();
+	if (!passed)
+		std::puts("FAIL: menu canvas recovery did not preserve valid or recover invalid geometry");
+	return passed;
+}
+
+bool CheckLaserCancelsResize()
+{
+	ImGui::CreateContext();
+	auto& io = ImGui::GetIO();
+	io.IniFilename = nullptr;
+	io.DisplaySize = { 1920, 1080 };
+	io.Fonts->AddFontDefault();
+	io.Fonts->Build();
+	ImGui::NewFrame();
+	ImGui::Begin("Resize capture");
+	auto* window = ImGui::GetCurrentWindow();
+	const auto originalSize = window->Size;
+	const auto handle = window->GetID("##SteamVRResizeBottomRight");
+	ImGui::SetActiveID(handle, window);
+	g_menuResizeDragState.activeId = handle;
+	globals::features::vr.inHeadset = true;
+	MenuHeaderRenderer::RenderResizeHandles(1, true, true);
+	bool passed = ImGui::GetActiveID() == 0 && g_menuResizeDragState.activeId == 0 && window->Size.x == originalSize.x && window->Size.y == originalSize.y;
+	const auto slider = window->GetID("Menu scale");
+	ImGui::SetActiveID(slider, window);
+	MenuHeaderRenderer::RenderResizeHandles(1, true, true);
+	passed = ImGui::GetActiveID() == slider && passed;
+	globals::features::vr.inHeadset = false;
+	ImGui::End();
+	ImGui::Render();
+	ImGui::DestroyContext();
+	if (!passed)
+		std::puts("FAIL: laser handoff did not cancel only the owned resize capture");
+	return passed;
+}
+
 int main()
 {
-	bool passed = true;
+	bool passed = CheckCanvasRecovery() && CheckLaserCancelsResize();
 	for (bool steamVR : { false, true }) {
 		passed = CheckDrag(true, steamVR, false) && passed;
 		passed = CheckDrag(false, steamVR, false) && passed;

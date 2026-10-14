@@ -133,7 +133,7 @@ bool VR::CanPerformDrag()
 			settings.EnableDragToReposition))
 		return false;
 
-	if (!globals::menu || !globals::menu->IsEnabled)
+	if (!globals::menu || !globals::menu->IsMenuSessionOpen())
 		return false;
 
 	RE::BSOpenVR* openvr = RE::BSOpenVR::GetSingleton();
@@ -429,7 +429,7 @@ void VR::TryStartNewDrag()
 			overlayDragState.startControllerMatrix = controllerMatrix;
 			mode.onInit();
 
-			if (system && globals::menu->IsEnabled) {
+			if (system && globals::menu->IsMenuSessionOpen()) {
 				for (vr::TrackedDeviceIndex_t deviceIdx = 0; deviceIdx < vr::k_unMaxTrackedDeviceCount; ++deviceIdx) {
 					if (system->GetTrackedDeviceClass(deviceIdx) == vr::TrackedDeviceClass_Controller) {
 						vr::ETrackedControllerRole deviceRole = system->GetControllerRoleForTrackedDeviceIndex(deviceIdx);

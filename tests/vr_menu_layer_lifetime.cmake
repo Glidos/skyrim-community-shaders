@@ -9,6 +9,7 @@ set(_menu_lifetime_headers
     "${_menu_lifetime_dir}/vr_known_menu_context_under_test.h"
     "${_menu_lifetime_dir}/vr_map_presentation_context_under_test.h"
     "${_menu_lifetime_dir}/vr_menu_transaction_under_test.h"
+    "${_menu_lifetime_dir}/vr_menu_desktop_admission_under_test.h"
     "${_menu_lifetime_dir}/vr_menu_begin_frame_under_test.h"
     "${_menu_lifetime_dir}/vr_menu_layer_lifetime_under_test.h"
 )

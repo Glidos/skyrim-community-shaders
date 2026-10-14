@@ -41,6 +41,7 @@ namespace globals
 	struct State
 	{
 		bool isMapMenuOpen = false;
+		uint32_t frameCount = 0;
 	} stateValue;
 	State* state = &stateValue;
 	namespace game
@@ -90,6 +91,7 @@ struct Upscaling
 	struct Texture
 	{
 		bool srv = true;
+		bool resource = true;
 	};
 	VRMenuFrameTransaction vrMenuFrameTransaction;
 	std::unique_ptr<Texture> vrMenuFinalCompositeLayer = std::make_unique<Texture>();
@@ -104,7 +106,7 @@ struct Upscaling
 	uint32_t vrMenuCommittedLayerOperationCount = 0;
 	uint32_t vrMenuCommittedLayerPlanGeneration = 0;
 	uint64_t vrMenuCommittedLayerGeneration = 0;
-	uint32_t planGeneration = 1;
+	uint32_t activePlanGeneration = 1;
 	std::atomic<uint64_t> vrMenuPresentationContextChangeSequence{ 0 };
 	uint64_t vrMenuPresentationContextChangeConsumedSequence = 0;
 	bool vrMapMenuUISupersamplingActive = false;
@@ -116,7 +118,7 @@ struct Upscaling
 	uint32_t vrMenuDesktopRetainedPairPlanGeneration = 0;
 	bool vrMenuDesktopRetainedPairValid = false;
 
-	uint32_t GetActiveVRRenderScaleContractGeneration() const { return planGeneration; }
+	uint32_t GetActiveVRRenderScaleContractGeneration() const { return activePlanGeneration; }
 	bool IsVRMapMenuPresentationActive() const;
 	void ReleaseVRMapMenuUISupersampling() { vrMapMenuUISupersamplingActive = false; }
 	void PoisonVRMenuFrameTransaction(const char*) { vrMenuFrameTransaction.poisoned = true; }
@@ -126,10 +128,12 @@ struct Upscaling
 	void NotifyVRMenuPresentationContextChange(const char*);
 	void ConsumeVRMenuPresentationContextChange(uint32_t);
 	bool SealVRMenuFrameTransaction(uint32_t);
+	bool CanPresentDesktopLayer(void*);
 };
 
 #include "vr_map_presentation_context_under_test.h"
 #include "vr_menu_begin_frame_under_test.h"
+#include "vr_menu_desktop_admission_under_test.h"
 #include "vr_menu_layer_lifetime_under_test.h"
 
 namespace
@@ -151,6 +155,26 @@ namespace
 		Require(a_upscaling.SealVRMenuFrameTransaction(a_frame), "complete layer did not publish");
 		a_upscaling.vrMenuDesktopPairPendingPresent = true;
 		a_upscaling.vrMenuDesktopRetainedPairValid = true;
+	}
+
+	void TestDesktopLayerAdmission()
+	{
+		Upscaling upscaling;
+		globals::game::isVR = true;
+		explicitMenu = true;
+		PublishLayer(upscaling, 70);
+		globals::state->frameCount = 70;
+		Require(upscaling.CanPresentDesktopLayer(&upscaling), "complete current owned layer must reach desktop presentation");
+		globals::state->frameCount = 71;
+		Require(!upscaling.CanPresentDesktopLayer(&upscaling), "stale frame must not replay an old desktop layer");
+		upscaling.BeginVRMenuFinalCompositeFrame(71);
+		Require(!upscaling.CanPresentDesktopLayer(&upscaling), "untouched menu frame must retain the game's desktop mirror");
+		upscaling.vrMenuFrameTransaction.suppressedOperations = 1;
+		Require(!upscaling.CanPresentDesktopLayer(&upscaling), "unsealed owned frame must not publish a partial desktop layer");
+		upscaling.vrMenuFrameTransaction.poisoned = true;
+		Require(upscaling.CanPresentDesktopLayer(&upscaling), "failed owned frame must retain the complete fallback layer");
+		upscaling.vrMenuCommittedLayerPlanGeneration++;
+		Require(!upscaling.CanPresentDesktopLayer(&upscaling), "fallback layer from another render contract must be rejected");
 	}
 
 	void TestCloseFrameRecapture()
@@ -310,7 +334,7 @@ namespace
 		Require(!upscaling.vrMenuCommittedLayerValid, "CSX menu did not retire the game layer");
 		csMenu = false;
 		PublishLayer(upscaling, 403);
-		++upscaling.planGeneration;
+		++upscaling.activePlanGeneration;
 		upscaling.BeginVRMenuFinalCompositeFrame(404);
 		Require(!upscaling.vrMenuCommittedLayerValid, "changed resolution plan retained an incompatible layer");
 	}
@@ -344,7 +368,7 @@ namespace
 		PublishLayer(upscaling, 600);
 		upscaling.vrMenuFrameTransaction.presentationDecisionLatched = true;
 		upscaling.vrMenuFrameTransaction.presentationStarted = true;
-		++upscaling.planGeneration;
+		++upscaling.activePlanGeneration;
 		upscaling.BeginVRMenuFinalCompositeFrame(600);
 		Require(!upscaling.vrMenuCommittedLayerValid && upscaling.vrMenuFrameTransaction.poisoned,
 			"resolution change between eyes bypassed the existing fail-open path");
@@ -450,6 +474,7 @@ namespace
 
 int main()
 try {
+	TestDesktopLayerAdmission();
 	TestCloseFrameRecapture();
 	TestStereoCloseBoundary();
 	TestPublishedMapCloseOverridesCachedOpen();

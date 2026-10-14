@@ -59,3 +59,15 @@ extract_between(
     "void Upscaling::BeginVRMenuDrawInterface("
     "vr_menu_layer_lifetime_under_test.h"
 )
+
+# Exercise the exact production admission path before any GPU calls.
+extract_between("${_upscaling}"
+    "void Upscaling::PresentVRMenuDesktopMirror("
+    "\n\twinrt::com_ptr<ID3D11Texture2D> backBuffer;"
+    "vr_menu_desktop_admission_under_test.h"
+)
+file(READ "${OUTPUT_DIRECTORY}/vr_menu_desktop_admission_under_test.h" admission)
+string(REPLACE "void Upscaling::PresentVRMenuDesktopMirror(IDXGISwapChain* a_swapChain)"
+    "bool Upscaling::CanPresentDesktopLayer(void* a_swapChain)" admission "${admission}")
+string(REPLACE "return;" "return false;" admission "${admission}")
+file(WRITE "${OUTPUT_DIRECTORY}/vr_menu_desktop_admission_under_test.h" "${admission}\nreturn true;\n}\n")

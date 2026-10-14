@@ -472,6 +472,8 @@ void MenuHeaderRenderer::RenderSteamVRDockHandle(float uiScale, ImGuiID dockSpac
 	const float handleSize = GetSteamVRDockHandleSize(uiScale);
 	const ImVec2 buttonSize(handleSize, handleSize);
 
+	const bool headsetPointer = globals::game::isVR && globals::features::vr.IsMenuPointerInHeadset();
+	const auto disabled = Util::DisableGuard(headsetPointer);
 	ImGui::InvisibleButton("##SteamVRDockHandle", buttonSize);
 	const bool hovered = ImGui::IsItemHovered();
 	const bool active = ImGui::IsItemActive();
@@ -485,9 +487,9 @@ void MenuHeaderRenderer::RenderSteamVRDockHandle(float uiScale, ImGuiID dockSpac
 	} else if (active && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
 		ImGui::StartMouseMovingWindow(window);
 	}
-	if (hovered) {
-		ImGui::SetTooltip("Drag to move or dock\nDouble-click to dock");
-	}
+	Util::AddTooltip(headsetPointer ? "Use the desktop mouse to move, resize or dock. Use Menu Scale and grip dragging in VR." :
+									  "Drag to move or dock\nDouble-click to dock",
+		ImGuiHoveredFlags_AllowWhenDisabled);
 
 	const ImVec2 min = ImGui::GetItemRectMin();
 	const ImVec2 max = ImGui::GetItemRectMax();
@@ -531,6 +533,12 @@ void MenuHeaderRenderer::RenderResizeGrip(float uiScale, bool customResizeContro
 
 void MenuHeaderRenderer::RenderResizeHandles(float uiScale, bool steamVRControls, bool customResizeControls)
 {
+	if (globals::game::isVR && globals::features::vr.IsMenuPointerInHeadset()) {
+		if (g_menuResizeDragState.activeId != 0 && ImGui::GetActiveID() == g_menuResizeDragState.activeId)
+			ImGui::ClearActiveID();
+		g_menuResizeDragState = {};
+		return;
+	}
 	ImGuiWindow* window = ImGui::GetCurrentWindow();
 	if (!window || window->DockIsActive || (!steamVRControls && ((window->Flags & ImGuiWindowFlags_AlwaysAutoResize) || (!customResizeControls && (window->Flags & ImGuiWindowFlags_NoResize)))))
 		return;

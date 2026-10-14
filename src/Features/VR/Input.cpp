@@ -308,7 +308,7 @@ void VR::UpdateNeuralRenderingToggleFromInput(bool a_allowActivation)
 void VR::UpdateOverlayMenuStateFromInput()
 {
 	if (this->isCapturingCombo) {
-		if (globals::menu && !globals::menu->IsEnabled) {
+		if (globals::menu && !globals::menu->IsMenuSessionOpen()) {
 			ResetMenuInputRuntimeState();
 		}
 		return;
@@ -473,7 +473,7 @@ void VR::ProcessVRButtonEvent(const Menu::KeyEvent& event)
 	bool isSecondary = RE::BSOpenVRControllerDevice::IsSecondaryController(event.device);
 	const ControllerDevice eventController = isPrimary ? ControllerDevice::Primary : ControllerDevice::Secondary;
 
-	if (globals::menu && globals::menu->IsEnabled && (isPrimary || isSecondary)) {
+	if (globals::menu && globals::menu->IsMenuSessionOpen() && (isPrimary || isSecondary)) {
 		ImGuiIO& io = ImGui::GetIO();
 		bool& testMode = settings.VRMenuControllerDiagnosticsTestMode;
 		const auto mappings = GetVRInputMappings(isSecondary);
@@ -1079,7 +1079,7 @@ void VR::ProcessControllerInputForMouseNavigationPath(bool testMode, float mouse
 
 void VR::ProcessControllerInputForImGui()
 {
-	if (!globals::menu || !globals::menu->IsEnabled)
+	if (!globals::menu || !globals::menu->IsMenuSessionOpen())
 		return;
 
 	bool testMode = settings.VRMenuControllerDiagnosticsTestMode;
