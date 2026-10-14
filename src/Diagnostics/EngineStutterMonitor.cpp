@@ -2,6 +2,7 @@
 #ifdef DEVBENCH_BRIDGE_ENABLED
 #	include "BuildProvenance.h"
 #	include "Diagnostics/EngineStutterCapture.h"
+#	include "Diagnostics/AssetLoadHooks.h"
 #	include "Globals.h"
 #	include "ShaderCache.h"
 #	include "State.h"
@@ -17,7 +18,7 @@ namespace CSX::Diagnostics::Stutters
 		{
 			// SKSE owns this DLL until exit; joining a watchdog under the loader lock is unsafe.
 			static auto* capture = new Capture({ SKSE::log::log_directory, BuildProvenance::GetProducer,
-				BuildProvenance::ValidateExpectedBuild, [] { return globals::game::quitGame.load(std::memory_order_relaxed); }, globals::game::isVR });
+				BuildProvenance::ValidateExpectedBuild, [] { return globals::game::quitGame.load(std::memory_order_relaxed); }, globals::game::isVR, AssetLoadHooks::Status });
 			current.store(capture, std::memory_order_release);
 			return *capture;
 		}
@@ -37,6 +38,59 @@ namespace CSX::Diagnostics::Stutters
 	{
 		if (recorder_ && token_.phase.id)
 			recorder_->End(token_, ReadCounter());
+	}
+	AssetScope::AssetScope(AssetKind kind, std::string_view path, std::string_view stage) noexcept
+	{
+		if (auto* capture = current.load(std::memory_order_acquire); capture && capture->recorder.AssetsEnabled()) {
+			AssetRecord asset{ .kind = kind, .path = path };
+			recorder_ = &capture->recorder;
+			token_ = recorder_->Begin(GetCurrentThreadId(), stage, ReadCounter(), Boundary::None, asset);
+		}
+	}
+	AssetScope::~AssetScope() noexcept
+	{
+		if (recorder_ && token_.phase.id)
+			recorder_->End(token_, ReadCounter());
+	}
+	void AssetScope::Result(bool success) noexcept
+	{
+		token_.phase.asset.resultKnown = true;
+		token_.phase.asset.success = success;
+	}
+	void AssetScope::Result(bool success, std::int64_t code) noexcept
+	{
+		Result(success);
+		token_.phase.asset.resultCodeKnown = true;
+		token_.phase.asset.resultCode = code;
+	}
+	void AssetScope::CacheHit(bool hit) noexcept
+	{
+		token_.phase.asset.cacheKnown = true;
+		token_.phase.asset.cacheHit = hit;
+	}
+	void AssetScope::Bytes(std::uint64_t bytes) noexcept
+	{
+		token_.phase.asset.bytesKnown = true;
+		token_.phase.asset.bytes = bytes;
+	}
+	void AssetScope::Dimensions(std::uint32_t width, std::uint32_t height, std::uint32_t mips, std::uint32_t format) noexcept
+	{
+		auto& asset = token_.phase.asset;
+		asset.dimensionsKnown = true;
+		asset.width = width;
+		asset.height = height;
+		asset.mipLevels = mips;
+		asset.format = format;
+	}
+	bool AssetRecordingEnabled() noexcept
+	{
+		const auto* capture = current.load(std::memory_order_acquire);
+		return capture && capture->recorder.AssetsEnabled();
+	}
+	bool CodeEvaluationEnabled() noexcept
+	{
+		const auto* capture = current.load(std::memory_order_acquire);
+		return capture && capture->recorder.CodeEvaluationEnabled();
 	}
 	void PublishGameContext() noexcept
 	{
@@ -63,6 +117,7 @@ namespace CSX::Diagnostics::Stutters
 	void Install()
 	{
 		if (auto* host = DevBenchAPI::GetDevBenchInterface001()) {
+			AssetLoadHooks::Install();
 			auto& capture = Service();
 			static const auto descriptor = Capture::Descriptor().dump();
 			host->RegisterTool("communityshaders.stutters", descriptor.c_str(), Handler, &capture);

@@ -1,5 +1,8 @@
 #include "State.h"
 #include "Features/TextureStreaming.h"
+#ifdef DEVBENCH_BRIDGE_ENABLED
+#	include "Diagnostics/EngineStutterMonitor.h"
+#endif
 
 #ifndef WIN32_LEAN_AND_MEAN
 #	define WIN32_LEAN_AND_MEAN
@@ -307,6 +310,15 @@ namespace
 		Count
 	};
 
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	constexpr std::array<std::string_view, static_cast<size_t>(StateDrawPhase::Count)> kStateDrawScopeNames{
+		"State::Draw", "State::SceneSettingsUpdate", "State::PerfModeRelatch", "State::PostLoadRuntimeReset",
+		"WeatherManager::UpdateFeatures", "TerrainBlending::TerrainShaderHacks", "CloudShadows::SkyShaderHacks",
+		"TerrainHelper::SetShaderResources", "TruePBR::SetShaderResources", "VolumetricShadows::SetShaderResources",
+		"State::PermutationCBUpdate", "State::ShadowDataCopy", "State::DebugOverlay"
+	};
+#endif
+
 	struct StateDrawPhaseStats
 	{
 		uint64_t totalTicks = 0;
@@ -421,12 +433,19 @@ namespace
 		uint32_t frame = 0;
 		uint64_t startTicks = 0;
 		bool active = false;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		std::optional<CSX::Diagnostics::Stutters::Scope> stutterScope;
+#endif
 
-		ScopedStateDrawPhaseTimer(StateDrawPhase a_phase, uint32_t a_frame, bool a_active) :
+		ScopedStateDrawPhaseTimer(StateDrawPhase a_phase, uint32_t a_frame, bool a_active, [[maybe_unused]] std::string_view a_scopeName = {}) :
 			phase(a_phase), frame(a_frame), active(a_active)
 		{
 			if (active)
 				startTicks = ReadStateDrawDiagCounterTicks();
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			if (CSX::Diagnostics::Stutters::CodeEvaluationEnabled())
+				stutterScope.emplace(a_scopeName.empty() ? kStateDrawScopeNames[static_cast<size_t>(phase)] : a_scopeName);
+#endif
 		}
 
 		~ScopedStateDrawPhaseTimer()
@@ -447,7 +466,14 @@ void State::Draw()
 	const uint32_t stateDrawDiagFrame = stateDrawDiagActive ? frameCount : 0;
 	if (stateDrawDiagActive)
 		FlushStateDrawPhaseDiagForNewFrame(stateDrawDiagFrame);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	const bool sunGlareDraw = CSX::Diagnostics::Stutters::CodeEvaluationEnabled() && currentShader && currentShader->shaderType.get() == RE::BSShader::Type::Sky &&
+	                          (currentPixelDescriptor & 255) == static_cast<std::uint32_t>(SIE::ShaderCache::SkyShaderTechniques::SunGlare);
+	// The bound shader is context; this duration belongs to shared state evaluation.
+	ScopedStateDrawPhaseTimer stateDrawTotalDiag(StateDrawPhase::Total, stateDrawDiagFrame, stateDrawDiagActive, sunGlareDraw ? "State::Draw[Sky::SunGlare]" : "");
+#else
 	ScopedStateDrawPhaseTimer stateDrawTotalDiag(StateDrawPhase::Total, stateDrawDiagFrame, stateDrawDiagActive);
+#endif
 
 	auto shaderCache = globals::shaderCache;
 	auto deferred = globals::deferred;

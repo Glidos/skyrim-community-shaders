@@ -71,7 +71,7 @@ int main()
 			} });
 		const auto descriptor = Capture::Descriptor();
 		Check(descriptor.at("inputSchema").at("properties").at("thresholdMs").at("minimum") == 10, "descriptor range differs");
-		for (const auto* request : { "[]", "{", R"({"action":7})", R"({"unexpected":0})", R"({"thresholdMs":"50"})", R"({"durationSeconds":601})", R"({"thresholdMs":0})", R"({"action":"bogus"})", R"({"action":"start","expectedBuildId":"wrong"})" }) {
+		for (const auto* request : { "[]", "{", R"({"action":7})", R"({"unexpected":0})", R"({"thresholdMs":"50"})", R"({"durationSeconds":601})", R"({"thresholdMs":0})", R"({"action":"bogus"})", R"({"includeAssets":1})", R"({"includeCodeEvaluation":1})", R"({"assetThresholdMs":-1})", R"({"passThresholdMs":1001})", R"({"action":"start","expectedBuildId":"wrong"})" }) {
 			const auto result = capture.Request(request);
 			Check(result.contains("error") && result.at("producer").at("buildId") == "fixture", "bad input lost error or producer identity");
 		}
@@ -184,6 +184,45 @@ int main()
 		Check(stopped.at("finishReason") == "record_limit" && stopped.at("retainedEventCapacity") == 256, "record bound missing");
 		Check(stopped.at("events").size() == 256 && stopped.at("firstRetainedSequence").get<unsigned>() > 1, "history was not bounded");
 		Check(VerifyJournal(stopped, true) == 4096, "maximum journal record count exceeded or terminal record omitted");
+		Check(capture.Dispatch({ { "action", "start" }, { "includeAssets", true }, { "includeCodeEvaluation", true }, { "assetThresholdMs", 0 }, { "passThresholdMs", 1 } }).at("active") == true, "asset capture did not start");
+		std::string assetPath = "textures/fixture.dds";
+		AssetRecord asset{ .kind = AssetKind::Texture, .path = assetPath };
+		auto assetToken = capture.recorder.Begin(GetCurrentThreadId(), "Texture::Create", ReadCounter(), Boundary::None, asset);
+		assetToken.phase.asset.resultKnown = assetToken.phase.asset.resultCodeKnown = true;
+		assetToken.phase.asset.success = false;
+		assetToken.phase.asset.resultCode = 0;
+		assetToken.phase.asset.bytesKnown = assetToken.phase.asset.cacheKnown = true;
+		capture.recorder.End(assetToken, ReadCounter());
+		auto assets = Await(capture, [](const json& status) { return status.at("assetEventCount") == 1; });
+		Check(assets.at("includeCodeEvaluation") == true && capture.recorder.CodeEvaluationEnabled() && assets.at("maximumRecords") == 16384 && assets.at("includeAssets") == true && assets.at("assetThresholdMs") == 0 && assets.at("passThresholdMs") == 1, "asset settings not reported");
+		const auto& assetEvent = assets.at("events").back();
+		Check(assetEvent.at("kind") == "asset_load" && assetEvent.at("asset").at("path") == assetPath, "named asset event missing");
+		Check(assetEvent.at("asset").at("success") == false && assetEvent.at("asset").at("resultCode") == 0 && assetEvent.at("asset").at("bytes") == 0 && assetEvent.at("asset").at("cacheHit") == false, "asset false/zero values changed");
+		Check(assetEvent.at("asset").at("queueWaitMs").is_null() && assetEvent.at("asset").at("gpuCompletionMs").is_null() && assetEvent.at("asset").at("width").is_null(), "unobserved stage was fabricated");
+		std::string invalidPath(1, static_cast<char>(0x80));
+		AssetRecord invalidName{ .kind = AssetKind::Texture, .path = invalidPath };
+		auto invalidToken = capture.recorder.Begin(GetCurrentThreadId(), "Texture::InvalidUtf8", ReadCounter(), Boundary::None, invalidName);
+		capture.recorder.End(invalidToken, ReadCounter());
+		Await(capture, [](const json& status) { return status.at("assetEventCount") == 2; });
+		capture.Respond(R"({"action":"events"})", &sink, [](void* context, const char* response) {
+			static_cast<Sink*>(context)->response = response;
+		});
+		const auto malformedName = json::parse(sink.response).at("events").back().at("asset");
+		Check(malformedName.at("pathUtf8Valid") == false && malformedName.at("pathBytes") == json::array({ 128 }), "non-UTF-8 asset bytes were lost");
+		capture.Dispatch({ { "action", "stop" } });
+		stopped = Stopped(capture);
+		VerifyJournal(stopped, false);
+		std::ifstream assetJournal(stopped.at("journalPath").get<std::string>());
+		bool assetPersisted = false, invalidNamePersisted = false;
+		std::string assetLine;
+		while (std::getline(assetJournal, assetLine)) {
+			const auto saved = json::parse(assetLine);
+			if (saved.at("kind") == "asset_load") {
+				assetPersisted |= saved.at("asset") == assetEvent.at("asset");
+				invalidNamePersisted |= saved.at("asset") == malformedName;
+			}
+		}
+		Check(assetPersisted && invalidNamePersisted && stopped.at("assetEventCount") == 2, "asset journal evidence differs from event receipt");
 		fixtureFailure.store(true);
 		Check(!capture.Dispatch({ { "action", "start" } }).contains("error"), "failure-path capture did not start");
 		stopped = Stopped(capture);

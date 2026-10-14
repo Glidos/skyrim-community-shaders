@@ -19,6 +19,10 @@
 #include "Utils/ResourceName.h"
 #include "Utils/UI.h"
 #include "Utils/VirtualFunctionHook.h"
+#ifdef DEVBENCH_BRIDGE_ENABLED
+#	include "Diagnostics/EngineStutterMonitor.h"
+#	include "Diagnostics/AssetLoadHooks.h"
+#endif
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -57,7 +61,16 @@ namespace
 	{
 		auto remembered = StreamingTextures::LoadHooks::Prepare(static_cast<ID3D11Device*>(device), maximum);
 		const auto limit = remembered ? (std::max(remembered->size.full.Width, remembered->size.full.Height) >> remembered->size.drop) : maximum;
-		const auto result = originalDDSLoader(device, stream, output, header, limit, flags);
+		std::int32_t result;
+		{
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			CSX::Diagnostics::Stutters::AssetScope asset(CSX::Diagnostics::Stutters::AssetKind::Texture, {}, "Texture::NativeDDSLoad");
+#endif
+			result = originalDDSLoader(device, stream, output, header, limit, flags);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			asset.Result(result >= 0 && output && *output && (*output)->texture, result);
+#endif
+		}
 		if (result >= 0 && output && *output && (*output)->texture) {
 			const StreamingTextures::Origin origin{ ++originSerial, false };
 			const auto status = StreamingTextures::WriteOrigin((*output)->texture, origin);
@@ -243,6 +256,9 @@ namespace
 
 	ReadResult ReadDDS(ReadRequest request, StreamingTextures::RestorationCache& cache)
 	{
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		CSX::Diagnostics::Stutters::AssetScope asset(CSX::Diagnostics::Stutters::AssetKind::Texture, request.path, "TextureStreaming::ReadDDS");
+#endif
 		ReadResult result;
 		result.request = std::move(request);
 		try {
@@ -252,10 +268,17 @@ namespace
 				if (result.image) {
 #ifdef DEVBENCH_BRIDGE_ENABLED
 					result.cacheHit = true;
+					asset.CacheHit(true);
+					asset.Result(true);
+					asset.Bytes(0);
 #endif
 					return result;
 				}
 			}
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			if (result.request.kind == ReadKind::Restore)
+				asset.CacheHit(false);
+#endif
 			RE::BSResourceNiBinaryStream stream(result.request.path);
 			if (!stream.good() || !stream.stream)
 				throw std::runtime_error("DDS source is unavailable in the game resource namespace");
@@ -269,6 +292,8 @@ namespace
 					throw std::runtime_error("DDS source header read was incomplete");
 #ifdef DEVBENCH_BRIDGE_ENABLED
 				result.sourceBytesRead = count;
+				asset.Bytes(count);
+				asset.Result(true);
 #endif
 				result.headerHash = StreamingTextures::HeaderHash(std::span(header.data(), count));
 				result.fileBytes = size;
@@ -279,23 +304,51 @@ namespace
 			if (memory.availableCommit < Policy::SystemMemoryReserveBytes + 2 * size)
 				throw std::runtime_error("Insufficient system commit headroom for DDS restoration");
 			std::vector<std::uint8_t> bytes(size);
-			if (!stream.read(bytes.data(), size))
-				throw std::runtime_error("DDS source read was incomplete");
+			{
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				CSX::Diagnostics::Stutters::AssetScope read(CSX::Diagnostics::Stutters::AssetKind::Texture, {}, "TextureStreaming::ReadPayload");
+#endif
+				const bool success = stream.read(bytes.data(), size);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				read.Result(success);
+				if (success)
+					read.Bytes(size);
+#endif
+				if (!success)
+					throw std::runtime_error("DDS source read was incomplete");
+			}
 #ifdef DEVBENCH_BRIDGE_ENABLED
 			result.sourceBytesRead = size;
+			asset.Bytes(size);
 #endif
 			if (!StreamingTextures::MatchesDDSHeader(bytes, size, result.request.full))
 				throw std::runtime_error("DDS source no longer matches the original texture contract");
 			auto image = std::make_shared<DirectX::ScratchImage>();
-			const auto hr = DirectX::LoadFromDDSMemory(bytes.data(), bytes.size(), DirectX::DDS_FLAGS_NONE, nullptr, *image);
+			HRESULT hr;
+			{
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				CSX::Diagnostics::Stutters::AssetScope decode(CSX::Diagnostics::Stutters::AssetKind::Texture, {}, "TextureStreaming::DecodeDDS");
+				decode.Bytes(bytes.size());
+#endif
+				hr = DirectX::LoadFromDDSMemory(bytes.data(), bytes.size(), DirectX::DDS_FLAGS_NONE, nullptr, *image);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				decode.Result(SUCCEEDED(hr), hr);
+#endif
+			}
 			if (FAILED(hr) || !StreamingTextures::MatchesDDS(*image, result.request.full))
 				throw std::runtime_error("DDS mip chain is invalid or incomplete");
 			result.image = std::move(image);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			asset.Result(true);
+#endif
 			if (memory.cacheHealthy)
 				cache.Store(result.request.serial, result.request.path, result.request.full, result.image, result.request.cacheGeneration);
 		} catch (const std::exception& error) {
 			result.image.reset();
 			result.error = error.what();
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			asset.Result(false);
+#endif
 		}
 		return result;
 	}
@@ -1561,6 +1614,9 @@ void TextureStreaming::PostPostLoad()
 		originalDDSLoader = reinterpret_cast<DDSLoader>(REL::Relocation<std::uintptr_t>{ REL::VariantID(75721, 77533, 0xDD2B60) }.address());
 		const auto result = Util::AttachDetour(reinterpret_cast<void**>(&originalDDSLoader), reinterpret_cast<void*>(&LoadDDS));
 		originHookReady.store(result.error == NO_ERROR, std::memory_order_release);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		CSX::Diagnostics::Stutters::AssetLoadHooks::SetDDSAvailable(result.error == NO_ERROR);
+#endif
 		if (result.error == NO_ERROR)
 			StreamingTextures::LoadHooks::Install();
 		StreamingTextures::Preview::Install();

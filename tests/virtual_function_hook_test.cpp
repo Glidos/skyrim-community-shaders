@@ -225,6 +225,27 @@ namespace
 		Require(state.hooks.size() == 1);
 	}
 
+	void TestOptionalNativeAdmission()
+	{
+		auto table = OriginalTable();
+		FakeObject object{ table.data() };
+		HookState state;
+		void* original = nullptr;
+		const auto noClone = [](void*) -> std::size_t { return 0; };
+		const auto denied = InstallHook(state, &object, 0, 1, noClone, &original,
+			reinterpret_cast<void*>(FirstHook), DenyDetour, DenyProtection, true);
+		Require(denied.error != NO_ERROR && state.hooks.empty() && state.clones.empty() && object.Call(0) == 10);
+		table[0] = &object;
+		original = nullptr;
+		const auto nonExecutable = InstallHook(state, &object, 0, 1, noClone, &original,
+			reinterpret_cast<void*>(FirstHook), DenyDetour, VirtualProtect, true);
+		Require(nonExecutable.error == ERROR_INVALID_ADDRESS && original == nullptr && table[0] == &object);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		Require(Util::InstallNativeVirtualFunctionHook(0, 0, &original, reinterpret_cast<void*>(FirstHook)).error == ERROR_INVALID_PARAMETER);
+		Require(Util::InstallNativeVirtualFunctionHook((std::numeric_limits<std::uintptr_t>::max)(), 1, &original, reinterpret_cast<void*>(FirstHook)).error == ERROR_INVALID_PARAMETER);
+		Require(Util::InstallNativeVirtualFunctionHook(1, 0, &original, reinterpret_cast<void*>(FirstHook)).error == ERROR_NOACCESS);
+#endif
+	}
 	void TestReadOnlyObjectRejectsClonePublication()
 	{
 		auto* memory = VirtualAlloc(nullptr, sizeof(FakeObject), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
@@ -255,6 +276,7 @@ int main()
 		TestInvalidAndChangedTargets();
 		TestProtectionRestoreFailureIsReported();
 		TestReadOnlyObjectRejectsClonePublication();
+		TestOptionalNativeAdmission();
 		std::cout << "Virtual function hook checks passed\n";
 		return 0;
 	} catch (const std::exception& error) {

@@ -17,6 +17,7 @@ namespace CSX::Diagnostics::Stutters
 		std::function<std::optional<nlohmann::json>(const nlohmann::json&)> validateBuild;
 		std::function<bool()> shutdownRequested;
 		bool vr = false;
+		std::function<nlohmann::json()> assetCoverage;
 	};
 	/** Raw monotonic counter; zero explicitly signals unavailable timing. */
 	Tick ReadCounter() noexcept;

@@ -1,9 +1,11 @@
 #pragma once
 #ifdef DEVBENCH_BRIDGE_ENABLED
+#	include "Diagnostics/AssetLoadRecord.h"
 #	include <algorithm>
 #	include <array>
 #	include <atomic>
 #	include <cstdint>
+#	include <memory>
 #	include <string_view>
 #	include <thread>
 
@@ -31,8 +33,10 @@ namespace CSX::Diagnostics::Stutters
 		std::array<char, 96> name{};
 		Tick begin = 0;
 		std::uint32_t thread = 0;
-		std::uint64_t id = 0, epoch = 0, lossVersion = 0;
+		std::uint64_t id = 0, epoch = 0, lossVersion = 0, parentScopeId = 0;
 		Context context;
+		Boundary boundary = Boundary::None;
+		AssetRecord asset;
 		bool nameTruncated = false;
 	};
 	struct Event
@@ -48,7 +52,7 @@ namespace CSX::Diagnostics::Stutters
 	};
 	struct Batch
 	{
-		std::array<Phase, kThreadCapacity> active{}, overdue{};
+		std::array<Phase, kThreadCapacity> active{}, overdue{}, activeAssets{};
 		std::array<Phase, static_cast<unsigned>(Boundary::Count)> boundaries{};
 		std::array<Event, 256> events{};
 		Context context;
@@ -60,15 +64,22 @@ namespace CSX::Diagnostics::Stutters
 	class Recorder
 	{
 	public:
-		void Start(Tick threshold, Tick now, Tick deadline = 0) noexcept
+		void Start(Tick threshold, Tick now, Tick deadline = 0, Tick assetThreshold = -1, Tick passThreshold = -1, bool includeCodeEvaluation = false)
 		{
 			Stop();
+			if (assetThreshold >= 0 && !assetPaths_)
+				assetPaths_ = std::make_unique<AssetPaths>();
 			Lock();
 			++epoch_;
 			data_ = {};
 			slots_ = {};
 			losses_.store(0);
+			lostAssetPaths_.store(0);
+			assetPathCount_ = 0;
+			codeEvaluation_.store(includeCodeEvaluation, std::memory_order_relaxed);
 			threshold_ = threshold;
+			passThreshold_ = passThreshold >= 0 ? passThreshold : threshold;
+			assetThreshold_.store(assetThreshold, std::memory_order_relaxed);
 			started_ = now;
 			deadline_ = deadline;
 			enabled_.store(threshold > 0 && now > 0 && (!deadline || deadline > now), std::memory_order_release);
@@ -76,14 +87,19 @@ namespace CSX::Diagnostics::Stutters
 		}
 		void Stop() noexcept { enabled_.store(false, std::memory_order_release); }
 		bool Enabled() const noexcept { return enabled_.load(std::memory_order_acquire); }
+		bool CodeEvaluationEnabled() const noexcept { return Enabled() && codeEvaluation_.load(std::memory_order_relaxed); }
+		std::uint64_t LostAssetPaths() const noexcept { return lostAssetPaths_.load(std::memory_order_relaxed); }
+		bool AssetsEnabled() const noexcept { return Enabled() && assetThreshold_.load(std::memory_order_relaxed) >= 0; }
 		std::uint64_t LostUpdates() const noexcept { return losses_.load(std::memory_order_relaxed); }
 		std::uint64_t Epoch() const noexcept { return epoch_.load(std::memory_order_acquire); }
-		Token Begin(std::uint32_t thread, std::string_view name, Tick now, Boundary boundary = Boundary::None) noexcept
+		/** Copy borrowed asset paths; operation identity is assigned only by this capture. */
+		Token Begin(std::uint32_t thread, std::string_view name, Tick now, Boundary boundary = Boundary::None, const AssetRecord& asset = {}) noexcept
 		{
-			if (!Enabled())
+			if (!Enabled() || (asset.kind != AssetKind::None && !AssetsEnabled()))
 				return {};
 			const auto epoch = Epoch();
-			if (!thread || now <= 0 || name.empty() || boundary >= Boundary::Count) {
+			if (!thread || now <= 0 || name.empty() || boundary >= Boundary::Count ||
+				(asset.kind != AssetKind::None && asset.kind != AssetKind::Texture && asset.kind != AssetKind::Mesh)) {
 				++losses_;
 				return {};
 			}
@@ -117,6 +133,38 @@ namespace CSX::Diagnostics::Stutters
 			auto& slot = slots_[index];
 			slot.owner = thread;
 			Phase phase{ .begin = now, .thread = thread, .id = ++nextId_, .epoch = epoch, .lossVersion = losses_.load(), .context = data_.context };
+			phase.boundary = boundary;
+			phase.parentScopeId = slot.depth ? slot.phases[slot.depth - 1].id : 0;
+			phase.asset = asset;
+			phase.asset.operationId = 0;
+			if (asset.kind != AssetKind::None) {
+				for (unsigned depth = slot.depth; depth > 0; --depth) {
+					const auto& parent = slot.phases[depth - 1].asset;
+					if (parent.kind != asset.kind || (!asset.path.empty() && asset.path != parent.path))
+						continue;
+					phase.asset.path = parent.path;
+					phase.asset.pathTruncated = parent.pathTruncated;
+					phase.asset.operationId = parent.operationId;
+					break;
+				}
+				if (!phase.asset.operationId) {
+					if (!asset.path.empty()) {
+						if (assetPathCount_ == kAssetPathCapacity) {
+							++losses_;
+							++lostAssetPaths_;
+							Unlock();
+							return {};
+						}
+						auto& path = (*assetPaths_)[assetPathCount_++];
+						const auto length = std::min(asset.path.size(), path.size() - 1);
+						std::copy_n(asset.path.begin(), length, path.begin());
+						path[length] = 0;
+						phase.asset.path = std::string_view(path.data(), length);
+						phase.asset.pathTruncated = asset.pathTruncated || length != asset.path.size();
+					}
+					phase.asset.operationId = phase.id;
+				}
+			}
 			phase.nameTruncated = name.size() >= phase.name.size();
 			std::copy_n(name.begin(), std::min(name.size(), phase.name.size() - 1), phase.name.begin());
 			slot.phases[slot.depth++] = phase;
@@ -144,7 +192,9 @@ namespace CSX::Diagnostics::Stutters
 				Prune(token.slot);
 				if (slot.owner == token.phase.thread && slot.depth && slot.phases[slot.depth - 1].id == token.phase.id) {
 					--slot.depth;
-					if (now - token.phase.begin >= threshold_)
+					const auto threshold = token.phase.asset.kind != AssetKind::None ? assetThreshold_.load(std::memory_order_relaxed) : token.phase.boundary == Boundary::None ? passThreshold_ :
+					                                                                                                                                                              threshold_;
+					if (now - token.phase.begin >= threshold)
 						Push({ token.phase, now, false, token.phase.lossVersion == losses_.load() });
 				} else if (slot.owner == token.phase.thread) {
 					for (unsigned i = 0; i < slot.depth; ++i)
@@ -202,19 +252,23 @@ namespace CSX::Diagnostics::Stutters
 			Unlock();
 			return found;
 		}
-		Batch Drain(Tick now) noexcept
+		/** Fill caller-owned snapshot storage; large journals never consume the watchdog stack. */
+		Batch& Drain(Tick now, Batch& result) noexcept
 		{
 			Lock();
-			auto result = data_;
+			result = data_;
 			for (unsigned i = 0; i < slots_.size(); ++i) {
 				Prune(i);
 				const auto& slot = slots_[i];
 				result.active[i].thread = slot.owner;
 				if (slot.depth)
 					result.active[i] = slot.phases[slot.depth - 1];
-				for (unsigned j = 0; j < slot.depth; ++j)
+				for (unsigned j = 0; j < slot.depth; ++j) {
+					if (slot.phases[j].asset.kind != AssetKind::None)
+						result.activeAssets[i] = slot.phases[j];
 					if (now >= slot.phases[j].begin && now - slot.phases[j].begin >= threshold_)
 						result.overdue[i] = slot.phases[j];
+				}
 			}
 			result.lostUpdates = losses_.load();
 			data_.count = 0;
@@ -262,11 +316,17 @@ namespace CSX::Diagnostics::Stutters
 		}
 		void Unlock() noexcept { lock_.clear(std::memory_order_release); }
 		std::atomic_flag lock_ = ATOMIC_FLAG_INIT;
-		std::atomic_bool enabled_{ false };
+		static constexpr unsigned kAssetPathCapacity = 16384;
+		using AssetPaths = std::array<std::array<char, kAssetPathBytes>, kAssetPathCapacity>;
+		std::unique_ptr<AssetPaths> assetPaths_;
+		unsigned assetPathCount_ = 0;
+		std::atomic<std::uint64_t> lostAssetPaths_{ 0 };
+		std::atomic_bool enabled_{ false }, codeEvaluation_{ false };
 		std::atomic<std::uint64_t> losses_{ 0 }, epoch_{ 0 };
+		std::atomic<Tick> assetThreshold_{ -1 };
 		std::array<std::atomic<std::uint64_t>, kThreadCapacity> invalidThrough_{};
 		std::uint64_t nextId_ = 0;
-		Tick threshold_ = 0, started_ = 0, deadline_ = 0;
+		Tick threshold_ = 0, passThreshold_ = 0, started_ = 0, deadline_ = 0;
 		std::array<Slot, kThreadCapacity> slots_{};
 		Batch data_{};
 	};

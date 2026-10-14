@@ -24,6 +24,7 @@
 #ifdef DEVBENCH_BRIDGE_ENABLED
 #	include "Diagnostics/D3DTextureLifetimeTracker.h"
 #	include "Diagnostics/EngineStutterMonitor.h"
+#	include "Diagnostics/AssetLoadHooks.h"
 #	include "Features/Upscaling/VRRenderScaleDevBenchBridge.h"
 #endif
 
@@ -1221,7 +1222,14 @@ struct ID3D11Device_CreateTexture2D
 		const D3D11_SUBRESOURCE_DATA* a_initialData,
 		ID3D11Texture2D** a_texture)
 	{
-		const HRESULT result = func(a_device, a_desc, a_initialData, a_texture);
+		HRESULT result;
+		{
+			CSX::Diagnostics::Stutters::AssetScope asset(CSX::Diagnostics::Stutters::AssetKind::Texture, {}, "Texture::CreateD3DResource");
+			result = func(a_device, a_desc, a_initialData, a_texture);
+			asset.Result(SUCCEEDED(result), result);
+			if (a_desc)
+				asset.Dimensions(a_desc->Width, a_desc->Height, a_desc->MipLevels, static_cast<std::uint32_t>(a_desc->Format));
+		}
 		if (SUCCEEDED(result) && a_desc && a_texture && *a_texture) {
 			Diagnostics::D3DTextureLifetimeTracker::OnTextureCreated(
 				*a_texture,
@@ -1523,6 +1531,7 @@ namespace Hooks
 			stl::detour_vfunc<8, IDXGISwapChain_Present>(globals::d3d::swapChain);
 #ifdef DEVBENCH_BRIDGE_ENABLED
 			stl::detour_vfunc<5, ID3D11Device_CreateTexture2D>(globals::d3d::device);
+			CSX::Diagnostics::Stutters::AssetLoadHooks::SetTextureResourceAvailable(true);
 #endif
 
 			auto shaderCache = globals::shaderCache;

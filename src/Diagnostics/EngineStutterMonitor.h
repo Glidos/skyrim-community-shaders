@@ -17,6 +17,31 @@ namespace CSX::Diagnostics::Stutters
 		Recorder* recorder_ = nullptr;
 		Token token_;
 	};
+	/** Records a loader stage and inherits a same-kind operation on this thread. */
+	class AssetScope
+	{
+	public:
+		AssetScope(AssetKind kind, std::string_view path, std::string_view stage) noexcept;
+		~AssetScope() noexcept;
+		AssetScope(const AssetScope&) = delete;
+		AssetScope& operator=(const AssetScope&) = delete;
+		/** Preserve the observed native result without interpreting unknown outcomes. */
+		void Result(bool success) noexcept;
+		void Result(bool success, std::int64_t code) noexcept;
+		void CacheHit(bool hit) noexcept;
+		/** Count payload bytes handled by this stage, rather than unique disk reads. */
+		void Bytes(std::uint64_t bytes) noexcept;
+		/** Preserve the resource-creation request descriptor, including zero mip counts. */
+		void Dimensions(std::uint32_t width, std::uint32_t height, std::uint32_t mips, std::uint32_t format) noexcept;
+
+	private:
+		Recorder* recorder_ = nullptr;
+		Token token_;
+	};
+	/** Admit loader instrumentation only during an explicitly enabled asset capture. */
+	bool AssetRecordingEnabled() noexcept;
+	/** Admit additional CPU evaluation scopes only during an explicitly enabled capture. */
+	bool CodeEvaluationEnabled() noexcept;
 	/** Copies engine context on the game thread only while capture is enabled. */
 	void PublishGameContext() noexcept;
 	/** Controls capture without dispatching to a potentially stalled game thread. */

@@ -19,7 +19,7 @@ namespace CSX::Diagnostics::Stutters
 	namespace
 	{
 		constexpr unsigned kPollMs = 10, kRepeatMs = 250, kWaitTimeoutMs = 10;
-		constexpr unsigned kMaximumRecords = 4096, kRetainedRecords = 256, kMaximumRequestBytes = 8192;
+		constexpr unsigned kMaximumRecords = 4096, kMaximumAssetRecords = 16384, kRetainedRecords = 256, kMaximumRequestBytes = 8192;
 		constexpr double kMinThresholdMs = 10, kMaxThresholdMs = 1000, kDefaultThresholdMs = 50;
 		constexpr double kMinDurationSeconds = 1, kMaxDurationSeconds = 600, kDefaultDurationSeconds = 120;
 		std::uint64_t FileTicks(FILETIME value) noexcept { return (static_cast<std::uint64_t>(value.dwHighDateTime) << 32) | value.dwLowDateTime; }
@@ -197,13 +197,17 @@ namespace CSX::Diagnostics::Stutters
 	{
 		CaptureEnvironment environment;
 		Recorder& recorder;
+		Batch scratch;
 		std::mutex commandMutex, outputMutex;
 		std::jthread worker;
 		std::deque<json> retained;
 		std::string path, captureId;
 		std::array<char, 512> failure{};
 		std::string_view finishReason = "never_started";
-		std::uint64_t sequence = 0, droppedEvents = 0, omittedEvents = 0;
+		std::uint64_t sequence = 0, droppedEvents = 0, omittedEvents = 0, assetEvents = 0;
+		unsigned maximumRecords = kMaximumRecords;
+		bool includeAssets = false, includeCodeEvaluation = false;
+		double assetThresholdMs = 1, passThresholdMs = kDefaultThresholdMs;
 		Tick frequency = 0, threshold = 0, deadline = 0;
 		std::atomic_bool active{ false }, done{ true }, stopRequested{ false }, cleanupPending{ false };
 		bool journalFinalized = false;
@@ -236,21 +240,50 @@ namespace CSX::Diagnostics::Stutters
 			std::lock_guard lock(outputMutex);
 			if (retained.size() == kRetainedRecords)
 				retained.pop_front();
+			if (value.at("kind") == "asset_load")
+				++assetEvents;
 			retained.push_back(std::move(value));
+		}
+		json AssetJson(const AssetRecord& asset) const
+		{
+			json result{ { "kind", asset.kind == AssetKind::Texture ? "texture" : "mesh" }, { "path", !asset.path.empty() ? json(asset.path) : json(nullptr) },
+				{ "pathTruncated", asset.pathTruncated }, { "operationId", asset.operationId },
+				{ "operationIdSemantics", "same_thread_nested_capture_scopes_not_native_async_request_ids" },
+				{ "success", asset.resultKnown ? json(asset.success) : json(nullptr) }, { "resultCode", asset.resultCodeKnown ? json(asset.resultCode) : json(nullptr) },
+				{ "bytes", asset.bytesKnown ? json(asset.bytes) : json(nullptr) },
+				{ "byteSemantics", "stage_payload_bytes_not_unique_disk_reads" },
+				{ "dimensionsSource", asset.dimensionsKnown ? json("D3D11_TEXTURE2D_DESC_request") : json(nullptr) },
+				{ "width", asset.dimensionsKnown ? json(asset.width) : json(nullptr) }, { "height", asset.dimensionsKnown ? json(asset.height) : json(nullptr) },
+				{ "mipLevels", asset.dimensionsKnown ? json(asset.mipLevels) : json(nullptr) }, { "format", asset.dimensionsKnown ? json(asset.format) : json(nullptr) },
+				{ "cacheHit", asset.cacheKnown ? json(asset.cacheHit) : json(nullptr) }, { "queueWaitMs", nullptr }, { "gpuCompletionMs", nullptr },
+				{ "attribution", "observed_loader_stage_not_proven_frame_dependency" } };
+			const bool validUtf8 = asset.path.empty() || MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, asset.path.data(), static_cast<int>(asset.path.size()), nullptr, 0) > 0;
+			result["pathUtf8Valid"] = asset.path.empty() ? json(nullptr) : json(validUtf8);
+			result["pathBytes"] = nullptr;
+			if (!validUtf8) {
+				result["pathBytes"] = json::array();
+				for (const char byte : asset.path)
+					result["pathBytes"].push_back(static_cast<unsigned char>(byte));
+			}
+			return result;
 		}
 		json Record(const Phase& phase, Tick end, std::string_view kind, const Batch& batch, bool complete) const
 		{
 			return { { "kind", kind }, { "phase", phase.name.data() }, { "scopeId", phase.id }, { "captureEpoch", phase.epoch },
+				{ "parentScopeId", phase.parentScopeId }, { "asset", phase.asset.kind == AssetKind::None ? json(nullptr) : AssetJson(phase.asset) },
 				{ "threadId", phase.thread }, { "qpcBegin", phase.begin }, { "qpcEnd", end }, { "durationMs", Milliseconds(end - phase.begin) },
-				{ "phaseEvidenceComplete", complete }, { "phaseNameTruncated", phase.nameTruncated }, { "contextAtPhaseEntry", ContextJson(phase.context) },
+				{ "timingSemantics", "CPU wall duration includes waits and nested scopes; not GPU execution time" }, { "phaseEvidenceComplete", complete }, { "phaseNameTruncated", phase.nameTruncated }, { "contextAtPhaseEntry", ContextJson(phase.context) },
 				{ "lastGameContext", ContextJson(batch.context) }, { "lostHookUpdates", batch.lostUpdates }, { "droppedCompletedEvents", batch.droppedEvents } };
 		}
 		void Consume(const Batch& batch)
 		{
 			unsigned consumed = 0;
-			for (; consumed < batch.count && sequence < kMaximumRecords - 1; ++consumed) {
+			for (; consumed < batch.count && sequence < maximumRecords - 1; ++consumed) {
 				const auto& event = batch.events[consumed];
-				Emit(Record(event.phase, event.end, event.gap ? "boundary_gap" : "slow_scope", batch, event.complete));
+				const bool asset = event.phase.asset.kind != AssetKind::None;
+				Emit(Record(event.phase, event.end, asset ? "asset_load" : event.gap ? "boundary_gap" :
+																					   "slow_scope",
+					batch, event.complete));
 			}
 			std::lock_guard lock(outputMutex);
 			omittedEvents += batch.count - consumed;
@@ -259,7 +292,7 @@ namespace CSX::Diagnostics::Stutters
 		void PollWaits(std::array<WaitProbe, kThreadCapacity>& waits, Tick now)
 		{
 			for (auto& wait : waits) {
-				if (!wait.pending || sequence >= kMaximumRecords - 1)
+				if (!wait.pending || sequence >= maximumRecords - 1)
 					continue;
 				if (wait.ready.load(std::memory_order_acquire)) {
 					auto result = wait.Result();
@@ -310,14 +343,14 @@ namespace CSX::Diagnostics::Stutters
 							reason = "duration_limit";
 							break;
 						}
-						if (sequence >= kMaximumRecords - 1) {
+						if (sequence >= maximumRecords - 1) {
 							reason = "record_limit";
 							break;
 						}
-						auto batch = recorder.Drain(now);
+						const auto& batch = recorder.Drain(now, scratch);
 						Consume(batch);
 						PollWaits(waits, now);
-						for (unsigned i = 0; i < batch.active.size() && sequence < kMaximumRecords - 1; ++i) {
+						for (unsigned i = 0; i < batch.active.size() && sequence < maximumRecords - 1; ++i) {
 							if (!batch.active[i].thread)
 								continue;
 							const auto cpuSample = cpu[i].Sample(batch.active[i].thread);
@@ -337,6 +370,8 @@ namespace CSX::Diagnostics::Stutters
 							lastBoundary[i] = boundary;
 							auto event = Record(phase, now, boundary ? "missing_boundary_sample" : "active_stall_sample", batch, phase.lossVersion == batch.lostUpdates);
 							event["activePhaseAtObservation"] = batch.active[i].id ? json(batch.active[i].name.data()) : json(nullptr);
+							event["activeAssetScopeId"] = batch.activeAssets[i].id ? json(batch.activeAssets[i].id) : json(nullptr);
+							event["activeAssetAtObservation"] = batch.activeAssets[i].id ? AssetJson(batch.activeAssets[i].asset) : json(nullptr);
 							event["threadCpu"] = cpuSample.Json(frequency);
 							event["waitChain"] = waits[i].Begin(phase, boundary, sequence + 1);
 							event["observationStillCurrent"] = recorder.StillCurrent(phase, boundary);
@@ -349,7 +384,7 @@ namespace CSX::Diagnostics::Stutters
 					const auto end = ReadCounter();
 					if (!end)
 						throw std::runtime_error("QPC unavailable at capture stop");
-					const auto batch = recorder.Drain(end);
+					const auto& batch = recorder.Drain(end, scratch);
 					Consume(batch);
 					PollWaits(waits, end);
 					json open = json::array(), pending = json::array();
@@ -360,7 +395,7 @@ namespace CSX::Diagnostics::Stutters
 						if (wait.pending)
 							pending.push_back({ { "observationSequence", wait.observation }, { "threadId", wait.phase.thread }, { "timedOut", wait.timedOut } });
 					Emit({ { "kind", "capture_stopped" }, { "reason", reason }, { "qpc", end }, { "lostHookUpdates", batch.lostUpdates },
-						{ "droppedCompletedEvents", batch.droppedEvents }, { "omittedAtRecordLimit", omittedEvents }, { "openScopes", std::move(open) },
+						{ "droppedCompletedEvents", batch.droppedEvents }, { "omittedAtRecordLimit", omittedEvents }, { "assetEventCount", assetEvents }, { "lostAssetPaths", recorder.LostAssetPaths() }, { "openScopes", std::move(open) },
 						{ "pendingWaitChains", std::move(pending) }, { "semantics", "pending_wait_results_are_not_part_of_finalized_journal" } });
 					if (!FlushFileBuffers(file.get()))
 						throw std::runtime_error("stutter journal flush failed: " + std::to_string(GetLastError()));
@@ -391,7 +426,9 @@ namespace CSX::Diagnostics::Stutters
 				{ "lostHookUpdates", recorder.LostUpdates() }, { "droppedCompletedEvents", droppedEvents }, { "omittedAtRecordLimit", omittedEvents },
 				{ "firstRetainedSequence", retained.empty() ? json(nullptr) : retained.front().at("sequence") },
 				{ "lastRetainedSequence", retained.empty() ? json(nullptr) : retained.back().at("sequence") },
-				{ "retainedEventCapacity", kRetainedRecords }, { "maximumRecords", kMaximumRecords }, { "qpcFrequency", frequency }, { "recordingDeadlineQpc", deadline },
+				{ "retainedEventCapacity", kRetainedRecords }, { "maximumRecords", maximumRecords }, { "assetEventCount", assetEvents }, { "includeAssets", includeAssets }, { "includeCodeEvaluation", includeCodeEvaluation }, { "lostAssetPaths", recorder.LostAssetPaths() },
+				{ "assetThresholdMs", includeAssets ? json(assetThresholdMs) : json(nullptr) }, { "passThresholdMs", passThresholdMs },
+				{ "assetCoverage", environment.assetCoverage ? environment.assetCoverage() : json(nullptr) }, { "qpcFrequency", frequency }, { "recordingDeadlineQpc", deadline },
 				{ "pollMs", kPollMs }, { "sampleRepeatMs", kRepeatMs }, { "thresholdMs", frequency ? Milliseconds(threshold) : 0.0 },
 				{ "coverage", "SE/AE/VR engine update, CSX CPU pass scopes, DXGI Present, VR WaitGetPoses and stereo submit; no stack sampling or GPU execution attribution" },
 				{ "eventSemantics", "overlapping observations, not a count of distinct stutters; missing boundaries may include loading, pause, minimization or shutdown" } };
@@ -406,6 +443,9 @@ namespace CSX::Diagnostics::Stutters
 			if (worker.joinable())
 				worker.join();
 			const auto thresholdMs = args.value("thresholdMs", kDefaultThresholdMs), duration = args.value("durationSeconds", kDefaultDurationSeconds);
+			const bool newIncludeAssets = args.value("includeAssets", false), newIncludeCodeEvaluation = args.value("includeCodeEvaluation", false);
+			const auto newAssetThresholdMs = args.value("assetThresholdMs", 1.0);
+			const auto newPassThresholdMs = args.value("passThresholdMs", thresholdMs);
 			LARGE_INTEGER clock{};
 			const auto now = ReadCounter();
 			if (!QueryPerformanceFrequency(&clock) || clock.QuadPart <= 0 || !now)
@@ -419,8 +459,11 @@ namespace CSX::Diagnostics::Stutters
 			std::string newPath(utf8Path.begin(), utf8Path.end());
 			json header{ { "kind", "capture_started" }, { "schema", "csx-engine-stutters-v1" }, { "producer", environment.producer() },
 				{ "processId", GetCurrentProcessId() }, { "vr", environment.vr }, { "qpc", now }, { "qpcFrequency", clock.QuadPart },
-				{ "thresholdMs", thresholdMs }, { "durationSeconds", duration },
+				{ "thresholdMs", thresholdMs }, { "durationSeconds", duration }, { "includeAssets", newIncludeAssets }, { "includeCodeEvaluation", newIncludeCodeEvaluation },
+				{ "assetThresholdMs", newIncludeAssets ? json(newAssetThresholdMs) : json(nullptr) }, { "passThresholdMs", newPassThresholdMs },
+				{ "assetCoverage", environment.assetCoverage ? environment.assetCoverage() : json(nullptr) },
 				{ "timingSemantics", "CPU wall duration includes waits; scope times overlap; DXGI is a desktop mirror in VR" },
+				{ "assetTimingSemantics", "loader CPU wall stages overlap; native cache/queue, archive read/decompression split, GPU completion and frame dependency are not inferred" },
 				{ "limitations", "WCT cannot explain all synchronization primitives. Single-node or unavailable chains do not prove CPU work. WaitTime is preserved without assumed units. Correlate QPC/thread IDs with ETW stack/wait tracing for uninstrumented code and GPU attribution." } };
 			const auto raw = CreateFileW(journalPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
 			if (raw == INVALID_HANDLE_VALUE)
@@ -434,6 +477,12 @@ namespace CSX::Diagnostics::Stutters
 				threshold = static_cast<Tick>(thresholdMs * static_cast<double>(frequency) / 1000.0);
 				deadline = now + static_cast<Tick>(duration * static_cast<double>(frequency));
 				sequence = 0;
+				includeAssets = newIncludeAssets;
+				includeCodeEvaluation = newIncludeCodeEvaluation;
+				assetThresholdMs = newAssetThresholdMs;
+				passThresholdMs = newPassThresholdMs;
+				maximumRecords = includeAssets || includeCodeEvaluation || passThresholdMs < thresholdMs ? kMaximumAssetRecords : kMaximumRecords;
+				assetEvents = 0;
 				droppedEvents = 0;
 				omittedEvents = 0;
 				failure.fill(0);
@@ -446,7 +495,7 @@ namespace CSX::Diagnostics::Stutters
 				stopRequested.store(false);
 				done.store(false);
 				active.store(true);
-				recorder.Start(threshold, now, deadline);
+				recorder.Start(threshold, now, deadline, includeAssets ? static_cast<Tick>(assetThresholdMs * static_cast<double>(frequency) / 1000.0) : -1, static_cast<Tick>(passThresholdMs * static_cast<double>(frequency) / 1000.0), includeCodeEvaluation);
 				worker = std::jthread([this] { Run(); });
 			} catch (...) {
 				recorder.Stop();
@@ -463,17 +512,22 @@ namespace CSX::Diagnostics::Stutters
 			if (!args.is_object())
 				return { { "error", "arguments must be an object" } };
 			for (const auto& [key, value] : args.items()) {
-				if (key != "action" && key != "thresholdMs" && key != "durationSeconds" && key != "expectedBuildId")
+				if (key != "action" && key != "thresholdMs" && key != "durationSeconds" && key != "expectedBuildId" && key != "includeAssets" && key != "assetThresholdMs" && key != "passThresholdMs" && key != "includeCodeEvaluation")
 					return { { "error", "unknown argument: " + key } };
-				if (key == "action" || key == "expectedBuildId") {
+				if (key == "includeAssets" || key == "includeCodeEvaluation") {
+					if (!value.is_boolean())
+						return { { "error", key + " must be a boolean" } };
+				} else if (key == "action" || key == "expectedBuildId") {
 					if (!value.is_string())
 						return { { "error", key + " must be a string" } };
 				} else {
 					if (!value.is_number())
 						return { { "error", key + " must be a number" } };
 					const double number = value.get<double>();
-					const bool thresholdField = key == "thresholdMs";
-					if (!std::isfinite(number) || number < (thresholdField ? kMinThresholdMs : kMinDurationSeconds) || number > (thresholdField ? kMaxThresholdMs : kMaxDurationSeconds))
+					const bool thresholdField = key == "thresholdMs", assetField = key == "assetThresholdMs" || key == "passThresholdMs";
+					if (!std::isfinite(number) || number < (assetField ? 0 : thresholdField ? kMinThresholdMs :
+																							  kMinDurationSeconds) ||
+						number > ((thresholdField || assetField) ? kMaxThresholdMs : kMaxDurationSeconds))
 						return { { "error", key + " is outside the supported range" } };
 				}
 			}
@@ -549,8 +603,8 @@ namespace CSX::Diagnostics::Stutters
 	}
 	json Capture::Descriptor()
 	{
-		return { { "description", "Opt-in DevBench-only stutter journal. Captures bounded CPU scopes, engine/DXGI/OpenVR boundary gaps, active stalls, thread CPU deltas and asynchronous Windows wait chains. No game-thread dispatch, thread suspension, stack sampling or GPU execution attribution. Scope and gap observations overlap. Loading/pause/compilation context and all evidence losses remain explicit. Hooks never wait or allocate. Full exclusive JSONL journal in the SKSE log directory; events retains bounded recent history. Stop requests immediate hook shutdown and returns promptly; poll workerDone/journalFinalized before restart. Wait cleanup may outlive journal finalization. Every response includes producer identity." },
-			{ "inputSchema", { { "type", "object" }, { "properties", { { "action", { { "type", "string" }, { "enum", { "start", "status", "events", "stop" } }, { "default", "status" } } }, { "thresholdMs", { { "type", "number" }, { "minimum", kMinThresholdMs }, { "maximum", kMaxThresholdMs }, { "default", kDefaultThresholdMs } } }, { "durationSeconds", { { "type", "number" }, { "minimum", kMinDurationSeconds }, { "maximum", kMaxDurationSeconds }, { "default", kDefaultDurationSeconds } } }, { "expectedBuildId", { { "type", "string" } } } } }, { "additionalProperties", false } } } };
+		return { { "description", "Opt-in DevBench-only stutter and asset-loading journal. includeAssets adds named texture creation, optional native DDS and texture-streaming read/decode stages, D3D texture resource creation, mesh demand and model post-create CPU wall durations with operation/parent IDs, native results, bytes and dimensions where observed. includeCodeEvaluation adds named State::Draw CPU phases, including the bound Sun Glare shader as draw context rather than shader execution attribution; passThresholdMs can retain smaller completed CPU scope spikes. Asset timings include waits and overlap; native queue/cache, decompression split, GPU completion and general scene attachment remain unobserved. Captures engine/DXGI/OpenVR gaps, active stalls, thread CPU deltas and asynchronous Windows wait chains without game-thread dispatch, suspension or stack sampling. Hooks never wait, allocate or write files. Loading/pause/compilation context, actual hook coverage and evidence losses remain explicit. Full exclusive JSONL journal in the SKSE log directory; events retains 256 recent records. Journal is bounded to 4096 records, or 16384 with assets, detailed code evaluation or a lower CPU pass threshold. Stop disables recording promptly; poll workerDone/journalFinalized before restart. Every response includes producer identity." },
+			{ "inputSchema", { { "type", "object" }, { "properties", { { "action", { { "type", "string" }, { "enum", { "start", "status", "events", "stop" } }, { "default", "status" } } }, { "thresholdMs", { { "type", "number" }, { "minimum", kMinThresholdMs }, { "maximum", kMaxThresholdMs }, { "default", kDefaultThresholdMs } } }, { "durationSeconds", { { "type", "number" }, { "minimum", kMinDurationSeconds }, { "maximum", kMaxDurationSeconds }, { "default", kDefaultDurationSeconds } } }, { "passThresholdMs", { { "type", "number" }, { "minimum", 0 }, { "maximum", kMaxThresholdMs }, { "description", "Completed CPU scope threshold; defaults to thresholdMs. Boundary-gap and active-stall thresholds remain thresholdMs." } } }, { "includeCodeEvaluation", { { "type", "boolean" }, { "default", false }, { "description", "Enable detailed State::Draw CPU phases. The Sun Glare label describes the bound shader context, not that shader's execution time. GPU execution still requires a separate profiler capture." } } }, { "includeAssets", { { "type", "boolean" }, { "default", false } } }, { "assetThresholdMs", { { "type", "number" }, { "minimum", 0 }, { "maximum", kMaxThresholdMs }, { "default", 1 } } }, { "expectedBuildId", { { "type", "string" } } } } }, { "additionalProperties", false } } } };
 	}
 }
 #endif

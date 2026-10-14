@@ -9,7 +9,7 @@ target_include_directories(
 )
 target_compile_definitions(
     virtual_function_hook_test
-    PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN
+    PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN DEVBENCH_BRIDGE_ENABLED
 )
 target_link_libraries(virtual_function_hook_test PRIVATE ${DETOURS_LIBRARY})
 set_tests_properties(VirtualFunctionHook PROPERTIES TIMEOUT 30)

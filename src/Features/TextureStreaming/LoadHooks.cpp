@@ -1,6 +1,7 @@
 #include "LoadHooks.h"
 #include "Utils/FileSystem.h"
 #include "Utils/GpuMemoryBudget.h"
+#include "Utils/NativeTextureLoading.h"
 #include <atomic>
 #include <condition_variable>
 #include <fstream>
@@ -133,7 +134,7 @@ namespace StreamingTextures::LoadHooks
 			std::optional<ReducedLoad> load;
 		};
 		thread_local Scope* loading = nullptr;
-		using CreateTexture = void (*)(void*, RE::NiSourceTexture*);
+		using CreateTexture = Util::NativeTextureLoading::Create;
 		CreateTexture originalCreate = nullptr;
 
 		void Create(void* manager, RE::NiSourceTexture* source)
@@ -159,8 +160,8 @@ namespace StreamingTextures::LoadHooks
 		// Texture-creation slot reference: dnai92/SPS; see README.md#texture-streaming-reference.
 		// The resource manager's texture-creation slot has the same layout in SE, AE and VR.
 		REL::Relocation<std::uintptr_t> table{ RE::VTABLE_BSShaderResourceManager[0] };
-		originalCreate = *reinterpret_cast<CreateTexture*>(table.address() + 0xD0);
-		table.write_vfunc(0x1A, &Create);
+		originalCreate = reinterpret_cast<CreateTexture*>(table.address())[Util::NativeTextureLoading::kCreateSlot];
+		table.write_vfunc(Util::NativeTextureLoading::kCreateSlot, &Create);
 		catalog.hookReady = true;
 	}
 	void Configure(bool enabled, const Modes& modes, const Options& options, const Categories& categories, std::uint32_t maximumDrop)

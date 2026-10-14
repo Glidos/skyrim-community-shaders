@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 #include <cstddef>
+#include <cstdint>
 
 struct ID3D11Device;
 struct ID3D11DeviceContext;
@@ -52,6 +53,13 @@ namespace Util
 		long detourError = NO_ERROR;
 		VirtualHookMethod method = VirtualHookMethod::Detour;
 	};
+
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	/** Install an optional native table hook with checked publication and no object cloning.
+	 * Original storage must have process lifetime; call only during initialization.
+	 */
+	VirtualHookResult InstallNativeVirtualFunctionHook(std::uintptr_t table, std::size_t slot, void** original, void* hook);
+#endif
 
 	/**
 	 * @brief Install a graphics hook, retaining the original call target before publication.
