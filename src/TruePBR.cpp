@@ -796,18 +796,19 @@ namespace
 			return nullptr;
 		}
 
-		auto* material = static_cast<BSLightingShaderMaterialPBRLandscape*>(property->material);
-		if (!Util::IsLikelyValidPointer(material)) {
+		auto* sourceMaterial = property->material;
+		if (!Util::IsLikelyValidPointer(sourceMaterial)) {
 			static std::atomic_flag loggedInvalidLandscapeMaterialAddress{};
 			if (!loggedInvalidLandscapeMaterialAddress.test_and_set(std::memory_order_relaxed)) {
 				logger::error("[TruePBR] Invalid landscape material pointer {:X} (geometry: {}) - keeping original render state",
-					reinterpret_cast<std::uintptr_t>(material),
+					reinterpret_cast<std::uintptr_t>(sourceMaterial),
 					GetGeometryName(geometry));
 			}
 			return nullptr;
 		}
 
-		if (!BSLightingShaderMaterialPBRLandscape::All.Contains(material)) {
+		auto* material = const_cast<BSLightingShaderMaterialPBRLandscape*>(BSLightingShaderMaterialPBRLandscape::GetRegistered(sourceMaterial));
+		if (!material) {
 			static std::atomic_flag loggedUnknownPBRLandscapeMaterial{};
 			if (!loggedUnknownPBRLandscapeMaterial.test_and_set(std::memory_order_relaxed)) {
 				logger::warn("[TruePBR] Ignoring unregistered landscape PBR material on geometry {} to avoid invalid casts",

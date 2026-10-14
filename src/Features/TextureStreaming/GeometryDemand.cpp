@@ -24,14 +24,6 @@ namespace StreamingTextures
 		return first && second && (first == second || (first->rendererTexture && second->rendererTexture && first->rendererTexture->texture && first->rendererTexture->texture == second->rendererTexture->texture));
 	}
 
-	static const BSLightingShaderMaterialPBRLandscape* GetPBRLandscape(const RE::BSLightingShaderMaterialBase* material)
-	{
-		if (!material || material->GetFeature() != RE::BSShaderMaterial::Feature::kMultiTexLandLODBlend)
-			return nullptr;
-		const auto* pbr = static_cast<const BSLightingShaderMaterialPBRLandscape*>(material);
-		return BSLightingShaderMaterialPBRLandscape::All.Contains(const_cast<BSLightingShaderMaterialPBRLandscape*>(pbr)) ? pbr : nullptr;
-	}
-
 	using TexturePointer = decltype(RE::BSLightingShaderMaterialBase::diffuseTexture);
 	struct TerrainLayers
 	{
@@ -42,7 +34,7 @@ namespace StreamingTextures
 
 	static std::optional<TerrainLayers> GetTerrainLayers(const RE::BSLightingShaderMaterialBase* material)
 	{
-		if (const auto* pbr = GetPBRLandscape(material)) {
+		if (const auto* pbr = BSLightingShaderMaterialPBRLandscape::GetRegistered(material)) {
 			if (!pbr->numLandscapeTextures || pbr->numLandscapeTextures > BSLightingShaderMaterialPBRLandscape::NumTiles)
 				return std::nullopt;
 			return TerrainLayers{ pbr->landscapeBaseColorTextures[0].get(), pbr->landscapeNormalTextures[0].get(),
@@ -86,7 +78,7 @@ namespace StreamingTextures
 			return matches(layers->layerTexture) || matches(layers->envTexture) || matches(layers->envMaskTexture);
 		}
 		if (feature == RE::BSShaderMaterial::Feature::kMultiTexLandLODBlend) {
-			if (const auto* pbr = GetPBRLandscape(material))
+			if (const auto* pbr = BSLightingShaderMaterialPBRLandscape::GetRegistered(material))
 				return matches(pbr->terrainOverlayTexture) || matches(pbr->terrainNoiseTexture) ||
 				       std::ranges::any_of(pbr->landscapeDisplacementTextures, matches) || std::ranges::any_of(pbr->landscapeRMAOSTextures, matches);
 			const auto* terrain = static_cast<const RE::BSLightingShaderMaterialLandscape*>(material);
@@ -122,7 +114,7 @@ namespace StreamingTextures
 		}
 		if (feature != RE::BSShaderMaterial::Feature::kMultiTexLandLODBlend)
 			return false;
-		if (const auto* pbr = GetPBRLandscape(material))
+		if (const auto* pbr = BSLightingShaderMaterialPBRLandscape::GetRegistered(material))
 			return extended.settings.EnableParallax && std::ranges::any_of(pbr->landscapeDisplacementTextures, [](const auto& texture) {
 				return texture && (!globals::game::graphicsState || !SharesTextureResource(texture.get(), globals::game::graphicsState->GetRuntimeData().defaultTextureBlack.get()));
 			});
@@ -265,7 +257,7 @@ namespace StreamingTextures
 		}
 		auto* material = static_cast<RE::BSLightingShaderMaterialBase*>(property->material);
 		// PBR landscape keeps the native feature ID, but its layer arrays have a different layout.
-		if (terrain && (property->flags.underlying() & static_cast<std::uint64_t>(Flag::kVertexLighting)) && !GetPBRLandscape(material))
+		if (terrain && (property->flags.underlying() & static_cast<std::uint64_t>(Flag::kVertexLighting)) && !BSLightingShaderMaterialPBRLandscape::GetRegistered(material))
 			return reject(MaterialRejection::MaterialFeature);
 		if (nativeParallax || (property->flags.underlying() & parallaxFlags) || UsesExtendedParallax(material))
 			required |= Parallax;

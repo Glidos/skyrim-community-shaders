@@ -25,7 +25,7 @@ target_include_directories(texture_streaming_gate_test PRIVATE "${_streaming_gat
 
 set(_streaming_categories_dir "${CMAKE_CURRENT_BINARY_DIR}/generated/streaming-categories")
 set(_streaming_categories_headers)
-foreach(_header material demand settings ui flags features sections mode geometry_types startup conflict)
+foreach(_header material demand settings ui flags features sections mode geometry_types startup conflict landscape_lookup)
     list(APPEND _streaming_categories_headers "${_streaming_categories_dir}/streaming_${_header}_under_test.h")
 endforeach()
 add_custom_command(OUTPUT ${_streaming_categories_headers}
@@ -33,6 +33,7 @@ add_custom_command(OUTPUT ${_streaming_categories_headers}
         "-DOUTPUT_DIRECTORY=${_streaming_categories_dir}" -P
         "${PROJECT_SOURCE_DIR}/tests/extract_texture_streaming_categories.cmake"
     DEPENDS src/Features/TextureStreaming.cpp src/Features/TextureStreaming/GeometryDemand.cpp
+        src/TruePBR/BSLightingShaderMaterialPBRLandscape.cpp
         src/Menu/SettingsPage.h extern/CommonLibSSE-NG/include/RE/B/BSShaderMaterial.h
         extern/CommonLibSSE-NG/include/RE/B/BSShaderProperty.h
         extern/CommonLibSSE-NG/include/RE/B/BSGeometry.h

@@ -2715,6 +2715,7 @@ if(BUILD_CONTROLLER_TESTS)
         tests/pbr_material_registry_test.cpp
     )
     set_tests_properties(PBRMaterialRegistry PROPERTIES TIMEOUT 30)
+    include("${PROJECT_SOURCE_DIR}/cmake/PBRTextureEnumerationTests.cmake")
     add_controller_test(
         perf_mode_restart_state_test
         PerfModeRestartState

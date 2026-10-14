@@ -2,6 +2,7 @@
 #include "Features/TextureStreaming/GeometryDemand.h"
 #include "Features/TextureStreaming/Settings.h"
 #include "TruePBR/MaterialRegistry.h"
+#include "asset_load_diagnostics_fixture.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -156,12 +157,14 @@ struct BSLightingShaderMaterialPBR : RE::BSLightingShaderMaterialBase
 struct BSLightingShaderMaterialPBRLandscape : RE::BSLightingShaderMaterialBase
 {
 	static constexpr std::uint32_t NumTiles = 6;
+	static const BSLightingShaderMaterialPBRLandscape* GetRegistered(const RE::BSShaderMaterial* material);
 	inline static PBRMaterialRegistry<BSLightingShaderMaterialPBRLandscape, bool> All;
 	std::uint32_t numLandscapeTextures = 1;
 	std::array<std::shared_ptr<RE::NiSourceTexture>, NumTiles> landscapeBaseColorTextures, landscapeNormalTextures;
 	std::array<std::shared_ptr<RE::NiSourceTexture>, NumTiles> landscapeDisplacementTextures, landscapeRMAOSTextures;
 	std::shared_ptr<RE::NiSourceTexture> terrainOverlayTexture, terrainNoiseTexture;
 };
+#include "streaming_landscape_lookup_under_test.h"
 namespace globals
 {
 	namespace game

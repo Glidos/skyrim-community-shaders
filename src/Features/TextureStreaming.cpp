@@ -13,6 +13,7 @@
 #include "TextureStreaming/RestorationPriority.h"
 #include "TextureStreaming/Settings.h"
 #include "TextureStreaming/TextureData.h"
+#include "TruePBR/TextureEnumeration.h"
 #include "Utils/Game.h"
 #include "Utils/GpuMemoryBudget.h"
 #include "Utils/RendererContextAccess.h"
@@ -855,7 +856,7 @@ void TextureStreaming::State::ScanPreviews()
 						return 1;
 					}
 				} visitor(*this);
-				property->ForEachTexture(visitor);
+				PBRTextures::ForEach(*property, visitor);
 			}
 		if (auto* branch = object->AsNode())
 			for (const auto& child : branch->GetChildren())
@@ -957,7 +958,7 @@ void TextureStreaming::State::Scan()
 						return 1;
 					}
 				} visitor(*this, geometry, material, eligible, requiredCategories);
-				property->ForEachTexture(visitor);
+				PBRTextures::ForEach(*property, visitor);
 			}
 		}
 		if (auto* branch = node.object->AsNode())

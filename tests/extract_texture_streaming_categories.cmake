@@ -1,5 +1,8 @@
 include("${CMAKE_CURRENT_LIST_DIR}/extract_source_region.cmake")
 file(MAKE_DIRECTORY "${OUTPUT_DIRECTORY}")
+file(READ "${PROJECT_ROOT}/src/TruePBR/BSLightingShaderMaterialPBRLandscape.cpp" source)
+extract_between("${source}" "const BSLightingShaderMaterialPBRLandscape* BSLightingShaderMaterialPBRLandscape::GetRegistered("
+    "bool BSLightingShaderMaterialPBRLandscape::HasGlint()" "streaming_landscape_lookup_under_test.h")
 file(READ "${PROJECT_ROOT}/src/Features/TextureStreaming/GeometryDemand.cpp" source)
 extract_between("${source}" "static bool SharesTextureResource("
     "double RequiredEdge(" "streaming_material_under_test.h")
