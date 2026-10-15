@@ -106,6 +106,9 @@
     "upscaleMethod": 3,
     "upscaleMethodNoDLSS": 2
   },
+  "Texture Streaming": {
+    "Enabled": false
+  },
   "Neural Rendering": {
     "schemaVersion": 1,
     "rendering": {
@@ -262,7 +265,7 @@
     "EnableDepthBufferCullingInterior": true,
     "EnableDragToReposition": false,
     "EnableDynamicCubemapFoveation": true,
-    "EnableDynamicCubemapVisibilityThrottle": false,
+    "EnableDynamicCubemapVisibilityThrottle": true,
     "EnableLightingFoveation": true,
     "EnableLightingFoveationHardCutoff": false,
     "EnableSSRFoveation": true,
@@ -307,7 +310,7 @@
       }
     ],
     "VRMenuPositioningMethod": 1,
-    "VRMenuScale": 1.7,
+    "VRMenuScale": 1.65,
     "VROverlayCloseKeys": [],
     "VROverlayOpenKeys": [],
     "WandAimPitchTrimDegrees": -26.0,

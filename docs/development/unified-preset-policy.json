@@ -15,11 +15,11 @@
     "tierOrder": ["Performance", "Balanced", "Quality"],
     "baseTemplate": {
         "path": "docs/development/unified-preset-templates/Base.SettingsUser.json",
-        "sha256": "EF574A04C3ECE62A28985CB1AA1F8CCBE6D39B4B8B249990A275F9A27ECEC2AB"
+        "sha256": "57DCE96561F1AD9AEC882E26AC12121BD3EAFD4DBA6ABFCC86DAD0FC7D77A09E"
     },
     "runtimeSettingsContract": {
         "revision": 14,
-        "sourceTreeSha256": "A40CD64CAB9349AD4B88C084468DB092832FB1551ED379F85B4FE0CF804DAF51",
+        "sourceTreeSha256": "7BBE68C9857F6261476B514A2610AAC64171D0D8FC208F29516741A38710FC31",
         "inventory": {
             "fixedSources": [
                 "src/Api/FeatureDevBenchBridge.cpp",
@@ -440,6 +440,27 @@
         { "path": ["Screen Space GI", "EnableGI"], "value": false },
         { "path": ["Screen Space GI", "EnableExperimentalSpecularGI"], "value": false },
         { "path": ["Screen Space GI", "EnableVanillaSSAO"], "value": false },
+        { "path": ["Texture Streaming", "Enabled"], "value": false },
+        {
+            "path": ["Neural Rendering", "rendering", "neuralCharacterHumansEnabled"],
+            "value": true
+        },
+        {
+            "path": ["Neural Rendering", "rendering", "neuralCharacterOtherHumanoidsEnabled"],
+            "value": true
+        },
+        {
+            "path": ["Neural Rendering", "rendering", "neuralCharacterCreaturesEnabled"],
+            "value": false
+        },
+        {
+            "path": ["Neural Rendering", "rendering", "neuralCharacterAnimalsEnabled"],
+            "value": false
+        },
+        {
+            "path": ["Neural Rendering", "rendering", "neuralCharacterOtherActorsEnabled"],
+            "value": false
+        },
         {
             "path": ["Upscaling", "upscaleMethod"],
             "value": 3,
@@ -469,8 +490,18 @@
             "reason": "retain the conservative interior policy"
         },
         { "path": ["VR", "EnableDragToReposition"], "value": false },
+        { "path": ["VR", "EnableLightingFoveation"], "value": true },
+        { "path": ["VR", "EnableLightingFoveationHardCutoff"], "value": false },
+        { "path": ["VR", "EnableSSRFoveation"], "value": true },
+        { "path": ["VR", "EnableSSRFoveationHardCutoff"], "value": false },
+        { "path": ["VR", "EnableWaterParallaxFoveation"], "value": true },
+        { "path": ["VR", "EnableWaterParallaxFoveationHardCutoff"], "value": false },
+        { "path": ["VR", "EnableWetternessFoveation"], "value": true },
+        { "path": ["VR", "EnableWetternessFoveationHardCutoff"], "value": false },
+        { "path": ["VR", "EnableDynamicCubemapFoveation"], "value": true },
+        { "path": ["VR", "EnableDynamicCubemapVisibilityThrottle"], "value": true },
         { "path": ["VR", "VRMenuPositioningMethod"], "value": 1 },
-        { "path": ["VR", "VRMenuScale"], "value": 1.7 },
+        { "path": ["VR", "VRMenuScale"], "value": 1.65 },
         { "path": ["VR", "VRMenuOffsetZ"], "value": -2.4 },
         { "path": ["VR", "WandAimPitchTrimDegrees"], "value": -26.0 }
     ],
@@ -675,6 +706,27 @@
         { "path": ["Screen Space GI", "EnableGI"], "value": false },
         { "path": ["Screen Space GI", "EnableExperimentalSpecularGI"], "value": false },
         { "path": ["Screen Space GI", "EnableVanillaSSAO"], "value": false },
+        { "path": ["Texture Streaming", "Enabled"], "value": false },
+        {
+            "path": ["Neural Rendering", "rendering", "neuralCharacterHumansEnabled"],
+            "value": true
+        },
+        {
+            "path": ["Neural Rendering", "rendering", "neuralCharacterOtherHumanoidsEnabled"],
+            "value": true
+        },
+        {
+            "path": ["Neural Rendering", "rendering", "neuralCharacterCreaturesEnabled"],
+            "value": false
+        },
+        {
+            "path": ["Neural Rendering", "rendering", "neuralCharacterAnimalsEnabled"],
+            "value": false
+        },
+        {
+            "path": ["Neural Rendering", "rendering", "neuralCharacterOtherActorsEnabled"],
+            "value": false
+        },
         { "path": ["Upscaling", "upscaleMethod"], "value": 3 },
         { "path": ["Upscaling", "upscaleMethodNoDLSS"], "value": 2 },
         { "path": ["Upscaling", "pipelineDiagnostics"], "value": false },
@@ -682,7 +734,17 @@
         { "path": ["VR", "EnableDepthBufferCullingExterior"], "value": true },
         { "path": ["VR", "EnableDepthBufferCullingInterior"], "value": false },
         { "path": ["VR", "EnableDragToReposition"], "value": false },
-        { "path": ["VR", "VRMenuScale"], "value": 1.7 }
+        { "path": ["VR", "EnableLightingFoveation"], "value": true },
+        { "path": ["VR", "EnableLightingFoveationHardCutoff"], "value": false },
+        { "path": ["VR", "EnableSSRFoveation"], "value": true },
+        { "path": ["VR", "EnableSSRFoveationHardCutoff"], "value": false },
+        { "path": ["VR", "EnableWaterParallaxFoveation"], "value": true },
+        { "path": ["VR", "EnableWaterParallaxFoveationHardCutoff"], "value": false },
+        { "path": ["VR", "EnableWetternessFoveation"], "value": true },
+        { "path": ["VR", "EnableWetternessFoveationHardCutoff"], "value": false },
+        { "path": ["VR", "EnableDynamicCubemapFoveation"], "value": true },
+        { "path": ["VR", "EnableDynamicCubemapVisibilityThrottle"], "value": true },
+        { "path": ["VR", "VRMenuScale"], "value": 1.65 }
     ],
     "validation": {
         "stalePaths": [
