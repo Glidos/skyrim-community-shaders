@@ -617,6 +617,9 @@ void CheckStreamingConflict()
 	Require(native.loaded && native.state->enabled && !native.state->externalStreamingConflict && originHookReady && hookInstalls == 1,
 		"Removing SPS and restarting did not permit native streaming");
 	native.PostPostLoad();
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	Require(CSX::Diagnostics::Stutters::AssetLoadHooks::ddsAvailable, "DDS hook availability must reach diagnostics");
+#endif
 	Require(hookInstalls == 1, "Repeated startup installed the DDS hook twice");
 }
 

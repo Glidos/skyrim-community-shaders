@@ -10,6 +10,7 @@ using uint = unsigned;
 #include "Features/Upscaling/NeuralRendering/Runtime.h"
 
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 namespace globals::game
@@ -158,6 +159,12 @@ void CheckHeadsetSetupTransaction()
 	Require(!candidate.periphery_taa_enable && candidate.foveatedCenterArea == 1 && UsesHeadsetOutline(candidate.foveatedCalibrationReference),
 		"Headset setup must select a conservative FOV-only baseline and save both outlines");
 	const auto baseline = candidate;
+	for (const float invalidPercent : { 24.0f, 100.01f, 115.0f, 130.0f, std::numeric_limits<float>::quiet_NaN() }) {
+		auto rejected = baseline;
+		Require(!upscaling.PrepareFoveatedMaskCalibration(rejected, CaptureMode::Reuse, invalidPercent, error) &&
+					rejected == baseline && !error.empty(),
+			"Unsupported coverage requests must report failure and preserve the current calibration");
+	}
 	Require(upscaling.PrepareFoveatedMaskCalibration(candidate, CaptureMode::Reuse, 50, error), "Outer coverage must reuse the saved headset setup");
 	Require(candidate.foveatedCenterArea < 1 && candidate.foveatedAutomaticMaskScaling == 50 && candidate.foveatedCalibrationReference == baseline.foveatedCalibrationReference,
 		"Outer scaling must reduce coverage, update sliders and preserve the full headset reference");
@@ -168,7 +175,7 @@ void CheckHeadsetSetupTransaction()
 		"Applied slider values must retain verified full-strength headset coverage");
 	const auto scaled = candidate;
 	for (bool hardEdge : { false, true }) {
-		for (float percent : { 50.0f, 65.0f, 80.0f, 115.0f, 130.0f }) {
+		for (float percent : { 50.0f, 65.0f, 80.0f, 90.0f, 95.0f }) {
 			auto manual = baseline;
 			manual.foveatedDisableOuterFeather = hardEdge;
 			Require(upscaling.PrepareFoveatedMaskCalibration(manual, CaptureMode::Reuse, percent, error),
@@ -308,7 +315,7 @@ int main()
 			"Hard-edge capture must use the full-strength core while preserving configured-fade compatibility");
 		auto fittingReference = reference;
 		fittingReference.feather = GetNormalFoveatedBlendFeather(upscaling.settings, false);
-		for (float percent : { 70.0f, 100.0f, 130.0f }) {
+		for (float percent : { 70.0f, 85.0f, 100.0f }) {
 			const auto fit = FoveatedMaskCalibration::Solve(fittingReference, percent);
 			Require(fit.has_value(), "Saved hard-edge references must support automatic scaling");
 			const auto coverage = FoveatedMaskCalibration::CheckCoverage(reference, percent, fit->geometry,

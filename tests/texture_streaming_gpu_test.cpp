@@ -1,6 +1,7 @@
 #include "Features/TextureStreaming/Categories.h"
 #include "Features/TextureStreaming/TextureData.h"
 #include "Utils/GpuMemoryBudget.h"
+#include "asset_load_diagnostics_fixture.h"
 #include "d3d11_shader_test.h"
 #include <bit>
 #include <chrono>

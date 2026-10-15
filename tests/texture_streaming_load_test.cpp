@@ -1,4 +1,5 @@
 #include "Features/TextureStreaming/LoadHooks.h"
+#include "Utils/NativeTextureLoading.h"
 #include "d3d11_shader_test.h"
 #include <atomic>
 #include <condition_variable>
@@ -96,9 +97,9 @@ std::function<void(RE::NiSourceTexture*)> createBody;
 void OriginalCreate(void*, RE::NiSourceTexture* source) { createBody(source); }
 namespace REL
 {
-	inline std::array<std::uintptr_t, 27> slots = [] {
-		std::array<std::uintptr_t, 27> result{};
-		result[26] = reinterpret_cast<std::uintptr_t>(&OriginalCreate);
+	inline std::array<std::uintptr_t, Util::NativeTextureLoading::kCreateSlot + 1> slots = [] {
+		std::array<std::uintptr_t, Util::NativeTextureLoading::kCreateSlot + 1> result{};
+		result[Util::NativeTextureLoading::kCreateSlot] = reinterpret_cast<std::uintptr_t>(&OriginalCreate);
 		return result;
 	}();
 	template <class T>

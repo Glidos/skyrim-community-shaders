@@ -140,7 +140,7 @@ struct VolumetricShadows
 };
 #define ZoneScoped ((void)0)
 #define CS_GPU_PASS(name) ((void)0)
-#define CS_GPU_PASS_SELECT(condition, yes, no) ((void)0)
+#define CS_GPU_PASS_SELECT(condition, yes, no) ((void)(condition))
 #include "volumetric_shadows_under_test.h"
 #undef CS_GPU_PASS_SELECT
 #undef CS_GPU_PASS
