@@ -6,6 +6,7 @@
 #include <deque>
 #include <efsw/efsw.hpp>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -19,6 +20,7 @@
 #include "ShaderCompilationSchedulingPolicy.h"
 #include "Utils/CacheInvalidation.h"
 #include "Utils/ContentHash.h"
+#include "Utils/ShaderAllocation.h"
 #include "Utils/ShaderContentReuse.h"
 #include "Utils/WinApi.h"
 
@@ -1102,12 +1104,14 @@ namespace SIE
 
 		~ShaderCache();
 
-		template <typename ShaderType>
+		template <typename ShaderType, typename Deleter = std::default_delete<ShaderType>>
 		using ShaderMapArray = std::array<
-			ankerl::unordered_dense::map<uint32_t, std::unique_ptr<ShaderType>>,
+			ankerl::unordered_dense::map<uint32_t, std::unique_ptr<ShaderType, Deleter>>,
 			RE::BSShader::Type::Total>;
 
-		ShaderMapArray<RE::BSGraphics::VertexShader> vertexShaders;
+		ShaderMapArray<RE::BSGraphics::VertexShader,
+			Util::ShaderAllocation::TrailingBytesDeleter<RE::BSGraphics::VertexShader>>
+			vertexShaders;
 		ShaderMapArray<RE::BSGraphics::PixelShader> pixelShaders;
 		ShaderMapArray<RE::BSGraphics::ComputeShader> computeShaders;
 

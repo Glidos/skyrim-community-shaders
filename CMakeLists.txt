@@ -3815,6 +3815,34 @@ if(BUILD_CONTROLLER_TESTS)
         tests/shader_cache_provenance_test.cpp
     )
     include("${PROJECT_SOURCE_DIR}/tests/shader_cache_variants.cmake")
+    set(_shader_allocation_dir
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/shader-allocation"
+    )
+    add_custom_command(
+        OUTPUT "${_shader_allocation_dir}/shader_allocation_cache_under_test.h"
+        COMMAND
+            "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
+            "-DOUTPUT_DIRECTORY=${_shader_allocation_dir}" -P
+            "${PROJECT_SOURCE_DIR}/tests/extract_shader_allocation.cmake"
+        DEPENDS
+            src/ShaderCache.h
+            tests/extract_shader_allocation.cmake
+            tests/extract_source_region.cmake
+        VERBATIM
+    )
+    add_controller_test(shader_allocation_test ShaderAllocation tests/shader_allocation_test.cpp)
+    target_sources(
+        shader_allocation_test
+        PRIVATE "${_shader_allocation_dir}/shader_allocation_cache_under_test.h"
+    )
+    target_include_directories(
+        shader_allocation_test
+        PRIVATE "${_shader_allocation_dir}"
+    )
+    target_link_libraries(
+        shader_allocation_test
+        PRIVATE unordered_dense::unordered_dense
+    )
     include("${PROJECT_SOURCE_DIR}/tests/shared_shader_compile.cmake")
     include("${PROJECT_SOURCE_DIR}/tests/shader_content_reuse.cmake")
     add_controller_test(

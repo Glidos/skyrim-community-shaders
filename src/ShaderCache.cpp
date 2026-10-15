@@ -36,6 +36,7 @@
 #include "Utils/ContentHash.h"
 #include "Utils/FileSystem.h"
 #include "Utils/GenerationClaim.h"
+#include "Utils/ShaderAllocation.h"
 #include "Utils/ShaderCacheManifest.h"
 #include "Utils/ShaderCachePack.h"
 #include "Utils/ShaderCompiler.h"
@@ -3054,7 +3055,7 @@ namespace SIE
 			return shaderBlob;
 		}
 
-		std::unique_ptr<RE::BSGraphics::VertexShader> CreateVertexShader(ID3DBlob& shaderData,
+		Util::ShaderAllocation::TrailingBytesOwner<RE::BSGraphics::VertexShader> CreateVertexShader(ID3DBlob& shaderData,
 			const RE::BSShader& shader, uint32_t descriptor)
 		{
 			static const auto perTechniqueBuffersArray =
@@ -3065,13 +3066,11 @@ namespace SIE
 				REL::Relocation<ID3D11Buffer**>(RELOCATION_ID(524759, 411375));
 			static const auto bufferData = REL::Relocation<void*>(RELOCATION_ID(524965, 411446));
 
-			auto rawPtr =
-				new uint8_t[sizeof(RE::BSGraphics::VertexShader) + shaderData.GetBufferSize()];
-			auto shaderPtr = new (rawPtr) RE::BSGraphics::VertexShader;
-			memcpy(rawPtr + sizeof(RE::BSGraphics::VertexShader), shaderData.GetBufferPointer(),
-				shaderData.GetBufferSize());
-			std::unique_ptr<RE::BSGraphics::VertexShader> newShader{ shaderPtr };
-			newShader->byteCodeSize = (uint32_t)shaderData.GetBufferSize();
+			const auto bytecodeSize = shaderData.GetBufferSize();
+			auto newShader = Util::ShaderAllocation::MakeWithTrailingBytes<RE::BSGraphics::VertexShader>(bytecodeSize);
+			memcpy(reinterpret_cast<std::uint8_t*>(newShader.get()) + sizeof(RE::BSGraphics::VertexShader),
+				shaderData.GetBufferPointer(), bytecodeSize);
+			newShader->byteCodeSize = static_cast<uint32_t>(bytecodeSize);
 			newShader->id = descriptor;
 			newShader->vertexDesc = 0;
 
