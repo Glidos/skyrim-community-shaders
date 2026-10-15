@@ -15,11 +15,11 @@
     "tierOrder": ["Performance", "Balanced", "Quality"],
     "baseTemplate": {
         "path": "docs/development/unified-preset-templates/Base.SettingsUser.json",
-        "sha256": "3874C8235C31FA8FC37294E6D834EF4B1DA0785BEA5D582F14DB7C9DDA0A6416"
+        "sha256": "E0CD5E498998EE18316381F21108F5E7ADDA6A4F66B6C1794B472710A0ABEEC8"
     },
     "runtimeSettingsContract": {
         "revision": 13,
-        "sourceTreeSha256": "38953EFF0885FE7A931DAB3AACD637D73ED38E8F1119F3CC1E747D0B90FCC861",
+        "sourceTreeSha256": "A155A225E500FAE946015159481EC6AAAE28D6D24D8CAA216DE74152C4A9A04C",
         "inventory": {
             "fixedSources": [
                 "src/Api/FeatureDevBenchBridge.cpp",
@@ -31,6 +31,7 @@
                 "src/Features/AdaptiveBalanceGodraySettings.h",
                 "src/Features/FoveatedCommon.h",
                 "src/Features/GrassOptimizations/GrassPolicy.h",
+                "src/Features/LightLimitFix/ShadowCullingPolicy.h",
                 "src/Features/TextureStreaming/Categories.h",
                 "src/Features/TextureStreaming/Policy.h",
                 "src/Features/TextureStreaming/Settings.h",
@@ -107,6 +108,7 @@
             "src/Features/InverseSquareLighting.h",
             "src/Features/LightLimitFix.cpp",
             "src/Features/LightLimitFix.h",
+            "src/Features/LightLimitFix/ShadowCullingPolicy.h",
             "src/Features/LinearLighting.cpp",
             "src/Features/LinearLighting.h",
             "src/Features/LODBlending.cpp",
@@ -716,6 +718,16 @@
             },
             { "path": ["Neural Rendering", "colour", "schemaVersion"], "value": 1 },
             { "path": ["Neural Rendering", "colour", "lightingPreservation"], "value": 1.0 },
+            { "path": ["Grass Collision", "CollisionStrength"], "value": 1.0 },
+            { "path": ["Light Limit Fix", "ShadowCulling", "sun"], "value": true },
+            { "path": ["Light Limit Fix", "ShadowCulling", "torch"], "value": true },
+            { "path": ["Light Limit Fix", "ShadowCulling", "actors"], "value": true },
+            { "path": ["Light Limit Fix", "ShadowCulling", "interiorTorches"], "value": true },
+            {
+                "path": ["Light Limit Fix", "ShadowCulling", "minimumDistanceMeters"],
+                "value": 50.0
+            },
+            { "path": ["Light Limit Fix", "ShadowCulling", "actorDistanceMeters"], "value": 75.0 },
             { "path": ["Extended Materials", "ParallaxStrength"], "value": 1.0 },
             { "path": ["Screenshot", "SettingsSchemaVersion"], "value": 2 },
             { "path": ["Screenshot", "Sequence", "Schedule", "Basis"], "value": "game_frames" },

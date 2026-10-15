@@ -80,7 +80,7 @@
     },
     "settingsContract": {
       "revision": 13,
-      "sourceTreeSha256": "38953EFF0885FE7A931DAB3AACD637D73ED38E8F1119F3CC1E747D0B90FCC861"
+      "sourceTreeSha256": "A155A225E500FAE946015159481EC6AAAE28D6D24D8CAA216DE74152C4A9A04C"
     }
   },
   "Upscaling": {
@@ -421,6 +421,7 @@
     "SSMode": 1
   },
   "Grass Collision": {
+    "CollisionStrength": 1.0,
     "EnableGrassCollision": false,
     "TrackRagdolls": true
   },
@@ -938,6 +939,14 @@
     "ParticleContactShadowBudget": 1,
     "ParticleLightsSaturation": 1.0,
     "ParticleRadius": 1.0,
+    "ShadowCulling": {
+      "sun": true,
+      "torch": true,
+      "actors": true,
+      "interiorTorches": true,
+      "minimumDistanceMeters": 50.0,
+      "actorDistanceMeters": 75.0
+    },
     "StrictContactShadowBudget": 4,
     "UseParticleLights087LegacyMode": false
   },
