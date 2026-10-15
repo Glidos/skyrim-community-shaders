@@ -25,6 +25,8 @@ namespace Compatibility
 		{ L"Data/SKSE/Plugins/NVIDIA_Reflex.dll" },
 		{ L"Data/SKSE/Plugins/MARA.dll" },
 		{ L"Data/SKSE/Plugins/NativeMeshLightFlickerFix.dll",
-			"superseded by Light Limit Fix; both replace the same lighting hooks" }
+			"superseded by Light Limit Fix; both replace the same lighting hooks" },
+		{ L"Data/SKSE/Plugins/ShadowFixes.dll",
+			"CSX already includes an alternative fix for the same sun-shadow receiver issue" }
 	};
 }

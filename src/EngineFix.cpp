@@ -1,4 +1,5 @@
 ﻿#include "EngineFix.h"
+#include "EngineFixes/SunShadowReceiverFix.h"
 
 #include "EngineFixes/CullPoolExhaustionFix.h"
 #include "EngineFixes/EffectShaderNoDecalsFix.h"
@@ -8,6 +9,7 @@
 
 const std::vector<EngineFix*>& EngineFix::GetOnPostPostLoadFixesList()
 {
+	static SunShadowReceiverFix sunShadowReceiverFix;
 	static CullPoolExhaustionFix cullPoolExhaustionFix;
 	static EffectShaderNoDecalsFix effectShaderNoDecalsFix;
 	static ShadowmapCascadeCullingFix shadowmapCascadeCullingFix;
@@ -15,6 +17,7 @@ const std::vector<EngineFix*>& EngineFix::GetOnPostPostLoadFixesList()
 	static VRGrassLifetimeFix vrGrassLifetimeFix;
 
 	static std::vector<EngineFix*> fixes = {
+		&sunShadowReceiverFix,
 		&cullPoolExhaustionFix,
 		&effectShaderNoDecalsFix,
 		&shadowmapCascadeCullingFix,

@@ -15,6 +15,7 @@
 #include "BuildProvenance.h"
 #include "Compatibility.h"
 #include "Deferred.h"
+#include "Diagnostics/SunReceiverTrace.h"
 #include "Features/HorizonFix.h"
 #include "Features/InteriorSun.h"
 #include "Features/LightLimitFix.h"
@@ -207,6 +208,9 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 				Hooks::Install();
 				CSX::Api::RegisterAcceptedDrawService();
 				EngineFix::InstallOnPostPostLoadFixes();
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				Diagnostics::SunReceiverTrace::Install();
+#endif
 				FrameAnnotations::OnPostPostLoad();
 
 				auto shaderCache = globals::shaderCache;

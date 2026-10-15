@@ -37,8 +37,8 @@ if(NOT _compatibility_found)
 endif()
 
 foreach(_bridge_contract IN ITEMS
-    "ServiceFoundation value({ ServiceName, 1, 1, 16 })"
-    "{ \"minor\", 1 }, { \"schemaRevision\", 16 }"
+    "ServiceFoundation value({ ServiceName, 1, 1, 20 })"
+    "{ \"minor\", 1 }, { \"schemaRevision\", 20 }"
     "PresetCompatibility::ToJson(PresetCompatibility::GetPublished())"
 )
     string(FIND "${_bridge}" "${_bridge_contract}" _bridge_position)

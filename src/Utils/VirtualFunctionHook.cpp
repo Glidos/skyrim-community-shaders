@@ -237,7 +237,6 @@ Util::DetourAttachResult Util::AttachDetour(void** a_original, void* a_hook)
 	return detail::AttachDetourTransaction(a_original, a_hook, DetourOperations{});
 }
 
-#ifdef DEVBENCH_BRIDGE_ENABLED
 Util::VirtualHookResult Util::InstallNativeVirtualFunctionHook(std::uintptr_t a_table, std::size_t a_slot, void** a_original, void* a_hook)
 {
 	if (!a_table || a_slot >= ((std::numeric_limits<std::uintptr_t>::max)() - a_table) / sizeof(void*))
@@ -245,7 +244,6 @@ Util::VirtualHookResult Util::InstallNativeVirtualFunctionHook(std::uintptr_t a_
 	void* table = reinterpret_cast<void*>(a_table);
 	return InstallGraphicsHook(&table, a_slot, a_slot + 1, [](void*) -> std::size_t { return 0; }, a_original, a_hook, true);
 }
-#endif
 
 Util::VirtualHookResult Util::InstallVirtualFunctionHook(ID3D11Device* a_object, std::size_t a_slot, void** a_original, void* a_hook)
 {

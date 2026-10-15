@@ -1778,6 +1778,14 @@ if(BUILD_CONTROLLER_TESTS)
         VERBATIM
     )
     add_controller_test(tooltip_layout_test TooltipLayout tests/tooltip_layout_test.cpp)
+    add_controller_test(sun_receiver_trace_test SunReceiverTrace tests/sun_receiver_trace_test.cpp)
+    target_link_libraries(sun_receiver_trace_test PRIVATE xbyak::xbyak)
+    add_controller_test(sun_receiver_policy_test SunReceiverPolicy tests/sun_receiver_policy_test.cpp)
+    add_controller_test(sun_receiver_log_test SunReceiverLog tests/sun_receiver_log_test.cpp)
+    target_link_libraries(
+        sun_receiver_policy_test
+        PRIVATE nlohmann_json::nlohmann_json
+    )
     target_sources(
         tooltip_layout_test
         PRIVATE
