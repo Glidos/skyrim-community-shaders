@@ -32,6 +32,7 @@ namespace NeuralRendering
 	namespace
 	{
 		constexpr wchar_t kRuntimeName[] = L"nvngx_dlssnr.dll";
+		constexpr REL::Version kMinimumRuntimeVersion{ 310, 8, 0, 0 };
 		constexpr std::array<std::wstring_view, 2> kParameterCoreBasenames{
 			L"nvngx.dll",
 			L"_nvngx.dll",
@@ -1153,10 +1154,11 @@ namespace NeuralRendering
 			return false;
 		}
 		version_ = Util::GetFormattedVersion(*version);
-		if (version->major() != 310 || version->minor() != 8) {
+		if (*version < kMinimumRuntimeVersion) {
 			SetFailureLocked(
 				RuntimeStatus::VersionRejected, RuntimeFailureStage::Version,
-				std::format("expected DLSSNR 310.8.x, found {}", version_));
+				std::format("expected DLSSNR {} or newer, found {}",
+					Util::GetFormattedVersion(kMinimumRuntimeVersion), version_));
 			return false;
 		}
 		trust_ = RuntimeTrust::VersionAccepted;
