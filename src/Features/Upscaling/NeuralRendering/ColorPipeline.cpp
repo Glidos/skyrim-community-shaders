@@ -22,9 +22,13 @@ namespace NeuralRendering::Color
 			std::uint32_t mode, domain, transform, flags;
 			float exposure, detail, appearance, maximumStops;
 			float lightingPreservation;
-			float padding[3]{};
+			std::uint32_t regionCount = 0;
+			float padding[2]{};
+			std::array<ComputeSubrect, kMaximumPackedCrops> regions{};
 		};
-		static_assert(sizeof(Constants) == 64);
+		static_assert(sizeof(Constants) == 128);
+		static_assert(offsetof(Constants, regionCount) == 52);
+		static_assert(offsetof(Constants, regions) == 64);
 		static_assert(offsetof(Constants, lightingPreservation) == 48);
 		static_assert(offsetof(Constants, exposure) == 32);
 
@@ -53,11 +57,16 @@ namespace NeuralRendering::Color
 			                            (!config.experiments.applyModelEdit ? 2u : 0u) |
 			                            (profile.exposureSource != ExposureSource::Manual ? 4u : 0u) |
 			                            (NeedsExposureCapture(config) ? 8u : 0u) | static_cast<std::uint32_t>(OutputStorage(work.format));
-			return { roi.baseX, roi.baseY, roi.width, roi.height,
+			Constants result{ roi.baseX, roi.baseY, roi.width, roi.height,
 				static_cast<std::uint32_t>(settings.mode), static_cast<std::uint32_t>(profile.domain),
 				static_cast<std::uint32_t>(profile.transform), flags, profile.exposureMultiplier,
 				settings.detailStrength, settings.appearanceMix, settings.maximumDetailStops,
-				settings.lightingPreservation, {} };
+				settings.lightingPreservation, work.observation.reconstructionRegions.count };
+			for (std::uint32_t i = 0; i < result.regionCount; ++i) {
+				const auto& region = work.observation.reconstructionRegions.regions[i];
+				result.regions[i] = { region.baseX - roi.baseX, region.baseY - roi.baseY, region.width, region.height };
+			}
+			return result;
 		}
 		bool CreateTexture(ID3D11Device* device, Texture& texture,
 			std::uint32_t width, std::uint32_t height, DXGI_FORMAT format, bool output, HRESULT& result)
@@ -438,6 +447,16 @@ namespace NeuralRendering::Color
 		if (measurementOrder_ == std::numeric_limits<std::uint64_t>::max())
 			return false;
 #endif
+		const auto& regions = observation.reconstructionRegions;
+		if (regions.count > kMaximumPackedCrops)
+			return false;
+		for (std::uint32_t i = 0; i < regions.count; ++i) {
+			if (!ContainsComputeSubrect(observation.rect, regions.regions[i]))
+				return false;
+			for (std::uint32_t j = 0; j < i; ++j)
+				if (IntersectComputeSubrect(regions.regions[i], regions.regions[j]).IsValid())
+					return false;
+		}
 		const auto start = DiagnosticNow();
 		work.observation = std::move(observation);
 		work.configuration = config;

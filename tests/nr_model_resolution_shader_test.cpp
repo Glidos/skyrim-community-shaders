@@ -925,7 +925,8 @@ namespace
 			Texture motion(device, guides, DXGI_FORMAT_R32G32_FLOAT, std::vector(guides[0] * guides[1], Motion{ 0.001f, -0.002f }));
 			Texture mask(device, source, DXGI_FORMAT_R8_UNORM, std::vector<std::uint8_t>(source[0] * source[1], 255));
 			std::vector<std::uint8_t> selected(source[0] * source[1]);
-			selected[200 * source[0] + 192] = selected[311 * source[0] + 837] = selected[42 * source[0] + 34] = 255;
+			selected[200 * source[0] + 192] = selected[311 * source[0] + 837] =
+				selected[(40 + kPackedCropSupportPixels) * source[0] + 32 + kPackedCropSupportPixels] = 255;
 			Texture selection(device, source, DXGI_FORMAT_R8_UNORM, selected);
 			for (unsigned percent : { 30u, 75u, 100u })
 				for (bool sharedTargets : { false, true }) {
@@ -1120,7 +1121,7 @@ namespace
 							}
 					}
 					Require(batch.packedCoverage != nullptr, "Packed execution omitted current-mask validation");
-					for (const auto missing : { std::pair{ 520u, 260u }, std::pair{ 33u, 41u } }) {
+					for (const auto missing : { std::pair{ 520u, 260u }, std::pair{ 32u + kPackedCropSupportPixels - 1u, 40u + kPackedCropSupportPixels } }) {
 						auto changed = selected;
 						changed[missing.second * source[0] + missing.first] = 255;
 						Texture changedSelection(device, source, DXGI_FORMAT_R8_UNORM, changed);

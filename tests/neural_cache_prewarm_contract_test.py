@@ -99,8 +99,10 @@ class CacheContracts(unittest.TestCase):
         status = schema["outputSchema"]["properties"]["neuralRendering"]["properties"]["prewarmConfiguration"]
         self.assertEqual(status["properties"]["enabled"]["type"], "boolean")
         settings = read(ROOT / "src/Features/Upscaling.h")
-        for field in ("neuralRenderingPrewarmEnabled", "neuralRenderingParallelEyes", "neuralCharacterPackedCrops"):
+        for field in ("neuralRenderingPrewarmEnabled", "neuralRenderingParallelEyes"):
             self.assertIn("bool " + field + " = true;", settings)
+        self.assertIn("bool neuralCharacterPackedCrops = false;", settings)
+        self.assertIs(schema["inputSchema"]["properties"]["characterPackedCrops"]["default"], False)
 
 
 if __name__ == "__main__":

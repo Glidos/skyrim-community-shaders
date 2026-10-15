@@ -83,7 +83,7 @@ namespace NeuralRendering
 			{ "mergedRegionCount", value.candidateExamined ? Json(value.mergedContexts.count) : Json(nullptr) },
 			{ "selectedRegionCount", value.selectedSources.count }, { "mergedContexts", PackedCropSourcesJson(value.mergedContexts) },
 			{ "selectedContexts", PackedCropSourcesJson(value.selectedSources) },
-			{ "contextPixels", kPackedCropContextPixels }, { "samplingGuardPixels", kCharacterComputeRoiGuardPixels },
+			{ "contextPixels", kPackedCropContextPixels }, { "requiredContextPixels", kPackedCropRequiredContextPixels }, { "samplingGuardPixels", kCharacterComputeRoiGuardPixels },
 			{ "alignmentPixels", kPackedCropAlignment },
 			{ "availableRegion", { { "x", value.available.baseX }, { "y", value.available.baseY }, { "width", value.available.width }, { "height", value.available.height } } },
 			{ "coordinateSpace", "eye_local_source_output_pixels" } };

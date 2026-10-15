@@ -4,6 +4,7 @@
 #include "CharacterComputeSubrect.h"
 #include "RegionCapacity.h"
 
+#include <algorithm>
 #include <array>
 #include <limits>
 #include <optional>
@@ -14,9 +15,10 @@
 namespace NeuralRendering
 {
 	inline constexpr std::size_t kMaximumPackedCrops = 4;
-	inline constexpr std::uint32_t kPackedCropContextPixels = 0;
+	inline constexpr std::uint32_t kPackedCropContextPixels = 16;
+	inline constexpr std::uint32_t kPackedCropRequiredContextPixels = 8;
 	inline constexpr std::uint32_t kPackedCropAlignment = kCharacterComputeRoiAlignment;
-	inline constexpr std::uint32_t kPackedCropSupportPixels = kPackedCropContextPixels + kCharacterComputeRoiGuardPixels;
+	inline constexpr std::uint32_t kPackedCropSupportPixels = kPackedCropRequiredContextPixels + kCharacterComputeRoiGuardPixels;
 
 	/** Source-eye rectangles retain original coordinates and never mix eyes. */
 	struct PackedCropSources
@@ -53,6 +55,7 @@ namespace NeuralRendering
 		UpscalingDLSS::Extent capacity{}, minimumCapacity{};
 		std::uint64_t baselinePixels = std::numeric_limits<std::uint64_t>::max();
 		bool reserveCapacity = false;
+		const PackedCropLayout* previous = nullptr;
 	};
 	inline constexpr std::uint32_t kPackedCropCapacityQuantum = 64;
 	inline constexpr std::uint32_t kPackedCropAdmissionFrames = 8;
@@ -65,6 +68,7 @@ namespace NeuralRendering
 		std::uint32_t stableFrames = 0, requiredFrames = kPackedCropAdmissionFrames;
 		std::uint32_t lastFrame = 0;
 		bool observed = false, active = false;
+		PackedCropLayout layout{};
 	};
 
 	/** One source-matched layout is reused by projection, accounting and preparation. */
@@ -157,18 +161,20 @@ namespace NeuralRendering
 
 	/** Context containment owns atlas reuse as well as initial construction. */
 	[[nodiscard]] inline ComputeSubrect BuildPackedCropContext(CharacterRect region,
-		std::uint32_t width, std::uint32_t height, ComputeSubrect available) noexcept
+		std::uint32_t width, std::uint32_t height, ComputeSubrect available,
+		std::uint32_t contextPixels = kPackedCropContextPixels) noexcept
 	{
-		if (width > kMaximumNeuralImageDimension || height > kMaximumNeuralImageDimension || !available.Fits(width, height))
+		if (width > kMaximumNeuralImageDimension || height > kMaximumNeuralImageDimension ||
+			contextPixels > kPackedCropContextPixels || !available.Fits(width, height))
 			return {};
 		const auto support = BuildCharacterComputeSubrect(std::span(&region, 1), width, height);
 		if (!ContainsComputeSubrect(available, support))
 			return {};
-		const auto lower = [](std::uint32_t base) {
-			return (base > kPackedCropContextPixels ? base - kPackedCropContextPixels : 0u) / kPackedCropAlignment * kPackedCropAlignment;
+		const auto lower = [contextPixels](std::uint32_t base) {
+			return (base > contextPixels ? base - contextPixels : 0u) / kPackedCropAlignment * kPackedCropAlignment;
 		};
-		const auto upper = [](std::uint32_t end, std::uint32_t limit) {
-			return std::min(limit, (end + kPackedCropContextPixels + kPackedCropAlignment - 1u) / kPackedCropAlignment * kPackedCropAlignment);
+		const auto upper = [contextPixels](std::uint32_t end, std::uint32_t limit) {
+			return std::min(limit, (end + contextPixels + kPackedCropAlignment - 1u) / kPackedCropAlignment * kPackedCropAlignment);
 		};
 		const auto x = std::max(available.baseX, lower(support.baseX)), y = std::max(available.baseY, lower(support.baseY));
 		return { x, y, std::min(available.baseX + available.width, upper(support.baseX + support.width, width)) - x,
@@ -301,7 +307,8 @@ namespace NeuralRendering
 		for (std::uint32_t i = 0; covered && i < state.sources.count; ++i)
 			covered = ContainsComputeSubrect(available, state.sources.regions[i]);
 		for (const auto& region : regions) {
-			const auto support = BuildPackedCropContext(region, width, height, available);
+			// Keep motion slack outside the minimum context required by the GPU coverage guard.
+			const auto support = BuildPackedCropContext(region, width, height, available, kPackedCropRequiredContextPixels);
 			bool found = false;
 			for (std::uint32_t i = 0; covered && i < state.sources.count; ++i)
 				found = found || ContainsComputeSubrect(state.sources.regions[i], support);
@@ -338,6 +345,50 @@ namespace NeuralRendering
 		}
 #endif
 		return state.sources;
+	}
+
+	/** Preserve spatially matched atlas positions when every updated tile still fits. */
+	[[nodiscard]] inline PackedCropLayout RetainPackedCropPlacement(
+		const std::array<PackedCropLayout::Tile, kMaximumPackedCrops>& tiles, std::uint32_t count,
+		UpscalingDLSS::Extent modelSize, UpscalingDLSS::Extent capacity, const PackedCropLayout& previous) noexcept
+	{
+		if (count < 2 || count > kMaximumPackedCrops || previous.count != count || previous.extent != capacity ||
+			previous.unpackedExtent != modelSize || !capacity.IsValid())
+			return {};
+		bool unchanged = true;
+		for (std::uint32_t i = 0; i < count; ++i) {
+			const auto& old = previous.tiles[i];
+			unchanged = unchanged && old.source == tiles[i].source && old.model == tiles[i].model &&
+			            old.packed.width == tiles[i].model.width && old.packed.height == tiles[i].model.height &&
+			            old.packed.Fits(capacity.width, capacity.height);
+			for (std::uint32_t j = 0; unchanged && j < i; ++j)
+				unchanged = !IntersectComputeSubrect(old.packed, previous.tiles[j].packed).IsValid();
+		}
+		if (unchanged)
+			return previous;
+		std::array<std::uint32_t, kMaximumPackedCrops> order{ 0, 1, 2, 3 };
+		PackedCropLayout best{};
+		std::uint64_t bestOverlap = 0;
+		do {
+			PackedCropLayout candidate{ tiles, capacity, modelSize, count };
+			std::uint64_t overlap = 0;
+			bool valid = true;
+			for (std::uint32_t i = 0; valid && i < count; ++i) {
+				const auto& old = previous.tiles[order[i]];
+				const auto shared = IntersectComputeSubrect(tiles[i].source, old.source).Area();
+				auto& packed = candidate.tiles[i].packed;
+				packed = { old.packed.baseX, old.packed.baseY, tiles[i].model.width, tiles[i].model.height };
+				valid = shared != 0 && packed.Fits(capacity.width, capacity.height);
+				for (std::uint32_t j = 0; valid && j < i; ++j)
+					valid = !IntersectComputeSubrect(packed, candidate.tiles[j].packed).IsValid();
+				overlap += shared;
+			}
+			if (valid && overlap > bestOverlap) {
+				best = candidate;
+				bestOverlap = overlap;
+			}
+		} while (std::next_permutation(order.begin(), order.begin() + count));
+		return best;
 	}
 
 	/** Search bounded shelf layouts, admitting only at least 25% less evaluated area. */
@@ -412,6 +463,24 @@ namespace NeuralRendering
 		if (diagnostics)
 			diagnostics->layoutBaselineModelPixels = layoutBaseline;
 #endif
+		const auto retainedArea = static_cast<std::uint64_t>(request.capacity.width) * request.capacity.height;
+		if (request.previous && request.capacity.IsValid() &&
+			request.capacity.width >= kMinimumExperimentalContextExtent && request.capacity.height >= kMinimumExperimentalContextExtent &&
+			request.capacity.width <= modelSize.width && request.capacity.height <= modelSize.height && retainedArea * 4u <= baseline * 3u) {
+			best = RetainPackedCropPlacement(tiles, sources.count, modelSize, request.capacity, *request.previous);
+			if (best.count) {
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				if (diagnostics) {
+					diagnostics->stage = PackedCropStage::AreaAdmission;
+					diagnostics->reason = PackedCropReason::Admitted;
+					diagnostics->candidateAreaAvailable = true;
+					diagnostics->candidateModelPixels = retainedArea;
+					diagnostics->candidateExtent = best.extent;
+				}
+#endif
+				return best;
+			}
+		}
 		const auto align = [](std::uint32_t value) { return (value + kPackedCropAlignment - 1u) / kPackedCropAlignment * kPackedCropAlignment; };
 		for (bool vertical : { false, true }) {
 			for (std::uint32_t breaks = 0; breaks < (1u << (sources.count - 1)); ++breaks) {
@@ -486,6 +555,7 @@ namespace NeuralRendering
 		state.observed = true;
 		const auto build = [&](PackedCropLayoutRequest request) {
 			request.baselinePixels = baselinePixels;
+			request.previous = &state.layout;
 			return BuildPackedCropLayout(sources, sourceSize, modelSize, available
 #ifdef DEVBENCH_BRIDGE_ENABLED
 				,
@@ -496,8 +566,10 @@ namespace NeuralRendering
 		};
 		auto layout = state.capacity.IsValid() ? build({ .capacity = state.capacity }) : PackedCropLayout{};
 		if (state.active) {
-			if (layout.count)
+			if (layout.count) {
+				state.layout = layout;
 				return layout;
+			}
 #ifdef DEVBENCH_BRIDGE_ENABLED
 			if (retainedRejection && diagnostics) {
 				*retainedRejection = *diagnostics;
@@ -526,6 +598,7 @@ namespace NeuralRendering
 			++state.stableFrames;
 		if (state.stableFrames >= state.requiredFrames) {
 			state.active = true;
+			state.layout = layout;
 			return layout;
 		}
 #ifdef DEVBENCH_BRIDGE_ENABLED

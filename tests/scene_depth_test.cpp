@@ -448,6 +448,7 @@ void TestCharacterOccupancyAdmission()
 	for (bool requested : { false, true }) {
 		Fixture f;
 		globals::features::upscaling.characters = true;
+		globals::features::upscaling.characterSettings.packedCrops = true;
 #ifdef DEVBENCH_BRIDGE_ENABLED
 		globals::features::upscaling.characterSettings.experimentalGpuMaskSupport = requested;
 #endif
@@ -468,6 +469,7 @@ void TestCharacterOccupancyAdmission()
 		auto& upscaling = globals::features::upscaling;
 		upscaling.characters = true;
 		auto& settings = upscaling.characterSettings;
+		settings.packedCrops = true;
 		switch (blocked) {
 		case 0:
 			settings.packedCrops = false;

@@ -409,7 +409,7 @@ struct Upscaling
 	{
 		uint32_t neuralRenderingModelResolutionPercent = 100;
 		bool neuralRenderingPressureResolutionEnabled = true;
-		bool neuralCharacterPackedCrops = true;
+		bool neuralCharacterPackedCrops = false;
 		bool neuralCharacterRenderingEnabled = false;
 		uint32_t neuralCharacterCropMode = 1;
 		uint32_t neuralRenderingCentralAreaPercent = 100, neuralRenderingCentralFeatherPixels = 64;

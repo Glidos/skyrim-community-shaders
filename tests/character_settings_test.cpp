@@ -28,7 +28,7 @@ namespace
 		bool neuralCharacterAnimalsEnabled = true;
 		bool neuralCharacterOtherActorsEnabled = true;
 		bool neuralCharacterProviderBlending = false;
-		bool neuralCharacterPackedCrops = true;
+		bool neuralCharacterPackedCrops = false;
 		bool neuralCharacterArmorEnabled = false;
 		bool neuralCharacterWeaponsEnabled = false;
 		float neuralCharacterFaceStrength = CharacterPolicy::kDefaultFaceStrength;

@@ -167,3 +167,81 @@ static void CheckLightingPreservation(ID3D11Device* device, ID3D11DeviceContext*
 	}
 	std::printf("Lighting preservation: %u bit-exact pre-change comparisons; FP32/FP16/R11G11B10/UNORM and all domains\n", comparisons);
 }
+
+static void CheckPackedLightingPreservation(ID3D11Device* device, ID3D11DeviceContext* context,
+	ID3D11ComputeShader* reconstruct, ID3D11ComputeShader* copy, ID3D11Buffer* cb)
+{
+	const std::vector<Pixel> empty(4096, Pixel{ 0.01f, 0.02f, 0.03f, 0.375f });
+	// Touching tiles, empty padding and nonzero transport origins must match isolated ROIs.
+	for (const auto format : { DXGI_FORMAT_R32G32B32A32_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT,
+			 DXGI_FORMAT_R11G11B10_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM }) {
+		for (unsigned gap : { 0u, 7u }) {
+			const std::array<std::array<unsigned, 4>, 2> regions{ { { 2, 3, 13, 17 }, { 15 + gap, 3, 11, 19 } } };
+			auto source = empty;
+			std::array<std::vector<Pixel>, 2> privateSource{ empty, empty }, privatePrepared{ empty, empty }, privateNeural{ empty, empty };
+			auto edits = empty, preparation = empty;
+			for (unsigned tile = 0; tile < regions.size(); ++tile) {
+				const auto& r = regions[tile];
+				for (unsigned y = 0; y < r[3]; ++y) {
+					for (unsigned x = 0; x < r[2]; ++x) {
+						const Pixel b{ 0.125f + 0.002f * x, 0.0625f + 0.001f * y, 0.03125f, 0.375f };
+						// Opposite broad relighting, plus real detail, tests both isolation and preservation.
+						const auto gain = std::exp2((tile ? -1.f : 1.f) + ((x + y) % 2 ? -0.2f : 0.2f));
+						const Pixel n{ b.r * gain, b.g * gain, b.b * gain, 0 };
+						preparation[(y + r[1] + 7) * 64 + x + r[0] + 5] = privatePrepared[tile][(y + 7) * 64 + x + 5] = b;
+						source[(y + r[1]) * 64 + x + r[0]] = privateSource[tile][y * 64 + x] = b;
+						edits[(y + r[1] + 7) * 64 + x + r[0] + 5] = privateNeural[tile][(y + 7) * 64 + x + 5] = n;
+					}
+				}
+			}
+			auto baseline = StorePixels(device, context, copy, cb, source, format);
+			auto neural = MakeTexture(device, edits);
+			auto prepared = MakeTexture(device, preparation);
+			for (float preservation : { 0.f, 0.5f, 1.f }) {
+				for (float appearance : { 0.f, 0.25f, 1.f }) {
+					Constants c;
+					c.width = c.height = 40;
+					c.mode = 2;
+					c.bypass = format == DXGI_FORMAT_R16G16B16A16_FLOAT ? 0x200u :
+					           format == DXGI_FORMAT_R11G11B10_FLOAT    ? 0x100u :
+					           format == DXGI_FORMAT_R8G8B8A8_UNORM     ? 0x300u :
+					                                                      0u;
+					c.lightingPreservation = preservation;
+					c.appearance = appearance;
+					c.regionCount = 2;
+					for (unsigned i = 0; i < 2; ++i)
+						std::copy(regions[i].begin(), regions[i].end(), c.regions[i]);
+					auto output = StorePixels(device, context, copy, cb, empty, format);
+					Dispatch(context, reconstruct, cb, c, { baseline.srv.Get(), neural.srv.Get(), prepared.srv.Get() }, output.uav.Get());
+					const auto atlas = ReadStored(device, context, copy, cb, output);
+					Require(std::abs(atlas[11 * 64 + 8].r - source[11 * 64 + 8].r) > 0.001f,
+						"Packed fixture must retain a measurable neural edit");
+					for (unsigned tile = 0; tile < 2; ++tile) {
+						const auto& r = regions[tile];
+						c.width = r[2];
+						c.height = r[3];
+						c.regionCount = 0;
+						auto b = StorePixels(device, context, copy, cb, privateSource[tile], format);
+						auto n = MakeTexture(device, privateNeural[tile]);
+						auto p = MakeTexture(device, privatePrepared[tile]);
+						auto result = StorePixels(device, context, copy, cb, empty, format);
+						Dispatch(context, reconstruct, cb, c, { b.srv.Get(), n.srv.Get(), p.srv.Get() }, result.uav.Get());
+						const auto isolated = ReadStored(device, context, copy, cb, result);
+						for (unsigned y = 0; y < r[3]; ++y)
+							for (unsigned x = 0; x < r[2]; ++x) {
+								const auto& actual = atlas[(y + r[1]) * 64 + x + r[0]];
+								const auto& expected = isolated[y * 64 + x];
+								Require(std::memcmp(&actual, &expected, sizeof(Pixel)) == 0,
+									"Packed lighting reconstruction differs from its isolated crop");
+							}
+					}
+					if (appearance < 1.f) {
+						const auto stored = ReadStored(device, context, copy, cb, baseline);
+						Require(std::memcmp(&atlas[0], &stored[0], sizeof(Pixel)) == 0,
+							"Unowned atlas padding changed during lighting preservation");
+					}
+				}
+			}
+		}
+	}
+}

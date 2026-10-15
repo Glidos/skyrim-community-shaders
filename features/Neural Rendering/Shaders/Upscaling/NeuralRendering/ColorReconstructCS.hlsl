@@ -57,6 +57,24 @@ float3 RoundPreserveSourceForStorage(float3 value)
 		Result[local] = float4(candidate, baseline.a);
 		return;
 	}
+	uint2 regionMin = 0, regionMax = RegionSize - 1u;
+	if (ReconstructionRegionCount != 0u) {
+		bool owned = false;
+		[unroll] for (uint tile = 0; tile < 4; ++tile)
+		{
+			uint4 region = ReconstructionRegions[tile];
+			if (tile < ReconstructionRegionCount && all(local >= region.xy) && all(local - region.xy < region.zw)) {
+				regionMin = region.xy;
+				regionMax = region.xy + region.zw - 1u;
+				owned = true;
+				break;
+			}
+		}
+		if (!owned) {
+			Result[local] = baseline;
+			return;
+		}
+	}
 	float3 baseWorking = ToWorking(baseline.rgb);
 	float3 neuralWorking = ToWorking(candidate);
 	float baseY = Luminance(baseWorking), neuralY = Luminance(neuralWorking);
@@ -64,12 +82,12 @@ float3 RoundPreserveSourceForStorage(float3 value)
 	if (DetailStrength > 0.0 && baseY > 1e-5 && neuralY > 1e-5 &&
 		all(baseWorking >= 0.0) && all(neuralWorking >= 0.0) && all(isfinite(baseWorking)) && all(isfinite(neuralWorking))) {
 		float residual = (log2(neuralY) - log2(baseY)), weightedResidual = 0.0, totalWeight = 0.0;
-		// Adjacent taps avoid cancelling alternating detail; clamp to this ROI.
+		// Adjacent taps preserve fine detail without reading another crop or atlas padding.
 		[unroll] for (int y = -1; y <= 1; ++y)
 		{
 			[unroll] for (int x = -1; x <= 1; ++x)
 			{
-				uint2 p = uint2(clamp(int2(local) + int2(x, y), int2(0, 0), int2(RegionSize) - 1));
+				uint2 p = uint2(clamp(int2(local) + int2(x, y), int2(regionMin), int2(regionMax)));
 				float3 b = ToWorking(Baseline.Load(int3(p, 0)).rgb);
 				float3 n = ToWorking(Candidate(p, Baseline.Load(int3(p, 0)).rgb));
 				float by = Luminance(b), ny = Luminance(n);
@@ -82,7 +100,7 @@ float3 RoundPreserveSourceForStorage(float3 value)
 			}
 		}
 		float lowFrequency = totalWeight > 0.0 ? weightedResidual / totalWeight : residual;
-		uint2 edge = min(local, RegionSize - 1u - local);
+		uint2 edge = min(local - regionMin, regionMax - local);
 		float edgeWeight = saturate(float(min(edge.x, edge.y)) / 4.0);
 		float acceptedResidual;
 		if (LightingPreservation == 1.0)

@@ -16,7 +16,9 @@ cbuffer NRColorCB : register(b0)
 	float AppearanceMix;
 	float MaximumDetailStops;
 	float LightingPreservation;
-	float3 NRColorPadding;
+	uint ReconstructionRegionCount;
+	float2 NRColorPadding;
+	uint4 ReconstructionRegions[4];
 };
 Texture2D<float4> ExposureSnapshot : register(t3);
 

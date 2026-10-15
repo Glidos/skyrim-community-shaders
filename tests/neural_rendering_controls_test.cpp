@@ -155,7 +155,7 @@ struct Upscaling
 	{
 		bool neuralRenderingEnabled = false;
 		bool neuralCharacterProviderBlending = false;
-		bool neuralCharacterPackedCrops = true;
+		bool neuralCharacterPackedCrops = false;
 		bool neuralRenderingRenderscaleFov = false;
 		bool neuralRenderingFovOnly = false, periphery_taa_enable = false, foveatedVendorDispatch = true;
 		uint32_t neuralRenderingInsertionPoint = 0, neuralRenderingMode = 0;

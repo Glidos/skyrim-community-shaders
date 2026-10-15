@@ -89,7 +89,7 @@ namespace globals
 				bool neuralRenderingRenderscaleFov = false;
 				bool neuralCharacterSceneStrengthsEnabled = false;
 				bool neuralCharacterProviderBlending = false;
-				bool neuralCharacterPackedCrops = true;
+				bool neuralCharacterPackedCrops = false;
 				bool neuralCharacterFacesEnabled = true, neuralCharacterSkinEnabled = true, neuralCharacterHairEnabled = true;
 				bool neuralCharacterArmorEnabled = false, neuralCharacterWeaponsEnabled = false;
 				float neuralCharacterFaceStrength = 1.0f, neuralCharacterSkinStrength = 1.0f, neuralCharacterHairStrength = 0.65f;
@@ -689,14 +689,14 @@ int main()
 		Upscaling::Settings settings{};
 		ImGui::Clear();
 		DrawNeuralModelResolutionSettings(settings);
-		require(ImGui::Seen("Multi-Crop") && settings.neuralCharacterPackedCrops,
-			"Multi-Crop must be available and default on on both runtimes");
+		require(!ImGui::Seen("Multi-Crop") && !settings.neuralCharacterPackedCrops,
+			"Multi-Crop must default off and stay out of ordinary resolution controls on both runtimes");
 		require(!ImGui::Seen("Parallel Eyes") && !ImGui::Seen("Prewarm NR while loading"),
 			"Ordinary resolution controls must not expose execution debug controls");
 		ImGui::Clear("Multi-Crop");
-		DrawNeuralModelResolutionSettings(settings);
-		require(!settings.neuralCharacterPackedCrops && settings.neuralRenderingParallelEyes,
-			"Multi-Crop must remain independently testable from default-on parallel scheduling");
+		DrawNeuralExecutionSettings(settings);
+		require(ImGui::Seen("Multi-Crop") && settings.neuralCharacterPackedCrops && settings.neuralRenderingParallelEyes,
+			"Debug Multi-Crop must remain independently testable from default-on parallel scheduling");
 		ImGui::Clear();
 		DrawNeuralExecutionSettings(settings);
 		require(ImGui::Seen("Parallel Eyes") == vr && settings.neuralRenderingParallelEyes,
@@ -1299,11 +1299,13 @@ int main()
 			upscaling.settings.neuralRenderingMode = mode;
 			upscaling.settings.neuralRenderingCentralAreaPercent = 55;
 			upscaling.settings.neuralRenderingCentralFeatherPixels = 32;
+			upscaling.settings.neuralCharacterPackedCrops = true;
 			ImGui::Clear();
 			upscaling.DrawSelectionControls();
 			require(!ImGui::Seen("Enable FOV"), "Shared FOV is configured only in VR");
-			for (const auto* label : { "Limit NR to central area", "NR central area", "NR central feather" })
-				require(ImGui::Seen(label) == debug, "NR-only clipping and its sliders require Debug or Trace");
+			for (const auto* label : { "Multi-Crop", "Limit NR to central area", "NR central area", "NR central feather" })
+				require(ImGui::Seen(label) == debug, "Multi-Crop and NR-only clipping controls require Debug or Trace");
+			require(upscaling.settings.neuralCharacterPackedCrops, "Hiding Multi-Crop must retain its saved preference");
 			require(upscaling.settings.neuralRenderingCentralAreaPercent == 55 && upscaling.settings.neuralRenderingCentralFeatherPixels == 32,
 				"Hiding or passively viewing clipping controls preserves their settings");
 			if (debug) {

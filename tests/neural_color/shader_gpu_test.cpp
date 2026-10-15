@@ -513,6 +513,7 @@ int main(int argc, char** argv)
 			directory.parent_path().parent_path(), flags);
 		std::printf("Packed shader compiler: %s\n", optimized ? "production optimization" : "IEEE strict");
 		CheckLightingPreservation(device.Get(), context.Get(), packedReconstruct.Get(), rounding.Get(), cb.Get(), optimized);
+		CheckPackedLightingPreservation(device.Get(), context.Get(), packedReconstruct.Get(), rounding.Get(), cb.Get());
 		CheckPackedRounding(device.Get(), context.Get(), rounding.Get(), cb.Get());
 		CheckPackedDetail(device.Get(), context.Get(), packedReconstruct.Get(), rounding.Get(), cb.Get());
 		CheckPackedInvalidCandidates(device.Get(), context.Get(), packedReconstruct.Get(), rounding.Get(), cb.Get());

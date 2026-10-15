@@ -185,13 +185,18 @@ namespace
 	}
 	Json ObservationJson(const Observation& o)
 	{
+		Json regions = Json::array();
+		for (std::uint32_t i = 0; i < std::min<std::uint32_t>(o.reconstructionRegions.count, NeuralRendering::kMaximumPackedCrops); ++i) {
+			const auto& rect = o.reconstructionRegions.regions[i];
+			regions.push_back({ { "x", rect.baseX }, { "y", rect.baseY }, { "width", rect.width }, { "height", rect.height } });
+		}
 		return { { "frame", o.frame }, { "sourceWorldFrame", o.sourceWorldFrame }, { "physicalSlot", o.slot },
 			{ "insertionPoint", o.insertion }, { "generation", o.generation }, { "revision", o.revision },
 			{ "measurementBatchId", o.measurementBatchId }, { "expectedMeasurementSlotMask", o.expectedMeasurementSlotMask },
 			{ "rect", { o.rect.baseX, o.rect.baseY, o.rect.width, o.rect.height } },
 			{ "sourceFormat", o.sourceFormat }, { "outputFormat", o.outputFormat }, { "effectiveMode", Name(o.mode, modes) },
 			{ "profile", ProfileJson(o.profile) }, { "transportBypass", o.bypass }, { "modelEditShown", o.modelEditShown },
-			{ "lightingPreservation", o.lightingPreservation }, { "atomicColourBatch", o.atomicStereo }, { "processed", o.processed }, { "retainedColourTextureBytes", o.retainedBytes },
+			{ "lightingPreservation", o.lightingPreservation }, { "reconstructionRegions", regions }, { "atomicColourBatch", o.atomicStereo }, { "processed", o.processed }, { "retainedColourTextureBytes", o.retainedBytes },
 			{ "exposureAgeFrames", o.exposureState == ExposureBindingState::SnapshotQueued && o.exposure.stamp.frame <= o.sourceWorldFrame ?
 									   Json(o.sourceWorldFrame - o.exposure.stamp.frame) :
 									   Json(nullptr) },
@@ -510,7 +515,7 @@ namespace
             "type": "number",
             "minimum": 0,
             "maximum": 1,
-            "description": "Fraction of the existing smooth luminance residual removed in Preserve Source; default 1. Reconstruction only; does not reset inference history."
+            "description": "Fraction of the existing smooth luminance residual removed in Preserve Source; default 1. Multi-Crop clamps reconstruction to each crop, excluding neighbouring tiles and padding. Observations expose reconstructionRegions in model-input coordinates; an empty list means one ROI. Use appearanceMix=0 for full lighting preservation. Does not change Legacy Raw or Managed modes, add a pass, or reset inference history."
           },
           "maximumDetailStops": {
             "type": "number",

@@ -4,6 +4,7 @@
 #include "ColorPolicy.h"
 #include "ComputeSubrect.h"
 #include "ExposureCapture.h"
+#include "PackedCropPolicy.h"
 #include "Utils/PassTimingCapture.h"
 #include <algorithm>
 #include <array>
@@ -25,6 +26,7 @@ namespace NeuralRendering::Color
 		std::uint64_t measurementBatchId = 0;
 		std::uint32_t expectedMeasurementSlotMask = 0;
 		ComputeSubrect rect{};
+		PackedCropSources reconstructionRegions{};
 		std::uint32_t sourceFormat = 0, outputFormat = 0;
 		Mode mode = Mode::LegacyRaw;
 		Profile profile{};

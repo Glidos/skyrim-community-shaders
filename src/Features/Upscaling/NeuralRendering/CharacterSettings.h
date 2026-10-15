@@ -137,7 +137,7 @@ namespace NeuralRendering
 		bool enabled = CharacterPolicy::kDefaultEnabled;
 		bool sceneStrengthsEnabled = false;
 		bool providerBlending = false;
-		bool packedCrops = true;
+		bool packedCrops = false;
 		bool humans = true;
 		bool otherHumanoids = true;
 		bool creatures = true;

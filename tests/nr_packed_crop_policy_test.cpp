@@ -56,6 +56,18 @@ static void CheckCapacityRetention()
 			std::swap(sources.regions[0], sources.regions[1]);
 	}
 	Require(mappingChanged, "Allocation stability incorrectly froze temporal identity");
+	// Enumeration and motion cannot swap two actors' model neighbourhoods.
+	sources = { { ComputeSubrect{ 32, 40, 137, 185 }, ComputeSubrect{ 1500, 200, 137, 185 } }, 2 };
+	++frame;
+	const auto before = resolve();
+	sources.regions[0].baseX += 8;
+	sources.regions[1].baseY += 8;
+	std::swap(sources.regions[0], sources.regions[1]);
+	++frame;
+	const auto after = resolve();
+	Require(after.count == 2 && after.tiles[0].packed == before.tiles[1].packed && after.tiles[1].packed == before.tiles[0].packed,
+		"Source motion or enumeration moved retained atlas positions");
+	std::swap(sources.regions[0], sources.regions[1]);
 	++frame;
 	Require(!resolve(10000).count && !state.active, "Area gate ignored the full retained canvas");
 	const auto fallbackFrame = frame;
@@ -213,13 +225,13 @@ int main()
 	CheckCapacityRetention();
 	constexpr ComputeSubrect full{ 0, 0, 2048, 1024 };
 	std::array actors{ CharacterRect{ 200, 300, 280, 400 }, CharacterRect{ 1500, 300, 1580, 400 } };
-	const std::array closeActors{ CharacterRect{ 96, 160, 176, 320 }, CharacterRect{ 208, 160, 288, 320 },
-		CharacterRect{ 320, 160, 400, 320 }, CharacterRect{ 432, 160, 512, 320 } };
+	const std::array closeActors{ CharacterRect{ 96, 160, 176, 320 }, CharacterRect{ 240, 160, 320, 320 },
+		CharacterRect{ 384, 160, 464, 320 }, CharacterRect{ 528, 160, 608, 320 } };
 	const auto tight = BuildPackedCropSources(closeActors, 2048, 1024, full);
 	Require(tight.count == 4, "Neighbouring separated masks were merged by unnecessary context or alignment");
 	for (unsigned i = 0; i < tight.count; ++i)
-		Require(tight.regions[i] == BuildCharacterComputeSubrect(std::span(closeActors).subspan(i, 1), 2048, 1024),
-			"Tight crops expanded beyond guarded sampling support");
+		Require(tight.regions[i] == BuildPackedCropContext(closeActors[i], 2048, 1024, full),
+			"Crop context differs from its bounded source policy");
 	StablePackedCropSources state;
 	const auto initial = ResolvePackedCropSources(actors, 2048, 1024, full, state);
 	Require(initial.count == 2, "Separated actors were not packed");
@@ -229,14 +241,14 @@ int main()
 	}
 	std::ranges::reverse(actors);
 	Require(BuildPackedCropSources(actors, 2048, 1024, full) == initial, "Input enumeration changed the initial mapping");
-	actors[0].minX += 1;
-	actors[0].maxX += 1;
+	actors[0].minX += 8;
+	actors[0].maxX += 8;
 	for (unsigned i = 0; i < 120; ++i)
 		Require(ResolvePackedCropSources(actors, 2048, 1024, full, state) == initial, "Contained motion churned the atlas");
 	StablePackedCropSources contextState{ initial };
 	auto contextMotion = actors;
-	contextMotion[1].minX += 7;
-	contextMotion[1].maxX += 7;
+	contextMotion[1].minX += 17;
+	contextMotion[1].maxX += 17;
 	const auto& movedActor = contextMotion[1];
 	const ComputeSubrect movedPixels{ movedActor.minX, movedActor.minY, movedActor.maxX - movedActor.minX, movedActor.maxY - movedActor.minY };
 	Require(std::ranges::any_of(initial.regions, [&](auto r) { return ContainsComputeSubrect(r, movedPixels); }), "Guard-motion fixture left the selected-pixel crop");
@@ -329,7 +341,7 @@ int main()
 				planning.reason == PackedCropReason::RetainedSources && !planning.candidateExamined && planning.selectedSources == clipped,
 		"Retained contexts were falsely reported as a fresh candidate");
 	const auto planningJson = PackedCropPlanningJson(planning);
-	Require(planningJson["contextPixels"] == 0 && planningJson["samplingGuardPixels"] == 2 && planningJson["alignmentPixels"] == 8,
+	Require(planningJson["contextPixels"] == 16 && planningJson["requiredContextPixels"] == 8 && planningJson["samplingGuardPixels"] == 2 && planningJson["alignmentPixels"] == 8,
 		"Tight crop diagnostics do not distinguish context, sampling support and alignment");
 	Require(planningJson["mergedRegionCount"].is_null() && planningJson["selectedRegionCount"] == 2 && planningJson["tileSourceFrame"].is_null(),
 		"Unexamined source diagnostics invented a count or tile frame");

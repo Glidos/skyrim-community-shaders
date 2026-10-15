@@ -480,7 +480,7 @@ public:
 		bool neuralRenderingEnabled = false;
 		bool neuralRenderingPrewarmEnabled = true;
 		bool neuralRenderingParallelEyes = true;
-		bool neuralCharacterPackedCrops = true;
+		bool neuralCharacterPackedCrops = false;
 		uint neuralRenderingMode = static_cast<uint>(NeuralRendering::RenderingMode::ReducedResolution);
 		// Compatibility fields are derived from shared VR FOV coverage for both placements.
 		bool neuralRenderingFovOnly = false;

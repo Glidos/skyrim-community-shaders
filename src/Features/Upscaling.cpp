@@ -18788,6 +18788,11 @@ namespace
 
 	void DrawNeuralExecutionSettings(Upscaling::Settings& settings)
 	{
+		Util::Widgets::Checkbox("Multi-Crop", &settings.neuralCharacterPackedCrops);
+		Util::AddTooltip("Experimental; disabled by default. The saved choice also applies at Info logging. In Actors only mode, find tighter crops around selected material pixels and pack them with surrounding context into one image per eye. Uses completed occupancy to propose tighter crops, with a current-mask GPU coverage check. Keeps the base image in both eyes if a crop misses selected pixels or required context. Uses actor bounds when proposals are unavailable. Uses the NR resolution slider. Parallel Eyes in Debug controls overlaps the two eye models in VR. Requires cropped actor evaluation. Keeps exact output masks. Retains crop context and atlas positions while coverage allows; reserves 16 source pixels of context and requires at least 8 inside the available region. Changing context can still change appearance. Head movement can cause brightness or shading flicker; colour settings are not changed automatically. Uses the enclosing region when packing would save less than 25% of evaluated pixels. Pixel savings do not guarantee faster frames.");
+		if (settings.neuralCharacterPackedCrops && (!settings.neuralCharacterRenderingEnabled ||
+													   settings.neuralCharacterCropMode != static_cast<std::uint32_t>(NeuralRendering::CharacterCropMode::Cropped)))
+			MenuUI::DetailNote("Crop packing requires Actors only and cropped actor evaluation.");
 		if (globals::game::isVR) {
 			Util::Widgets::Checkbox("Parallel Eyes", &settings.neuralRenderingParallelEyes);
 			Util::AddTooltip("Overlap both eye models on separate GPU queues. Enabled by default. The saved choice also applies at Info logging. Keeps NR resolution, coverage and strength. Parallel faults disable this option until restart. NR resumes serially only after safe recovery. GPU profiling includes the queue join.");
@@ -18824,11 +18829,6 @@ namespace
 
 	void DrawNeuralModelResolutionSettings(Upscaling::Settings& settings)
 	{
-		Util::Widgets::Checkbox("Multi-Crop", &settings.neuralCharacterPackedCrops);
-		Util::AddTooltip("Enabled by default. In Actors only mode, find tighter crops around selected material pixels and pack them with surrounding context into one image per eye. Uses completed occupancy to propose tighter crops, with a current-mask GPU coverage check. Keeps the base image in both eyes if a crop misses selected pixels or required context. Uses actor bounds when proposals are unavailable. Uses the NR resolution slider. Parallel Eyes in Debug controls overlaps the two eye models in VR. Requires cropped actor evaluation. Keeps exact output masks, but changing model context can change appearance. Uses the enclosing region when packing would save less than 25% of evaluated pixels. Pixel savings do not guarantee faster frames.");
-		if (settings.neuralCharacterPackedCrops && (!settings.neuralCharacterRenderingEnabled ||
-													   settings.neuralCharacterCropMode != static_cast<std::uint32_t>(NeuralRendering::CharacterCropMode::Cropped)))
-			MenuUI::DetailNote("Crop packing requires Actors only and cropped actor evaluation.");
 		DrawNeuralIntegerSetting("NR Model Resolution", settings.neuralRenderingModelResolutionPercent,
 			NeuralRendering::kMinimumModelResolutionPercent, NeuralRendering::kMaximumModelResolutionPercent, "%d%%");
 		if (auto tooltip = Util::HoverTooltipWrapper())

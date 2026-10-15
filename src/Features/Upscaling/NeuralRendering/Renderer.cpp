@@ -3658,6 +3658,14 @@ namespace NeuralRendering
 				observation.insertion = static_cast<std::uint32_t>(a_args[index].insertionPoint);
 				observation.generation = a_args[index].generation;
 				observation.rect = resources[index].roi.ownedOutput;
+				if (a_args[index].modelResolutionHistory) {
+					const auto& packed = a_args[index].modelResolutionHistory->packedCrops;
+					if (packed.count > kMaximumPackedCrops)
+						return FailLocked(RendererStage::ColorInputCopy, E_INVALIDARG, "invalid NR colour crop count", a_args[index].featureSlot, true);
+					observation.reconstructionRegions.count = packed.count;
+					for (std::uint32_t tile = 0; tile < packed.count; ++tile)
+						observation.reconstructionRegions.regions[tile] = packed.tiles[tile].packed;
+				}
 				observation.sourceFormat = static_cast<std::uint32_t>(resources[index].color.desc.Format);
 				observation.outputFormat = static_cast<std::uint32_t>(resources[index].output.desc.Format);
 				observation.atomicStereo = logicalEyeCount == 2u;
