@@ -3,14 +3,20 @@
 #include <ankerl/unordered_dense.h>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
 
+#if defined(__SANITIZE_ADDRESS__)
+#	include <sanitizer/allocator_interface.h>
+#endif
+
 namespace
 {
 	std::array<unsigned, 32> destructions{};
+	std::array<const void*, 32> allocations{};
 	unsigned created{};
 
 	void Require(bool a_condition, const char* a_message)
@@ -25,11 +31,12 @@ namespace
 		void Release() { ++releases; }
 	};
 
-	struct alignas(std::max_align_t) Wrapper
+	struct alignas(__STDCPP_DEFAULT_NEW_ALIGNMENT__) Wrapper
 	{
 		unsigned id;
 		FakeDriver* shader;
-		std::uint64_t metadata;
+		std::uint32_t byteCodeSize;
+		std::uint64_t vertexDesc;
 
 		~Wrapper() { ++destructions.at(id); }
 	};
@@ -37,15 +44,25 @@ namespace
 	using Owner = Util::ShaderAllocation::TrailingBytesOwner<Wrapper>;
 	constexpr std::array<std::uint8_t, 7> payload{ 0x00, 0x17, 0x80, 0xff, 0x42, 0x01, 0xab };
 
+	Owner Track(Owner a_owner)
+	{
+		Require(created + 1 < destructions.size(), "Lifetime tracking capacity exceeded");
+		a_owner->id = ++created;
+		allocations[created] = a_owner.get();
+#if defined(__SANITIZE_ADDRESS__)
+		Require(__sanitizer_get_ownership(a_owner.get()), "Backing allocation must be owned while live");
+#endif
+		return a_owner;
+	}
+
 	Owner Make(std::size_t a_size = payload.size())
 	{
 		auto owner = Util::ShaderAllocation::MakeWithTrailingBytes<Wrapper>(a_size);
-		Require(owner->id == 0 && owner->shader == nullptr && owner->metadata == 0,
+		Require(owner->id == 0 && owner->shader == nullptr && owner->byteCodeSize == 0 && owner->vertexDesc == 0,
 			"Wrapper must be value-initialized");
 		Require(reinterpret_cast<std::uintptr_t>(owner.get()) % alignof(Wrapper) == 0,
 			"Wrapper alignment was lost");
-		owner->id = ++created;
-		return owner;
+		return Track(std::move(owner));
 	}
 
 	std::uint8_t* TrailingBytes(Wrapper* a_wrapper)
@@ -90,6 +107,44 @@ namespace
 	static_assert(std::is_empty_v<Owner::deleter_type>);
 	static_assert(sizeof(Owner) == sizeof(Wrapper*));
 	static_assert(!std::is_convertible_v<Owner, std::unique_ptr<Wrapper>>);
+
+	struct BytecodeBlob
+	{
+		std::size_t size = payload.size();
+		std::size_t GetBufferSize() const { return size; }
+		const void* GetBufferPointer() const { return payload.data(); }
+	};
+
+	auto FactoryAllocation(BytecodeBlob& shaderData, std::uint32_t descriptor)
+	{
+#include "shader_allocation_factory_under_test.h"
+		return newShader;
+	}
+
+	void TestFactoryBacking()
+	{
+		BytecodeBlob blob;
+		for (const auto size : { payload.size(), std::size_t{ 0 } }) {
+			blob.size = size;
+			const auto descriptor = created + 1;
+			auto owner = FactoryAllocation(blob, descriptor);
+			static_assert(std::is_same_v<decltype(owner), VertexMap::mapped_type>);
+			Require(owner->id == descriptor && owner->byteCodeSize == size && owner->vertexDesc == 0,
+				"Factory must retain descriptor and bytecode metadata");
+			Require(owner->shader == nullptr, "Factory storage must leave driver ownership with the caller");
+			Require(std::memcmp(TrailingBytes(owner.get()), payload.data(), size) == 0,
+				"Factory must copy the exact bytecode immediately after the wrapper");
+#if defined(__SANITIZE_ADDRESS__)
+			Require(__sanitizer_get_allocated_size(owner.get()) == sizeof(Wrapper) + size,
+				"Factory must allocate exactly the wrapper and trailing bytecode");
+#endif
+			Cache cache;
+			auto* address = owner.get();
+			cache.vertexShaders[0].insert_or_assign(descriptor, Track(std::move(owner)));
+			Require(cache.vertexShaders[0].at(descriptor).get() == address,
+				"Factory-to-cache transfer must preserve the wrapper address");
+		}
+	}
 
 	void TestLocalOwnership()
 	{
@@ -192,6 +247,7 @@ namespace
 		static inline unsigned attempts{};
 		static inline unsigned memberDestructions{};
 		static inline unsigned wrapperDestructions{};
+		static inline const void* allocation{};
 		struct Member
 		{
 			~Member() { ++memberDestructions; }
@@ -199,6 +255,7 @@ namespace
 		ConstructionProbe()
 		{
 			++attempts;
+			allocation = this;
 			throw std::runtime_error("construction rejected");
 		}
 		~ConstructionProbe() { ++wrapperDestructions; }
@@ -224,6 +281,10 @@ namespace
 		Require(caught && ConstructionProbe::attempts == 1 && ConstructionProbe::memberDestructions == 1 &&
 					ConstructionProbe::wrapperDestructions == 0,
 			"Failed construction must unwind members without destroying an unconstructed wrapper");
+#if defined(__SANITIZE_ADDRESS__)
+		Require(!__sanitizer_get_ownership(ConstructionProbe::allocation),
+			"Failed construction must free its backing allocation");
+#endif
 	}
 
 	void TestDriverResponsibility()
@@ -249,14 +310,19 @@ namespace
 int main()
 {
 	try {
+		TestFactoryBacking();
 		TestLocalOwnership();
 		TestCacheOwnership();
 		TestAbandonedPublication();
 		TestAllocationFailures();
 		TestDriverResponsibility();
 		Require(destructions[0] == 0, "No untracked wrapper may be destroyed");
-		for (unsigned id = 1; id <= created; ++id)
+		for (unsigned id = 1; id <= created; ++id) {
 			Require(destructions[id] == 1, "Every constructed wrapper must be destroyed exactly once");
+#if defined(__SANITIZE_ADDRESS__)
+			Require(!__sanitizer_get_ownership(allocations[id]), "Every backing allocation must be freed");
+#endif
+		}
 		std::cout << "Shader allocation tests passed (" << created << " wrapper lifetimes)\n";
 		return 0;
 	} catch (const std::exception& error) {

@@ -3819,13 +3819,16 @@ if(BUILD_CONTROLLER_TESTS)
         "${CMAKE_CURRENT_BINARY_DIR}/generated/shader-allocation"
     )
     add_custom_command(
-        OUTPUT "${_shader_allocation_dir}/shader_allocation_cache_under_test.h"
+        OUTPUT
+            "${_shader_allocation_dir}/shader_allocation_cache_under_test.h"
+            "${_shader_allocation_dir}/shader_allocation_factory_under_test.h"
         COMMAND
             "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
             "-DOUTPUT_DIRECTORY=${_shader_allocation_dir}" -P
             "${PROJECT_SOURCE_DIR}/tests/extract_shader_allocation.cmake"
         DEPENDS
             src/ShaderCache.h
+            src/ShaderCache.cpp
             tests/extract_shader_allocation.cmake
             tests/extract_source_region.cmake
         VERBATIM
@@ -3833,7 +3836,9 @@ if(BUILD_CONTROLLER_TESTS)
     add_controller_test(shader_allocation_test ShaderAllocation tests/shader_allocation_test.cpp)
     target_sources(
         shader_allocation_test
-        PRIVATE "${_shader_allocation_dir}/shader_allocation_cache_under_test.h"
+        PRIVATE
+            "${_shader_allocation_dir}/shader_allocation_cache_under_test.h"
+            "${_shader_allocation_dir}/shader_allocation_factory_under_test.h"
     )
     target_include_directories(
         shader_allocation_test
