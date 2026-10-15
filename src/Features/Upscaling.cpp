@@ -36514,13 +36514,14 @@ bool Upscaling::PrepareVRNativeRestorePresentationObservation(
 			sourceDesc.Height &&
 		exactPresentationSource &&
 		InputBoundsMatchCombinedStereoEye(a_inputBounds, eyeIndex);
+	const bool targetUsesVendorEvaluation = IsVendorUpscalingMethod(applied.method);
 	const bool exactRuntimeContract =
 		GetRuntimeUpscaleMethod() == applied.method &&
 		GetConfiguredUpscaleMethodForTransition() == applied.method &&
-		(nativeRuntimePlanExact || fixedVendorRuntimePlanExact);
+		(targetUsesVendorEvaluation ? fixedVendorRuntimePlanExact : nativeRuntimePlanExact);
 	const bool exactNativeCandidate =
 		VRVendorRelatchPolicy::CanAcceptNativeRestorePresentation({
-			.targetUsesVendorEvaluation = fixedVendorRuntimePlanExact,
+			.targetUsesVendorEvaluation = targetUsesVendorEvaluation,
 			.exactPhysicalNativeContinuity =
 				exactPhysicalNativeContinuity,
 			.exactRuntimeContract = exactRuntimeContract,
@@ -36533,7 +36534,7 @@ bool Upscaling::PrepareVRNativeRestorePresentationObservation(
 		return reject(VRNativeRestorePreparationReject::VendorDispatchFrame);
 	if (!exactPhysicalNativeContinuity)
 		return reject(VRNativeRestorePreparationReject::TextureLayout);
-	if (!exactRuntimeContract || !exactNativeCandidate)
+	if (!exactNativeCandidate)
 		return reject(VRNativeRestorePreparationReject::RuntimeContract);
 
 	VRRenderScaleBackendKind vendorBackend =

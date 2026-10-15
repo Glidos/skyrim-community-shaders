@@ -15,6 +15,12 @@ endif()
 string(SUBSTRING "${_source}" ${_request_start} -1 _request)
 extract_between("${_request}" "\tconst auto controllerSnapshot = GetVRRenderScaleTransitionSnapshot();" "\tconst bool directMenuRequestRelatch =" "vr_recovery_select.h")
 extract_between("${_request}" "\tif (a_providerNeutralNativeRecovery) {\n\t\tpendingVRRenderScaleRecoverySnapshot = {};" "\tconst uint32_t currentFrame = globals::state ?" "vr_recovery_capture.h")
+string(FIND "${_source}" "bool Upscaling::PrepareVRNativeRestorePresentationObservation(" _presentation_start)
+if(_presentation_start EQUAL -1)
+    message(FATAL_ERROR "Cannot find native recovery presentation validation")
+endif()
+string(SUBSTRING "${_source}" ${_presentation_start} -1 _presentation)
+extract_between("${_presentation}" "\tconst bool targetUsesVendorEvaluation =" "\tVRRenderScaleBackendKind vendorBackend =" "vr_recovery_presentation.h")
 file(WRITE "${OUTPUT_FILE}" [=[
 #include "vr_recovery_preserve.h"
 #include "vr_recovery_take.h"

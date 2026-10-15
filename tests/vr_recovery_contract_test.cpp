@@ -1,3 +1,5 @@
+#include "Features/Upscaling/VRVendorRelatchPolicy.h"
+
 #include <atomic>
 #include <cstdint>
 #include <iostream>
@@ -85,6 +87,63 @@ void Require(bool condition, const char* message)
 {
 	if (!condition)
 		throw std::runtime_error(message);
+}
+
+enum class VRNativeRestorePreparationReject
+{
+	None,
+	ResolutionPlan,
+	SourceIdentity,
+	VendorDispatchFrame,
+	TextureLayout,
+	RuntimeContract
+};
+
+VRNativeRestorePreparationReject ValidateNativePresentation(
+	Method appliedMethod, Method runtimeMethod, Method configuredMethod,
+	bool vendorPlan, bool physicalContinuity, bool vendorEvaluationComplete = true)
+{
+	const Boot applied{ true, false, appliedMethod };
+	const auto GetRuntimeUpscaleMethod = [&]() { return runtimeMethod; };
+	const auto GetConfiguredUpscaleMethodForTransition = [&]() { return configuredMethod; };
+	const auto IsVendorUpscalingMethod = [](Method method) { return method == Method::kDLSS || method == Method::kFSR; };
+	const auto reject = [](VRNativeRestorePreparationReject reason) { return reason; };
+	const bool nativeRuntimePlanExact = !vendorPlan;
+	const bool fixedVendorRuntimePlanExact = vendorPlan;
+	const bool nativeSource = !vendorPlan;
+	const bool fixedVendorSource = vendorPlan;
+	const bool fixedVendorEvaluationComplete = vendorEvaluationComplete;
+	const bool exactPhysicalNativeContinuity = physicalContinuity;
+#include "vr_recovery_presentation.h"
+	return VRNativeRestorePreparationReject::None;
+}
+
+void CheckNativePresentation()
+{
+	using Reject = VRNativeRestorePreparationReject;
+	for (const auto runtime : { Method::kNONE, Method::kTAA, Method::kDLSS, Method::kFSR }) {
+		for (const auto configured : { Method::kNONE, Method::kTAA, Method::kDLSS, Method::kFSR }) {
+			for (const auto native : { Method::kNONE, Method::kTAA }) {
+				Require(ValidateNativePresentation(native, runtime, configured, false, true) == Reject::None,
+					"Exact native recovery must accept the engine output while desired provider settings remain selected");
+				Require(ValidateNativePresentation(native, runtime, configured, false, false) == Reject::TextureLayout,
+					"Native recovery must retain physical texture validation despite provider metadata drift");
+			}
+			for (const auto vendor : { Method::kDLSS, Method::kFSR }) {
+				for (const bool vendorPlan : { false, true }) {
+					const auto expected = vendorPlan && runtime == vendor && configured == vendor ? Reject::None : Reject::RuntimeContract;
+					Require(ValidateNativePresentation(vendor, runtime, configured, vendorPlan, true) == expected,
+						"Vendor recovery must retain the exact provider contract even while its resolution plan is native");
+				}
+			}
+		}
+	}
+	for (const auto vendor : { Method::kDLSS, Method::kFSR }) {
+		Require(ValidateNativePresentation(vendor, vendor, vendor, true, false) == Reject::TextureLayout,
+			"Vendor recovery must reject an invalid physical texture");
+		Require(ValidateNativePresentation(vendor, vendor, vendor, true, true, false) == Reject::VendorDispatchFrame,
+			"Vendor recovery must reject output without current-frame evaluation");
+	}
 }
 
 void CheckNativeFallback(Method failedMethod, Method nativeMethod)
@@ -222,6 +281,7 @@ int main()
 		for (const auto failed : { Method::kDLSS, Method::kFSR })
 			for (const auto native : { Method::kTAA, Method::kNONE })
 				CheckNativeFallback(failed, native);
+		CheckNativePresentation();
 		CheckRecoveryOwnership();
 		CheckOrdinaryRecovery();
 		std::cout << "VR recovery producer, queue and consumer tests passed\n";

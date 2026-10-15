@@ -3076,7 +3076,7 @@ if(BUILD_CONTROLLER_TESTS)
     foreach(
         _name
         IN
-        ITEMS preserve take pending select capture
+        ITEMS preserve take pending select capture presentation
     )
         list(
             APPEND _vr_recovery_contract_test_headers
