@@ -499,7 +499,8 @@ void VR::UpdateFixedWorldPositioning(const Matrix& a_hmdWorld)
 
 void VR::UpdateFixedWorldPositioning()
 {
-	if (!UseFixedWorldMenuPositioning())
+	if (!UseFixedWorldMenuPositioning() ||
+		(fixedWorldOverlayPosition.initialized && !fixedWorldOverlayReanchorRequested))
 		return;
 
 	Matrix hmdWorld;

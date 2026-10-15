@@ -31,6 +31,7 @@ extract_between("${_utils}"
     "vr::HmdMatrix34_t CreateControllerOverlayTransform("
     "//============================================================================="
     "vr_menu_native_relative_under_test.h")
+extract_between("${_utils}" "bool GetControllerWorldMatrix(" "\n}" "vr_menu_poses_under_test.h")
 
 extract_between("${_header}" "static constexpr float kDefaultMenuScale" "// Default controller overlay offset values" "vr_menu_defaults_under_test.h")
 extract_between("${_vr}" "bool VR::CanOpenMenuFromWorld() const" "bool VR::IsOverlayVisible() const" "vr_menu_world_admission_under_test.h")
@@ -43,3 +44,5 @@ extract_between("${_drag}" "bool MakeVerticalFacingTransform(" "\n}\n\nbool VR::
 file(READ "${OUTPUT_DIRECTORY}/vr_menu_fixed_facing_under_test.h" _facing)
 file(APPEND "${OUTPUT_DIRECTORY}/vr_menu_fixed_helpers_under_test.h" "${_facing}")
 extract_between("${_drag}" "void VR::RequestFixedWorldMenuReanchor()" "void VR::UpdateFixedWorldPositioning()" "vr_menu_fixed_update_under_test.h")
+extract_between("${_drag}" "void VR::UpdateFixedWorldPositioning()" "\n}" "vr_menu_fixed_poll_under_test.h")
+file(APPEND "${OUTPUT_DIRECTORY}/vr_menu_fixed_poll_under_test.h" "\n}\n")

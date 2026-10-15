@@ -354,6 +354,9 @@ namespace
 
 	bool TryGetOverlayWorldMatrix(const VR& a_vr, VR::OverlayType a_type, Matrix& a_overlayWorld)
 	{
+		if (a_type == VR::OverlayType::HMD && !a_vr.IsHMDMenuPlacementReady())
+			return false;
+
 		if (a_type == VR::OverlayType::HMD) {
 			if (a_vr.UseFixedWorldMenuPositioning()) {
 				a_overlayWorld = a_vr.fixedWorldOverlayPosition.m;

@@ -35,6 +35,80 @@ public:
 
 namespace
 {
+	struct POINT
+	{
+		long x, y;
+	};
+	struct RECT
+	{
+		long left, top, right, bottom;
+	};
+	using HWND = void*;
+	RECT clientRect{};
+	POINT screenCursor{};
+	bool clientAvailable = true, cursorAvailable = true, conversionAvailable = true;
+	bool GetClientRect(HWND, RECT* rect)
+	{
+		*rect = clientRect;
+		return clientAvailable;
+	}
+	bool GetCursorPos(POINT* point)
+	{
+		*point = screenCursor;
+		return cursorAvailable;
+	}
+	bool ScreenToClient(HWND, POINT*) { return conversionAvailable; }
+#include "menu_mirror_under_test.h"
+
+	bool CheckDesktopMirrorMapping()
+	{
+		bool passed = true;
+		for (const ImVec2 canvas : { ImVec2(1920, 1620), ImVec2(1920, 1080) }) {
+			for (const ImVec2 buffer : { ImVec2(1920, 1080), ImVec2(1440, 1600), ImVec2(3840, 2160) }) {
+				for (const ImVec2 client : { buffer, ImVec2(960, 540), ImVec2(2560, 1440), ImVec2(1000, 1500) }) {
+					clientRect = { 0, 0, static_cast<long>(client.x), static_cast<long>(client.y) };
+					const float scale = std::min(buffer.x / canvas.x, buffer.y / canvas.y);
+					const ImVec2 offset((buffer.x - canvas.x * scale) * .25f, (buffer.y - canvas.y * scale) * .25f);
+					for (const ImVec2 uv : { ImVec2(.1f, .1f), ImVec2(.5f, .5f), ImVec2(.9f, .9f) }) {
+						const ImVec2 expected(uv.x * canvas.x, uv.y * canvas.y);
+						screenCursor = {
+							std::lround((expected.x * scale + offset.x) * client.x / buffer.x),
+							std::lround((expected.y * scale + offset.y) * client.y / buffer.y)
+						};
+						const auto actual = GetDesktopMirrorCursor(nullptr, canvas, buffer);
+						passed = std::abs(actual.x - expected.x) <= buffer.x / client.x / scale &&
+						         std::abs(actual.y - expected.y) <= buffer.y / client.y / scale && passed;
+					}
+				}
+			}
+		}
+		const auto invalid = [&](ImVec2 buffer = ImVec2(1920, 1080)) {
+			const auto cursor = GetDesktopMirrorCursor(nullptr, { 1920, 1620 }, buffer);
+			return cursor.x == -FLT_MAX && cursor.y == -FLT_MAX;
+		};
+		clientRect = { 0, 0, 960, 540 };
+		screenCursor = { -1, -1 };
+		passed = invalid() && passed;
+		screenCursor = { 959, 539 };
+		passed = invalid() && passed;
+		screenCursor = { 300, 300 };
+		passed = invalid({ 0, 0 }) && invalid({ INFINITY, 1080 }) && passed;
+		const float tiny = std::numeric_limits<float>::denorm_min();
+		const auto overflow = GetDesktopMirrorCursor(nullptr, { tiny, tiny }, { FLT_MAX, FLT_MAX });
+		passed = overflow.x == -FLT_MAX && overflow.y == -FLT_MAX && passed;
+		clientRect = {};
+		passed = invalid() && passed;
+		clientRect = { 0, 0, 960, 540 };
+		for (bool* available : { &clientAvailable, &cursorAvailable, &conversionAvailable }) {
+			*available = false;
+			passed = invalid() && passed;
+			*available = true;
+		}
+		if (!passed)
+			std::puts("FAIL: desktop mirror cursor does not match the resized client or reject invalid input");
+		return passed;
+	}
+
 #include "menu_resize_helpers_under_test.h"
 	struct SettingsWindowLayout
 	{
@@ -147,6 +221,13 @@ namespace
 			}
 			if (frame == 10)
 				finalSize = window->SizeFull;
+			if (frame == 6 && !locked && !invalidPosition && direction == 1) {
+				const ImVec2 expected(layout.size.x + 50, layout.size.y + 30);
+				if (window->SizeFull.x != expected.x || window->SizeFull.y != expected.y) {
+					std::printf("FAIL: resize does not track desktop pointer 1:1 (SteamVR=%d, size=%.1f,%.1f)\n", steamVR, window->SizeFull.x, window->SizeFull.y);
+					passed = false;
+				}
+			}
 			if (frame > 11 && !locked &&
 				((direction == 1 && (window->Size.x <= layout.size.x || window->Size.y <= layout.size.y)) ||
 					(direction < 0 && (window->Size.x != layout.expectedShrink.x || window->Size.y != layout.expectedShrink.y)) ||
@@ -232,7 +313,7 @@ bool CheckLaserCancelsResize()
 
 int main()
 {
-	bool passed = CheckCanvasRecovery() && CheckLaserCancelsResize();
+	bool passed = CheckDesktopMirrorMapping() && CheckCanvasRecovery() && CheckLaserCancelsResize();
 	for (bool steamVR : { false, true }) {
 		passed = CheckDrag(true, steamVR, false) && passed;
 		passed = CheckDrag(false, steamVR, false) && passed;

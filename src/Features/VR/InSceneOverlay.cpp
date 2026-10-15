@@ -2469,6 +2469,9 @@ void VR::PublishPresentedMenuSurface(OverlayType a_type, const Matrix& a_worldMa
 
 bool VR::TryGetPresentedMenuSurface(OverlayType a_type, PresentedMenuSurface& a_outSurface) const
 {
+	if (a_type == OverlayType::HMD && !IsHMDMenuPlacementReady())
+		return false;
+
 	if (!ShouldUseInSceneOverlay() && openVRInfo.runtimeType == VRDetection::RuntimeType::SteamVR) {
 		auto* openvr = RE::BSOpenVR::GetSingleton();
 		auto* overlay = openvr ? RE::BSOpenVR::GetIVROverlayFromContext(&openvr->vrContext) : nullptr;
@@ -2809,7 +2812,7 @@ void VR::RenderInSceneOverlay(vr::EVREye eye, ID3D11Texture2D* targetTexture, co
 	};
 
 	// --- Render HMD Overlay ---
-	if ((attachMode == AttachMode::HMDOnly || attachMode == AttachMode::Both) && menuTexture) {
+	if ((attachMode == AttachMode::HMDOnly || attachMode == AttachMode::Both) && menuTexture && IsHMDMenuPlacementReady()) {
 		InSceneCB cbData;
 
 		Matrix modelMatrix;
@@ -3023,8 +3026,8 @@ void VR::CompositeInSceneOverlaySubmitTexture(vr::EVREye eye, ID3D11Texture2D* t
 		return;
 	}
 
-	const bool showOnHMD = attachMode == AttachMode::HMDOnly || attachMode == AttachMode::Both;
-	const bool showOnController = attachMode == AttachMode::ControllerOnly;
+	const bool showOnHMD = (attachMode == AttachMode::HMDOnly || attachMode == AttachMode::Both) && IsHMDMenuPlacementReady();
+	const bool showOnController = attachMode == AttachMode::ControllerOnly || (attachMode == AttachMode::Both && !showOnHMD);
 	if (showOnHMD) {
 		if (UseFixedWorldMenuPositioning()) {
 			modelMatrix = VR::Config::CreateHMDOverlayScaleMatrix(GetEffectiveHMDMenuScale()) * fixedWorldOverlayPosition.m;

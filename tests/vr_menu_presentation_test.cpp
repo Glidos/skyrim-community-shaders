@@ -3,6 +3,8 @@
 #include "Features/VR/OpenVRDetection.h"
 #include "Features/VR/WandSurfaceGeometry.h"
 #include <SimpleMath.h>
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <initializer_list>
 #include <iostream>
@@ -10,6 +12,55 @@
 
 using DirectX::SimpleMath::Matrix;
 using DirectX::SimpleMath::Vector3;
+
+namespace
+{
+	struct MenuCompositor
+	{
+		unsigned reads = 0, waits = 0;
+		vr::EVRCompositorError result = vr::VRCompositorError_None;
+		vr::EVRCompositorError GetLastPoses(vr::TrackedDevicePose_t* poses, uint32_t count, vr::TrackedDevicePose_t*, uint32_t)
+		{
+			++reads;
+			if (count != vr::k_unMaxTrackedDeviceCount)
+				return vr::VRCompositorError_RequestFailed;
+			for (uint32_t index = 0; index < count; ++index) {
+				poses[index] = {};
+				poses[index].bPoseIsValid = true;
+				poses[index].mDeviceToAbsoluteTracking.m[0][3] = static_cast<float>(index + 10);
+			}
+			return result;
+		}
+		vr::EVRCompositorError WaitGetPoses(vr::TrackedDevicePose_t*, uint32_t, vr::TrackedDevicePose_t*, uint32_t)
+		{
+			++waits;
+			return vr::VRCompositorError_None;
+		}
+	} menuCompositor;
+	bool contextValid = true;
+}
+namespace RE
+{
+	struct BSOpenVR
+	{
+		static inline MenuCompositor* compositor = &menuCompositor;
+		static MenuCompositor* GetIVRCompositor() { return compositor; }
+		struct
+		{
+			MenuCompositor* vrCompositor = &menuCompositor;
+		} vrContext;
+	} openVR;
+}
+namespace Util
+{
+	struct OpenVRContext
+	{
+		RE::BSOpenVR* openvr = &RE::openVR;
+		bool IsValid() const { return contextValid; }
+	};
+	bool GetDeviceToAbsoluteTrackingPoseCompatible(vr::ETrackingUniverseOrigin, float, vr::TrackedDevicePose_t*, uint32_t);
+#include "vr_menu_poses_under_test.h"
+}
 
 namespace globals
 {
@@ -65,6 +116,7 @@ struct VR
 	bool statusOnly = false;
 	bool IsClosedMenuStatusOverlayActive() const { return statusOnly; }
 	bool UseFixedWorldMenuPositioning() const;
+	bool IsHMDMenuPlacementReady() const;
 	Settings::OverlayAttachMode GetEffectiveMenuAttachMode() const;
 	ControllerDevice GetEffectiveMenuAttachController() const;
 	float GetEffectiveMenuScale() const;
@@ -74,6 +126,7 @@ struct VR
 	void SetMenuLayoutUnlocked(bool);
 	void RequestFixedWorldMenuReanchor();
 	void UpdateFixedWorldPositioning(const Matrix&);
+	void UpdateFixedWorldPositioning();
 	unsigned inputResets = 0;
 	void ResetMenuInputRuntimeState() { ++inputResets; }
 	struct
@@ -91,12 +144,91 @@ using AttachMode = VR::Settings::OverlayAttachMode;
 #include "vr_menu_world_admission_under_test.h"
 namespace
 {
+	unsigned hmdReads = 0;
+	bool hmdAvailable = true;
+	bool TryGetHMDWorld(Matrix& pose)
+	{
+		++hmdReads;
+		pose = Matrix::Identity;
+		return hmdAvailable;
+	}
 #include "vr_menu_fixed_helpers_under_test.h"
 }
+#include "vr_menu_fixed_poll_under_test.h"
 #include "vr_menu_fixed_update_under_test.h"
 
 namespace
 {
+	bool CheckNonblockingPoses()
+	{
+		bool passed = true;
+		for (const auto count : { 1u, 2u, vr::k_unMaxTrackedDeviceCount }) {
+			std::array<vr::TrackedDevicePose_t, vr::k_unMaxTrackedDeviceCount> poses{};
+			menuCompositor = {};
+			passed = Util::GetDeviceToAbsoluteTrackingPoseCompatible(vr::TrackingUniverseStanding, 0, poses.data(), count) && passed;
+			passed = menuCompositor.reads == 1 && menuCompositor.waits == 0 && passed;
+			for (uint32_t index = 0; index < count; ++index)
+				passed = poses[index].bPoseIsValid && poses[index].mDeviceToAbsoluteTracking.m[0][3] == index + 10 && passed;
+			menuCompositor.result = vr::VRCompositorError_RequestFailed;
+			poses[0].mDeviceToAbsoluteTracking.m[0][3] = -1;
+			passed = !Util::GetDeviceToAbsoluteTrackingPoseCompatible(vr::TrackingUniverseStanding, 0, poses.data(), count) &&
+			         poses[0].mDeviceToAbsoluteTracking.m[0][3] == -1 && menuCompositor.waits == 0 && passed;
+		}
+		menuCompositor = {};
+		float matrix[3][4]{};
+		vr::TrackedDevicePose_t pose{};
+		passed = !Util::GetControllerWorldMatrix(vr::k_unTrackedDeviceIndexInvalid, matrix) &&
+		         !Util::GetControllerWorldMatrix(0, nullptr) &&
+		         !Util::GetDeviceToAbsoluteTrackingPoseCompatible(vr::TrackingUniverseStanding, 0, nullptr, 1) &&
+		         !Util::GetDeviceToAbsoluteTrackingPoseCompatible(vr::TrackingUniverseStanding, 0, &pose, 0) &&
+		         !Util::GetDeviceToAbsoluteTrackingPoseCompatible(vr::TrackingUniverseStanding, 0, &pose, vr::k_unMaxTrackedDeviceCount + 1) &&
+		         menuCompositor.reads == 0 && passed;
+		RE::BSOpenVR::compositor = nullptr;
+		passed = Util::GetControllerWorldMatrix(1, matrix) && matrix[0][3] == 11 && passed;
+		RE::openVR.vrContext.vrCompositor = nullptr;
+		passed = !Util::GetControllerWorldMatrix(1, matrix) && passed;
+		RE::BSOpenVR::compositor = RE::openVR.vrContext.vrCompositor = &menuCompositor;
+		contextValid = false;
+		passed = !Util::GetControllerWorldMatrix(1, matrix) && passed;
+		contextValid = true;
+		if (!passed)
+			std::cout << "menu pose snapshot blocked, mutated failed output or accepted invalid input\n";
+		return passed;
+	}
+
+	bool CheckFixedWorldPoseRecovery()
+	{
+		VR placement;
+		hmdReads = 0;
+		hmdAvailable = false;
+		placement.UpdateFixedWorldPositioning();
+		bool passed = hmdReads == 1 && !placement.IsHMDMenuPlacementReady() && placement.fixedWorldOverlayReanchorRequested;
+		hmdAvailable = true;
+		placement.UpdateFixedWorldPositioning();
+		passed = hmdReads == 2 && placement.IsHMDMenuPlacementReady() && !placement.fixedWorldOverlayReanchorRequested && passed;
+		const auto anchor = placement.fixedWorldOverlayPosition.m;
+		for (int frame = 0; frame < 10; ++frame)
+			placement.UpdateFixedWorldPositioning();
+		passed = hmdReads == 2 && placement.fixedWorldOverlayPosition.m == anchor && passed;
+		placement.RequestFixedWorldMenuReanchor();
+		hmdAvailable = false;
+		placement.UpdateFixedWorldPositioning();
+		passed = hmdReads == 3 && placement.IsHMDMenuPlacementReady() && placement.fixedWorldOverlayReanchorRequested && placement.fixedWorldOverlayPosition.m == anchor && passed;
+		hmdAvailable = true;
+		placement.UpdateFixedWorldPositioning();
+		passed = hmdReads == 4 && !placement.fixedWorldOverlayReanchorRequested && passed;
+		placement.settings.VRMenuPositioningMethod = 0;
+		placement.fixedWorldOverlayPosition = {};
+		placement.UpdateFixedWorldPositioning();
+		passed = hmdReads == 4 && placement.IsHMDMenuPlacementReady() && passed;
+		placement.settings.VRMenuPositioningMethod = 1;
+		placement.statusOnly = true;
+		passed = placement.IsHMDMenuPlacementReady() && passed;
+		if (!passed)
+			std::cout << "fixed-world menu did not preserve its anchor or retry a failed pose read\n";
+		return passed;
+	}
+
 #include "vr_menu_matrix_conversion_under_test.h"
 #include "vr_menu_native_relative_under_test.h"
 #include "vr_menu_native_scale_under_test.h"
@@ -185,7 +317,9 @@ namespace
 
 int main()
 {
-	unsigned failures = 0;
+	unsigned failures = CheckNonblockingPoses() ? 0 : 1;
+	if (!CheckFixedWorldPoseRecovery())
+		++failures;
 	unsigned surfaces = 0;
 	VR placement;
 	for (const float yaw : { -2.5f, -.8f, 0.0f, 1.6f, 3.0f }) {

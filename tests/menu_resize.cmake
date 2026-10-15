@@ -5,6 +5,7 @@ set(_menu_resize_test_headers
     "${_menu_resize_test_dir}/menu_resize_under_test.h"
     "${_menu_resize_test_dir}/menu_resize_flags_under_test.h"
     "${_menu_resize_test_dir}/menu_resize_dispatch_under_test.h"
+    "${_menu_resize_test_dir}/menu_mirror_under_test.h"
 )
 add_custom_command(
     OUTPUT ${_menu_resize_test_headers}
@@ -15,6 +16,7 @@ add_custom_command(
     DEPENDS
         src/Menu/MenuHeaderRenderer.cpp
         src/Menu.cpp
+        src/Menu/OverlayRenderer.cpp
         tests/extract_source_region.cmake
         tests/extract_menu_resize.cmake
     VERBATIM

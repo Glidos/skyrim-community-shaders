@@ -99,12 +99,14 @@ namespace
 		float& a_offsetX,
 		float& a_offsetY)
 	{
-		if (a_sourceWidth <= 0.0f || a_sourceHeight <= 0.0f || a_targetWidth <= 0.0f || a_targetHeight <= 0.0f) {
+		if (!std::isfinite(a_sourceWidth) || !std::isfinite(a_sourceHeight) ||
+			!std::isfinite(a_targetWidth) || !std::isfinite(a_targetHeight) ||
+			a_sourceWidth <= 0.0f || a_sourceHeight <= 0.0f || a_targetWidth <= 0.0f || a_targetHeight <= 0.0f) {
 			return false;
 		}
 
 		a_scale = std::min(a_targetWidth / a_sourceWidth, a_targetHeight / a_sourceHeight);
-		if (!(a_scale > 0.0f)) {
+		if (!std::isfinite(a_scale) || !(a_scale > 0.0f)) {
 			return false;
 		}
 
@@ -117,6 +119,31 @@ namespace
 		a_offsetX = leftoverX * 0.25f;
 		a_offsetY = leftoverY * 0.25f;
 		return true;
+	}
+
+	ImVec2 GetDesktopMirrorCursor(HWND a_window, const ImVec2& a_canvasSize, const ImVec2& a_bufferSize)
+	{
+		const ImVec2 invalid(-FLT_MAX, -FLT_MAX);
+		float scale = 1.0f, offsetX = 0.0f, offsetY = 0.0f;
+		if (!ComputeDesktopMirrorTransform(a_canvasSize.x, a_canvasSize.y, a_bufferSize.x, a_bufferSize.y, scale, offsetX, offsetY))
+			return invalid;
+
+		RECT client{};
+		POINT cursor{};
+		if (!GetClientRect(a_window, &client) || client.right <= client.left || client.bottom <= client.top ||
+			!GetCursorPos(&cursor) || !ScreenToClient(a_window, &cursor))
+			return invalid;
+
+		// Client pixels can change independently of the swap-chain buffer during resizing.
+		const float bufferX = (static_cast<float>(cursor.x) - static_cast<float>(client.left)) /
+		                      (static_cast<float>(client.right) - static_cast<float>(client.left)) * a_bufferSize.x;
+		const float bufferY = (static_cast<float>(cursor.y) - static_cast<float>(client.top)) /
+		                      (static_cast<float>(client.bottom) - static_cast<float>(client.top)) * a_bufferSize.y;
+		const ImVec2 mapped((bufferX - offsetX) / scale, (bufferY - offsetY) / scale);
+		if (!std::isfinite(mapped.x) || !std::isfinite(mapped.y) ||
+			mapped.x < 0.0f || mapped.y < 0.0f || mapped.x > a_canvasSize.x || mapped.y > a_canvasSize.y)
+			return invalid;
+		return mapped;
 	}
 
 	void DrawShaderCompilationFailures(uint64_t failed, const Menu::ThemeSettings& themeSettings)
@@ -631,38 +658,9 @@ void OverlayRenderer::InitializeImGuiFrame(Menu& menu)
 			// The desktop mirror uses an aspect-correct presentation of the VR canvas,
 			// anchored to the desktop origin. Mirror mouse input through the same transform.
 			auto& io = ImGui::GetIO();
-			const float sourceWidth = io.DisplaySize.x;
-			const float sourceHeight = io.DisplaySize.y;
-			const float targetWidth = static_cast<float>(desc.BufferDesc.Width);
-			const float targetHeight = static_cast<float>(desc.BufferDesc.Height);
-			float scale = 1.0f;
-			float offsetX = 0.0f;
-			float offsetY = 0.0f;
-			if (ComputeDesktopMirrorTransform(sourceWidth, sourceHeight, targetWidth, targetHeight, scale, offsetX, offsetY)) {
-				POINT cursorPos{};
-				if (GetCursorPos(&cursorPos) && ScreenToClient(desc.OutputWindow, &cursorPos)) {
-					const float localX = static_cast<float>(cursorPos.x);
-					const float localY = static_cast<float>(cursorPos.y);
-					const bool insideScaledCanvas =
-						localX >= offsetX &&
-						localX <= offsetX + sourceWidth * scale &&
-						localY >= offsetY &&
-						localY <= offsetY + sourceHeight * scale;
-
-					if (insideScaledCanvas && scale > 0.0f) {
-						const float mappedX = (localX - offsetX) / scale;
-						const float mappedY = (localY - offsetY) / scale;
-						io.MousePos = ImVec2(mappedX, mappedY);
-						io.AddMousePosEvent(mappedX, mappedY);
-					} else {
-						io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
-						io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
-					}
-				} else {
-					io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
-					io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
-				}
-			}
+			io.MousePos = GetDesktopMirrorCursor(desc.OutputWindow, io.DisplaySize,
+				ImVec2(static_cast<float>(desc.BufferDesc.Width), static_cast<float>(desc.BufferDesc.Height)));
+			io.AddMousePosEvent(io.MousePos.x, io.MousePos.y);
 		} else {
 			const float displayW = static_cast<float>(desc.BufferDesc.Width);
 			const float displayH = static_cast<float>(desc.BufferDesc.Height);

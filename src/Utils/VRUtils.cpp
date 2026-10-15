@@ -3,6 +3,7 @@
 #include "RE/B/BSOpenVR.h"
 #include "RE/B/BSOpenVRControllerDevice.h"
 #include "UI.h"
+#include <algorithm>
 #include <imgui.h>
 
 namespace
@@ -13,7 +14,7 @@ namespace
 		const auto device = combo.GetDevice();
 
 		if ((device == InputDeviceType::Primary || device == InputDeviceType::Secondary) &&
-		    (key == RE::BSOpenVRControllerDevice::Keys::kXA || key == RE::BSOpenVRControllerDevice::Keys::kBY)) {
+			(key == RE::BSOpenVRControllerDevice::Keys::kXA || key == RE::BSOpenVRControllerDevice::Keys::kBY)) {
 			const bool leftHanded = RE::BSOpenVRControllerDevice::IsLeftHandedMode();
 			const bool isLogicalPrimary = device == InputDeviceType::Primary;
 			const bool isPhysicalLeft = isLogicalPrimary ? leftHanded : !leftHanded;
@@ -227,11 +228,14 @@ namespace Util
 
 	bool GetControllerWorldMatrix(vr::TrackedDeviceIndex_t index, float out[3][4])
 	{
+		if (index >= vr::k_unMaxTrackedDeviceCount || !out)
+			return false;
+
 		OpenVRContext ctx;
 		if (!ctx.IsValid())
 			return false;
 
-		vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount];
+		vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount]{};
 		if (!GetDeviceToAbsoluteTrackingPoseCompatible(vr::TrackingUniverseStanding, 0, poses, vr::k_unMaxTrackedDeviceCount))
 			return false;
 
@@ -248,67 +252,26 @@ namespace Util
 	{
 		(void)fPredictedSecondsToPhotonsFromNow;
 		(void)eOrigin;
+		if (!pTrackedDevicePoseArray || unTrackedDevicePoseArrayCount == 0 ||
+			unTrackedDevicePoseArrayCount > vr::k_unMaxTrackedDeviceCount)
+			return false;
+
 		OpenVRContext ctx;
 		if (!ctx.IsValid())
 			return false;
 
-		// For single device requests (common with HMD pose requests),
-		// use a full pose array to ensure OpenComposite compatibility
-		if (unTrackedDevicePoseArrayCount == 1) {
-			vr::TrackedDevicePose_t allPoses[vr::k_unMaxTrackedDeviceCount];
-
-			// Try to use compositor interface first for better OpenComposite compatibility
-			// Use BSOpenVR's method to avoid static linking issues
-			auto* compositor = RE::BSOpenVR::GetIVRCompositor();
-			if (!compositor && ctx.openvr) {
-				// Fallback to compositor from the context
-				compositor = ctx.openvr->vrContext.vrCompositor;
-			}
-
-			if (compositor) {
-				// For OpenComposite compatibility, try to use GetLastPoses which is more stable
-				auto error = compositor->GetLastPoses(allPoses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
-				if (error == vr::VRCompositorError_None) {
-					// Copy HMD pose (index 0) to output
-					pTrackedDevicePoseArray[0] = allPoses[0];
-					return true;
-				}
-				// Fallback to WaitGetPoses if GetLastPoses fails
-				error = compositor->WaitGetPoses(allPoses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
-				if (error == vr::VRCompositorError_None) {
-					// Copy HMD pose (index 0) to output
-					pTrackedDevicePoseArray[0] = allPoses[0];
-					return true;
-				}
-			}
-
-			// If compositor methods failed, return false rather than using the problematic direct call
-			return false;
-		}
-
-		// For full device array requests, try compositor first
-		// Use BSOpenVR's method to avoid static linking issues
 		auto* compositor = RE::BSOpenVR::GetIVRCompositor();
-		if (!compositor && ctx.openvr) {
-			// Fallback to compositor from the context
+		if (!compositor && ctx.openvr)
 			compositor = ctx.openvr->vrContext.vrCompositor;
-		}
+		if (!compositor)
+			return false;
 
-		if (compositor) {
-			// For OpenComposite compatibility, try to use GetLastPoses which is more stable
-			auto error = compositor->GetLastPoses(pTrackedDevicePoseArray, unTrackedDevicePoseArrayCount, nullptr, 0);
-			if (error == vr::VRCompositorError_None) {
-				return true;
-			}
-			// Fallback to WaitGetPoses if GetLastPoses fails
-			error = compositor->WaitGetPoses(pTrackedDevicePoseArray, unTrackedDevicePoseArrayCount, nullptr, 0);
-			if (error == vr::VRCompositorError_None) {
-				return true;
-			}
-		}
-
-		// If compositor methods failed, return false rather than using the problematic direct call
-		return false;
+		// A full snapshot supports OpenComposite; only the game may advance compositor pacing.
+		vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount]{};
+		if (compositor->GetLastPoses(poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0) != vr::VRCompositorError_None)
+			return false;
+		std::copy_n(poses, unTrackedDevicePoseArrayCount, pTrackedDevicePoseArray);
+		return true;
 	}
 
 }

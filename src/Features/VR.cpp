@@ -2951,6 +2951,11 @@ bool VR::UseFixedWorldMenuPositioning() const
 	return VRMenuPositioningPolicy::UseFixedWorld(settings.VRMenuPositioningMethod);
 }
 
+bool VR::IsHMDMenuPlacementReady() const
+{
+	return !UseFixedWorldMenuPositioning() || fixedWorldOverlayPosition.initialized;
+}
+
 VR::Settings::OverlayAttachMode VR::GetEffectiveMenuAttachMode() const
 {
 	if (IsClosedMenuStatusOverlayActive())
@@ -3115,13 +3120,15 @@ void VR::UpdateVROverlayPosition()
 			}
 			UpdateFixedWorldPositioning();
 
-			// Scale the overlay based on width/height (same as relative HMD mode)
-			vr::HmdMatrix34_t fixedTransform = Util::MatrixToHmdMatrix34(fixedWorldOverlayPosition.m);
-			ScaleOverlayTransform(fixedTransform, overlayWidth, hmdOverlayHeight);
+			if (IsHMDMenuPlacementReady()) {
+				// Scale the overlay based on width/height (same as relative HMD mode)
+				vr::HmdMatrix34_t fixedTransform = Util::MatrixToHmdMatrix34(fixedWorldOverlayPosition.m);
+				ScaleOverlayTransform(fixedTransform, overlayWidth, hmdOverlayHeight);
 
-			Util::SetOverlayInputFlags(ctx.overlay, menuOverlayHandle);
-			ctx.overlay->SetOverlayTransformAbsolute(menuOverlayHandle, vr::TrackingUniverseStanding, &fixedTransform);
-			ctx.overlay->SetOverlayWidthInMeters(menuOverlayHandle, overlayWidth);
+				Util::SetOverlayInputFlags(ctx.overlay, menuOverlayHandle);
+				ctx.overlay->SetOverlayTransformAbsolute(menuOverlayHandle, vr::TrackingUniverseStanding, &fixedTransform);
+				ctx.overlay->SetOverlayWidthInMeters(menuOverlayHandle, overlayWidth);
+			}
 		}
 	}
 
@@ -3924,7 +3931,7 @@ void VR::SubmitOverlayFrame()
 			// Update overlay position and submit to SteamVR
 			UpdateVROverlayPosition();
 			vr::Texture_t tex = { menuTexture.get(), vr::TextureType_DirectX, vr::ColorSpace_Auto };
-			if (wantsHMDOverlay) {
+			if (wantsHMDOverlay && IsHMDMenuPlacementReady()) {
 				synchronizeMouseScale(menuOverlayHandle, menuTexture.get(), "menu");
 				Util::SetOverlayInputFlags(cleanOverlay, menuOverlayHandle);
 				const vr::EVROverlayError textureError = cleanOverlay->SetOverlayTexture(menuOverlayHandle, &tex);

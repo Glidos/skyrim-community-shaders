@@ -1,6 +1,6 @@
 set(_vr_menu_presentation_dir "${CMAKE_CURRENT_BINARY_DIR}/generated/vr-menu-presentation")
 set(_vr_menu_presentation_headers)
-foreach(_part IN ITEMS scale path route native_scale matrix_conversion native_relative defaults effective offsets layout_lock fixed_helpers fixed_update world_admission)
+foreach(_part IN ITEMS scale path route native_scale matrix_conversion native_relative defaults effective offsets layout_lock fixed_helpers fixed_update world_admission poses fixed_poll)
     list(APPEND _vr_menu_presentation_headers
         "${_vr_menu_presentation_dir}/vr_menu_${_part}_under_test.h")
 endforeach()

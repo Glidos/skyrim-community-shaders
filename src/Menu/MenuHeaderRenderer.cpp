@@ -76,7 +76,6 @@ namespace
 	};
 
 	MenuResizeDragState g_menuResizeDragState;
-	constexpr float kSteamVRResizePointerSensitivity = 1.5f;
 
 	bool HasValidMousePos(const ImVec2& a_pos)
 	{
@@ -442,7 +441,6 @@ void MenuHeaderRenderer::RenderResizeHandles(float uiScale, bool steamVRControls
 	const float bottomRightSize = steamVRControls ? topLeftSize * 1.2f : std::max(ImGui::GetFontSize() * 1.5f, 18.0f) * uiScale;
 	const float handleInset = GetSteamVRResizeHandleInset(uiScale);
 	const bool headsetControls = steamVRControls || customResizeControls;
-	const float sensitivity = steamVRControls ? kSteamVRResizePointerSensitivity : 1.0f;
 	const ImGuiViewport* viewport = ImGui::GetMainViewport();
 	const ImVec2 resizeBoundsMin = viewport ? viewport->WorkPos : ImVec2(0.0f, 0.0f);
 	const ImVec2 resizeBoundsMax = viewport ?
@@ -493,8 +491,8 @@ void MenuHeaderRenderer::RenderResizeHandles(float uiScale, bool steamVRControls
 					ClampResizeValue(mousePos.x, resizeBoundsMin.x, resizeBoundsMax.x),
 					ClampResizeValue(mousePos.y, resizeBoundsMin.y, resizeBoundsMax.y));
 				const ImVec2 delta(
-					(clampedMousePos.x - g_menuResizeDragState.startMouse.x) * sensitivity,
-					(clampedMousePos.y - g_menuResizeDragState.startMouse.y) * sensitivity);
+					clampedMousePos.x - g_menuResizeDragState.startMouse.x,
+					clampedMousePos.y - g_menuResizeDragState.startMouse.y);
 				ImVec2 newPos = g_menuResizeDragState.startPos;
 				ImVec2 newSize = g_menuResizeDragState.startSize;
 				if (topLeft) {

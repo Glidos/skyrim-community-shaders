@@ -4,6 +4,7 @@ endif()
 
 file(READ "${PROJECT_ROOT}/src/Features/VR.cpp" _vr_source)
 file(READ "${PROJECT_ROOT}/src/Features/VR/InSceneOverlay.cpp" _in_scene_source)
+file(READ "${PROJECT_ROOT}/src/Features/VR/WandPointing.cpp" _wand_source)
 
 function(assert_section_contains _start_marker _end_marker _required_text _surface)
     string(FIND "${_vr_source}" "${_start_marker}" _start)
@@ -21,6 +22,34 @@ function(assert_section_contains _start_marker _end_marker _required_text _surfa
         )
     endif()
 endfunction()
+
+assert_section_contains(
+    "void VR::UpdateVROverlayPosition()"
+    "void VR::UpdateVROverlayControllerPosition()"
+    "if (IsHMDMenuPlacementReady())"
+    "native HMD transform admission"
+)
+assert_section_contains(
+    "void VR::SubmitOverlayFrame()"
+    "void VR::UpdateDepthBufferCulling()"
+    "if (wantsHMDOverlay && IsHMDMenuPlacementReady())"
+    "native HMD presentation admission"
+)
+foreach(_required IN ITEMS
+    "a_type == OverlayType::HMD && !IsHMDMenuPlacementReady()"
+    "&& menuTexture && IsHMDMenuPlacementReady()"
+    "attachMode == AttachMode::Both) && IsHMDMenuPlacementReady()"
+    "attachMode == AttachMode::Both && !showOnHMD"
+)
+    string(FIND "${_in_scene_source}" "${_required}" _found)
+    if(_found EQUAL -1)
+        message(FATAL_ERROR "In-scene placement admission is missing: ${_required}")
+    endif()
+endforeach()
+string(FIND "${_wand_source}" "a_type == VR::OverlayType::HMD && !a_vr.IsHMDMenuPlacementReady()" _wand_admission)
+if(_wand_admission EQUAL -1)
+    message(FATAL_ERROR "Fallback wand geometry must reject an uninitialized HMD anchor")
+endif()
 
 
 assert_section_contains(

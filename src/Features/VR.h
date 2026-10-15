@@ -422,6 +422,8 @@ public:
 
 	void UpdateVROverlayPosition();
 	bool UseFixedWorldMenuPositioning() const;
+	/** Require a valid fixed-world anchor before HMD rendering or pointer hits. */
+	[[nodiscard]] bool IsHMDMenuPlacementReady() const;
 	/** Return the saved headset presentation mode or the status-overlay mode. */
 	[[nodiscard]] Settings::OverlayAttachMode GetEffectiveMenuAttachMode() const;
 	/** Return the controller selected for the effective headset presentation. */
