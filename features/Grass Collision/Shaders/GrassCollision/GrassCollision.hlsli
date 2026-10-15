@@ -167,6 +167,10 @@ namespace GrassCollision
 
 			displacement = collision * alpha * nearFactor * 0.75 * CollisionStrength;
 			previousDisplacement = previousCollision * alpha * nearFactor * 0.75 * PreviousCollisionStrength;
+			// Strength must not push a vertex below its instance root.
+			float minimumDisplacementZ = -max(0.0, maximumDepth);
+			displacement.z = max(displacement.z, minimumDisplacementZ);
+			previousDisplacement.z = max(previousDisplacement.z, minimumDisplacementZ);
 		} else {
 			displacement = 0.0;
 			previousDisplacement = 0.0;

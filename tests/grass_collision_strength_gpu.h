@@ -28,11 +28,14 @@ void RunGrassCollisionStrength()
 		std::array<float, 4> distance{ 2048, 0, 0, 0 };
 	};
 	static_assert(sizeof(Case) == 64);
-	std::array<Case, 5> cases{};
+	std::array<Case, 8> cases{};
 	cases[1].color[3] = 0;
 	cases[2].distance[0] = 0;
 	cases[3].position[0] = 4096;
 	cases[4].position = cases[4].root;
+	cases[5].position[2] = -59.75f;
+	cases[6].position[2] = -61;
+	cases[7].color[3] = .05f;
 	const auto makeBuffer = [&](UINT bytes, UINT stride, UINT bind, const void* initial, const char* name) {
 		D3D11_BUFFER_DESC desc{};
 		desc.ByteWidth = bytes;
@@ -93,32 +96,62 @@ void RunGrassCollisionStrength()
 		context->CopyResource(staging.Get(), output.Get());
 		D3D11_MAPPED_SUBRESOURCE mapped{};
 		Check(context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped));
-		std::array<std::array<float, 8>, 5> values{};
+		std::array<std::array<float, 8>, cases.size()> values{};
 		std::memcpy(values.data(), mapped.pData, sizeof(values));
 		context->Unmap(staging.Get(), 0);
 		return values;
 	};
-	const auto baseline = dispatch(1, 1);
+	const auto verifyStrengths = [&] {
+		const auto baseline = dispatch(1, 1);
+		const std::array<std::array<float, 2>, 7> strengths{ { { 0, 1 }, { 1, 1 }, { 2, 1 }, { 3, 2 }, { 5, 3 }, { 0, 5 }, { 1, 0 } } };
+		for (const auto& strength : strengths) {
+			const auto values = dispatch(strength[0], strength[1]);
+			for (size_t sample = 0; sample < values.size(); ++sample) {
+				const float minimumZ = -(std::max)(0.0f, cases[sample].position[2] - cases[sample].root[2]);
+				for (size_t axis = 0; axis < 3; ++axis) {
+					Require(std::isfinite(values[sample][axis]) && std::isfinite(values[sample][axis + 4]),
+						"Collision strength produced nonfinite displacement");
+					const float current = baseline[sample][axis] * strength[0];
+					const float previous = baseline[sample][axis + 4] * strength[1];
+					Require(std::abs(values[sample][axis] - (axis == 2 ? (std::max)(current, minimumZ) : current)) < .001 &&
+								std::abs(values[sample][axis + 4] - (axis == 2 ? (std::max)(previous, minimumZ) : previous)) < .001,
+						"Current and previous collision displacement do not track their own strength");
+				}
+				Require(values[sample][2] >= minimumZ - .001f && values[sample][6] >= minimumZ - .001f,
+					"Collision strength moved a vertex below its root");
+				if ((sample >= 1 && sample <= 4) || sample == 6)
+					Require(values[sample][0] == 0 && values[sample][1] == 0 && values[sample][2] == 0 &&
+								values[sample][4] == 0 && values[sample][5] == 0 && values[sample][6] == 0,
+						"Strength bypassed grass root, alpha, distance or disabled-collision gates");
+			}
+		}
+		return baseline;
+	};
+	const auto baseline = verifyStrengths();
 	const double expected = -.75 * 30 * (1 - std::pow(30.0 / 2048, 2) * (3 - 2 * 30.0 / 2048));
 	Require(std::abs(baseline[0][2] - expected) < .001 && baseline[0][2] == baseline[0][6],
 		"1x collision strength differs from the original deformation");
-	const std::array<std::array<float, 2>, 7> strengths{ { { 0, 1 }, { 1, 1 }, { 2, 1 }, { 3, 2 }, { 5, 3 }, { 0, 5 }, { 1, 0 } } };
-	for (const auto& strength : strengths) {
-		const auto values = dispatch(strength[0], strength[1]);
-		for (size_t sample = 0; sample < values.size(); ++sample) {
-			for (size_t axis = 0; axis < 3; ++axis) {
-				Require(std::isfinite(values[sample][axis]) && std::isfinite(values[sample][axis + 4]),
-					"Collision strength produced nonfinite displacement");
-				Require(std::abs(values[sample][axis] - baseline[sample][axis] * strength[0]) < .001 &&
-							std::abs(values[sample][axis + 4] - baseline[sample][axis + 4] * strength[1]) < .001,
-					"Current and previous collision displacement do not track their own strength");
-			}
-			if (sample != 0)
-				Require(values[sample][0] == 0 && values[sample][1] == 0 && values[sample][2] == 0 &&
-							values[sample][4] == 0 && values[sample][5] == 0 && values[sample][6] == 0,
-					"Strength bypassed grass root, alpha, distance or disabled-collision gates");
+	for (UINT y = 0; y < 512; ++y)
+		for (UINT x = 0; x < 512; ++x) {
+			const float currentHeight = -64 + (float(x) - 256) * 4;
+			const float previousHeight = -72 + (float(y) - 256) * 2;
+			const auto current = DirectX::PackedVector::XMConvertFloatToHalf((2048 - currentHeight) / 4096);
+			const auto previous = DirectX::PackedVector::XMConvertFloatToHalf((2048 - previousHeight) / 4096);
+			const size_t pixel = (size_t(y) * 512 + x) * 4;
+			pixels[pixel] = pixels[pixel + 1] = current;
+			pixels[pixel + 2] = pixels[pixel + 3] = previous;
 		}
-	}
+	context->UpdateSubresource(texture.Get(), 0, nullptr, pixels.data(), 512 * 8, 0);
+	const auto sloped = verifyStrengths();
+	Require(std::abs(sloped[0][0]) > .01 && std::abs(sloped[0][5]) > .01 &&
+				std::abs(sloped[0][0] - sloped[0][4]) > .01,
+		"Sloped fields did not exercise distinct lateral collision histories");
+	identity[3] = 32;
+	identity[7] = -16;
+	identity[11] = 12;
+	geometry.SetVariable("World", identity);
+	geometry.Bind(context.Get());
+	verifyStrengths();
 	std::fill(pixels.begin(), pixels.end(), DirectX::PackedVector::HALF(0));
 	context->UpdateSubresource(texture.Get(), 0, nullptr, pixels.data(), 512 * 8, 0);
 	const auto empty = dispatch(5, 5);
