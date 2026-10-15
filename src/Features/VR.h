@@ -106,7 +106,7 @@ public:
 			return CreateOverlayScaleMatrix(scale, kHMDOverlayAspect);
 		}
 
-		static constexpr float kDefaultMenuScale = 2.0f;      ///< Default overlay scale factor
+		static constexpr float kDefaultMenuScale = 1.7f;      ///< Default overlay scale factor
 		static constexpr float kMinMenuScale = 1.5f;          ///< Minimum allowed overlay scale
 		static constexpr float kMaxMenuScale = 2.0f;          ///< Maximum allowed overlay scale
 		static constexpr float kMinMenuOffset = -5.0f;        ///< Minimum configurable overlay offset in metres

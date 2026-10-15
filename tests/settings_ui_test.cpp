@@ -2211,31 +2211,100 @@ int main()
 			frame([] { DrawUiReviewPage("Home", true); });
 			require(MenuUI::SettingsPage::Selected("Home") == "cache", "Welcome default does not override later Home navigation");
 			MenuUI::SettingsPage::Select("Home", "overview");
-			for (float font : { 13.0f, 21.0f })
-				for (float panelWidth : { 850.0f, 450.0f, 180.0f }) {
-					const auto draw = [&] {
-						ImGui::PushFont(ImGui::GetFont(), font);
-						ImGui::BeginChild("BuiltInFooter", { panelWidth, 500 });
-						const auto start = ImGui::GetCursorScreenPos();
-						const auto layout = GetSettingsFooterLayout("Home");
-						const auto available = ImGui::GetContentRegionAvail().x;
-						const auto height = SettingsFooterHeight("Home");
-						DrawSettingsFooter("Home");
-						for (const char* help : { MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::Save), MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::Load), MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::RestoreDefaults) }) {
-							const auto bounds = Util::controls.at(help);
-							require(bounds.Min.x > start.x + layout.backgroundLeft && bounds.Max.x < start.x + available, "all footer actions are inset from the aligned outer edges");
-							require(bounds.Max.y < start.y + height, "every footer action fits the reserved height");
-							require(std::abs(bounds.GetHeight() - font * 2.1f) < .1f, "footer buttons retain the compact reference height");
+			for (const bool dirty : { false, true })
+				for (const bool error : { false, true })
+					for (float font : { 13.0f, 21.0f, 30.0f })
+						for (float panelWidth : { 850.0f, 700.0f, 600.0f, 450.0f, 180.0f }) {
+							globals::menuStorage.dirty = dirty;
+							globals::menuStorage.messageError = error;
+							globals::menuStorage.message = error ? "Save failed: example error" : "";
+							const char* status = error ? "CSX settings not saved" : dirty ? "Unsaved CSX settings" :
+							                                                                "CSX settings saved";
+							const std::string statusHelp = std::string(status) + "\n" + (error ? globals::menuStorage.message : dirty ? "Save to keep your current choices." :
+																																		"Your choices are up to date.");
+							const auto draw = [&] {
+								ImGui::PushFont(ImGui::GetFont(), font);
+								ImGui::BeginChild("BuiltInFooter", { panelWidth, 500 });
+								const auto start = ImGui::GetCursorScreenPos();
+								const auto layout = GetSettingsFooterLayout("Home");
+								const auto available = ImGui::GetContentRegionAvail().x;
+								const auto height = SettingsFooterHeight("Home");
+								DrawSettingsFooter("Home");
+								const auto statusBounds = Util::controls.at(statusHelp);
+								float previousRight = statusBounds.Max.x;
+								for (const char* help : { MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::Save), MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::Load), MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::RestoreDefaults) }) {
+									const auto bounds = Util::controls.at(help);
+									require(bounds.Min.x > start.x + layout.backgroundLeft && bounds.Max.x < start.x + available, "all footer actions are inset from the aligned outer edges");
+									require(bounds.Max.y < start.y + height, "every footer action fits the reserved height");
+									require(std::abs(bounds.GetHeight() - font * 2.1f) < .1f, "footer buttons retain the compact reference height");
+									require(std::abs(bounds.GetCenter().y - statusBounds.GetCenter().y) < 1, "saved, unsaved and error statuses stay on the same row as every action");
+									require(bounds.Min.x > previousRight, "status and actions never overlap at any supported font or panel width");
+									previousRight = bounds.Max.x;
+								}
+								require(!layout.stacked && layout.actionRows == 1, "CSX footer always reserves one row");
+								require(layout.statusLeft > layout.backgroundLeft, "status marker is padded inside the footer");
+								if (panelWidth >= font * 25)
+									require(layout.statusWidth >= font + SettingsActionTextWidth(status), "normal menu widths preserve the full status label");
+								require(std::abs(height - (1 + font * 3.3f) * .75f) < 1, "footer remains compact while retaining readable text and button hit areas");
+								ImGui::EndChild();
+								ImGui::PopFont();
+							};
+							frame(draw);
+							frame(draw);
 						}
-						require(layout.statusLeft > layout.backgroundLeft, "status marker is padded inside the footer");
-						if (!layout.stacked)
-							require(std::abs(height - (1 + font * 3.3f) * .75f) < 1, "wide footers are 25 percent shorter while retaining readable text and button hit areas");
-						ImGui::EndChild();
-						ImGui::PopFont();
-					};
-					frame(draw);
-					frame(draw);
-				}
+			globals::menuStorage.dirty = false;
+			globals::menuStorage.ClearSettingsSaveResult();
+			const auto drawNarrow = [] {
+				ImGui::BeginChild("NarrowFooter", { 180, 500 });
+				DrawSettingsFooter("Home");
+				ImGui::EndChild();
+			};
+			frame(drawNarrow);
+			frame(drawNarrow);
+			const auto savesBefore = globals::stateStorage.saves;
+			const auto loadsBefore = globals::stateStorage.loads;
+			click(Util::controls.at(MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::Save)).GetCenter(), drawNarrow);
+			click(Util::controls.at(MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::Load)).GetCenter(), drawNarrow);
+			require(globals::stateStorage.saves == savesBefore + 1 && globals::stateStorage.loads == loadsBefore + 1, "icon actions retain distinct identities and invoke Save and Load once");
+			for (const float spacing : { 0.0f, 20.0f, 200.0f }) {
+				ImRect statusBounds;
+				globals::menuStorage.dirty = true;
+				const auto drawLarge = [&] {
+					ImGui::PushFont(ImGui::GetFont(), 108);
+					ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, { spacing, 7 });
+					ImGui::BeginChild("LargeFontFooter", { 180, 500 });
+					const auto origin = ImGui::GetCursorScreenPos();
+					const float available = ImGui::GetContentRegionAvail().x;
+					DrawSettingsFooter("Home");
+					statusBounds = Util::controls.at("Unsaved CSX settings\nSave to keep your current choices.");
+					float previousRight = statusBounds.Max.x;
+					for (const auto action : { MenuUI::GlobalSettingsAction::Save, MenuUI::GlobalSettingsAction::Load, MenuUI::GlobalSettingsAction::RestoreDefaults }) {
+						const auto bounds = Util::controls.at(MenuUI::GetGlobalSettingsActionHelp(action));
+						require(bounds.Min.x >= previousRight - .01f && bounds.Max.x < origin.x + available,
+							"large fonts and custom spacing keep every action inside the row without overlapping status");
+						previousRight = bounds.Max.x;
+					}
+					ImGui::EndChild();
+					ImGui::PopStyleVar();
+					ImGui::PopFont();
+				};
+				frame(drawLarge);
+				frame(drawLarge);
+				bool visibleMarker = false;
+				const auto markerColor = ImGui::GetColorU32(globals::menuStorage.theme.StatusPalette.Warning);
+				const auto white = ImGui::GetIO().Fonts->TexUvWhitePixel;
+				for (const auto* list : ImGui::GetDrawData()->CmdLists)
+					for (const auto& command : list->CmdBuffer) {
+						const ImRect clip({ command.ClipRect.x, command.ClipRect.y }, { command.ClipRect.z, command.ClipRect.w });
+						for (unsigned int index = 0; index < command.ElemCount; ++index) {
+							const auto& vertex = list->VtxBuffer[command.VtxOffset + list->IdxBuffer[command.IdxOffset + index]];
+							visibleMarker |= vertex.col == markerColor && vertex.uv.x == white.x && vertex.uv.y == white.y &&
+							                 statusBounds.Contains(vertex.pos) && clip.Contains(vertex.pos);
+						}
+					}
+				require(visibleMarker, "the unsaved status marker remains visible when the full label cannot fit");
+			}
+			globals::menuStorage.dirty = false;
 			const auto draw = [] { DrawSettingsFooter("Home"); };
 			frame(draw);
 			frame(draw);

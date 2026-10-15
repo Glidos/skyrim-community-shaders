@@ -2975,7 +2975,7 @@ float VR::GetEffectiveMenuScale() const
 float VR::GetEffectiveHMDMenuScale() const
 {
 	return VRMenuPositioningPolicy::ScaleForDistance(GetEffectiveMenuScale(),
-		-GetEffectiveHMDMenuOffset().z, -Config::kDefaultHMDOffsetZ);
+		-GetEffectiveHMDMenuOffset().z, VRMenuPositioningPolicy::ScaleReferenceDistance);
 }
 
 void VR::SetMenuDistance(float a_metres)

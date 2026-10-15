@@ -15,11 +15,11 @@
     "tierOrder": ["Performance", "Balanced", "Quality"],
     "baseTemplate": {
         "path": "docs/development/unified-preset-templates/Base.SettingsUser.json",
-        "sha256": "E0CD5E498998EE18316381F21108F5E7ADDA6A4F66B6C1794B472710A0ABEEC8"
+        "sha256": "EF574A04C3ECE62A28985CB1AA1F8CCBE6D39B4B8B249990A275F9A27ECEC2AB"
     },
     "runtimeSettingsContract": {
         "revision": 14,
-        "sourceTreeSha256": "5FD338221FAFC5C01BE20E6161344954CBA73F2B7C4E6D838CB21D69CB1227AF",
+        "sourceTreeSha256": "A40CD64CAB9349AD4B88C084468DB092832FB1551ED379F85B4FE0CF804DAF51",
         "inventory": {
             "fixedSources": [
                 "src/Api/FeatureDevBenchBridge.cpp",
@@ -470,8 +470,8 @@
         },
         { "path": ["VR", "EnableDragToReposition"], "value": false },
         { "path": ["VR", "VRMenuPositioningMethod"], "value": 1 },
-        { "path": ["VR", "VRMenuScale"], "value": 2.0 },
-        { "path": ["VR", "VRMenuOffsetZ"], "value": -2.25 },
+        { "path": ["VR", "VRMenuScale"], "value": 1.7 },
+        { "path": ["VR", "VRMenuOffsetZ"], "value": -2.4 },
         { "path": ["VR", "WandAimPitchTrimDegrees"], "value": -26.0 }
     ],
     "qualifications": {
@@ -682,7 +682,7 @@
         { "path": ["VR", "EnableDepthBufferCullingExterior"], "value": true },
         { "path": ["VR", "EnableDepthBufferCullingInterior"], "value": false },
         { "path": ["VR", "EnableDragToReposition"], "value": false },
-        { "path": ["VR", "VRMenuScale"], "value": 2.0 }
+        { "path": ["VR", "VRMenuScale"], "value": 1.7 }
     ],
     "validation": {
         "stalePaths": [

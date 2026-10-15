@@ -84,6 +84,9 @@ namespace NeuralRendering
 		inline constexpr std::uint32_t kAllCategoryMask = 0x3Eu;
 		inline constexpr bool kDefaultEnabled = false;
 		inline constexpr bool kDefaultVisualIsolation = true;
+		inline constexpr bool kDefaultCreatures = false;
+		inline constexpr bool kDefaultAnimals = false;
+		inline constexpr bool kDefaultOtherActors = false;
 		inline constexpr bool kDefaultFaces = true;
 		inline constexpr bool kDefaultSkin = true;
 		inline constexpr bool kDefaultHair = true;
@@ -140,9 +143,9 @@ namespace NeuralRendering
 		bool packedCrops = false;
 		bool humans = true;
 		bool otherHumanoids = true;
-		bool creatures = true;
-		bool animals = true;
-		bool otherActors = true;
+		bool creatures = CharacterPolicy::kDefaultCreatures;
+		bool animals = CharacterPolicy::kDefaultAnimals;
+		bool otherActors = CharacterPolicy::kDefaultOtherActors;
 		bool faces = CharacterPolicy::kDefaultFaces;
 		bool skin = CharacterPolicy::kDefaultSkin;
 		bool hair = CharacterPolicy::kDefaultHair;

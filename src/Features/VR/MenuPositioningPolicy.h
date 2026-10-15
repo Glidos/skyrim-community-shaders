@@ -7,7 +7,9 @@ namespace VRMenuPositioningPolicy
 {
 	inline constexpr float MinDistance = 1.5f;
 	inline constexpr float MaxDistance = 3.0f;
-	inline constexpr float DefaultDistance = 2.25f;
+	inline constexpr float DefaultDistance = 2.4f;
+	// Keep the angular size of saved scales independent of the default placement.
+	inline constexpr float ScaleReferenceDistance = 2.25f;
 
 	/** Keep menu depth usable for saved settings, live edits and controller drag. */
 	inline float SanitizeDistance(float a_metres)

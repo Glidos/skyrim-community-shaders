@@ -39,7 +39,7 @@ int main()
 	for (const float scale : { 1.5f, 1.75f, 2.0f }) {
 		const float referenceWidthPerMetre = scale * scale / 2.25f;
 		for (const float distance : { 1.5f, 2.25f, 2.75f, 3.0f }) {
-			const float actual = VRMenuPositioningPolicy::ScaleForDistance(scale, distance, 2.25f);
+			const float actual = VRMenuPositioningPolicy::ScaleForDistance(scale, distance, ScaleReferenceDistance);
 			if (std::abs(actual * actual / distance - referenceWidthPerMetre) > 1e-6f)
 				return 1;
 		}

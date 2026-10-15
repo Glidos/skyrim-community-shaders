@@ -5506,9 +5506,9 @@ Optional: select FOV + TAA for further performance savings (not compatible with 
 			NeuralRendering::CharacterPolicy::kDefaultHair;
 		settings.neuralCharacterHumansEnabled = true;
 		settings.neuralCharacterOtherHumanoidsEnabled = true;
-		settings.neuralCharacterCreaturesEnabled = true;
-		settings.neuralCharacterAnimalsEnabled = true;
-		settings.neuralCharacterOtherActorsEnabled = true;
+		settings.neuralCharacterCreaturesEnabled = NeuralRendering::CharacterPolicy::kDefaultCreatures;
+		settings.neuralCharacterAnimalsEnabled = NeuralRendering::CharacterPolicy::kDefaultAnimals;
+		settings.neuralCharacterOtherActorsEnabled = NeuralRendering::CharacterPolicy::kDefaultOtherActors;
 		settings.neuralCharacterProviderBlending = false;
 		settings.neuralCharacterArmorEnabled = NeuralRendering::CharacterPolicy::kDefaultArmor;
 		settings.neuralCharacterWeaponsEnabled = NeuralRendering::CharacterPolicy::kDefaultWeapons;

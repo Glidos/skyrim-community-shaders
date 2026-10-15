@@ -136,7 +136,7 @@ namespace
 		const float aspect = hmd ? VR::Config::kHMDOverlayAspect : VR::Config::kOverlayAspect;
 		const float referenceScale = scale;
 		if (hmd)
-			scale = VRMenuPositioningPolicy::ScaleForDistance(scale, distance, VRMenuPositioningPolicy::DefaultDistance);
+			scale = VRMenuPositioningPolicy::ScaleForDistance(scale, distance, VRMenuPositioningPolicy::ScaleReferenceDistance);
 		const Vector3 offset(0.26f, -0.04f, -distance);
 		const Matrix anchor = Matrix::CreateFromYawPitchRoll(yaw, relative ? 0.2f : 0.0f, 0.0f) *
 		                      Matrix::CreateTranslation(0.7f, 1.6f, 0.3f);
@@ -158,7 +158,7 @@ namespace
 		if (hmd) {
 			const float actualWidth = (Vector3::Transform(Vector3(0.5f, 0.5f, 0), scene) - topLeft).Length();
 			const float actualHeight = (Vector3::Transform(Vector3(-0.5f, -0.5f, 0), scene) - topLeft).Length();
-			const float referenceWidth = referenceScale * referenceScale / VRMenuPositioningPolicy::DefaultDistance;
+			const float referenceWidth = referenceScale * referenceScale / VRMenuPositioningPolicy::ScaleReferenceDistance;
 			if (std::abs(actualWidth / distance - referenceWidth) > 1e-5f ||
 				std::abs(actualHeight / distance - referenceWidth * aspect * aspect) > 1e-5f)
 				++failures;
@@ -215,6 +215,10 @@ int main()
 	placement.settings.attachMode = VR::Settings::OverlayAttachMode::Both;
 	placement.SetMenuLayoutUnlocked(false);
 	if (placement.UseFixedWorldMenuPositioning() || placement.GetEffectiveMenuAttachMode() != VR::Settings::OverlayAttachMode::Both)
+		++failures;
+	placement.settings.VRMenuScale = 1.7f;
+	placement.settings.VRMenuOffsetZ = -2.4f;
+	if (std::abs(placement.GetEffectiveHMDMenuScale() - 1.7f * std::sqrt(2.4f / 2.25f)) > 1e-6f)
 		++failures;
 	placement.statusOnly = true;
 	if (placement.GetEffectiveMenuScale() != VR::Config::kDefaultMenuScale ||

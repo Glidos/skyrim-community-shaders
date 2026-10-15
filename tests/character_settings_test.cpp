@@ -24,9 +24,9 @@ namespace
 		bool neuralCharacterHairEnabled = CharacterPolicy::kDefaultHair;
 		bool neuralCharacterHumansEnabled = true;
 		bool neuralCharacterOtherHumanoidsEnabled = true;
-		bool neuralCharacterCreaturesEnabled = true;
-		bool neuralCharacterAnimalsEnabled = true;
-		bool neuralCharacterOtherActorsEnabled = true;
+		bool neuralCharacterCreaturesEnabled = CharacterPolicy::kDefaultCreatures;
+		bool neuralCharacterAnimalsEnabled = CharacterPolicy::kDefaultAnimals;
+		bool neuralCharacterOtherActorsEnabled = CharacterPolicy::kDefaultOtherActors;
 		bool neuralCharacterProviderBlending = false;
 		bool neuralCharacterPackedCrops = false;
 		bool neuralCharacterArmorEnabled = false;

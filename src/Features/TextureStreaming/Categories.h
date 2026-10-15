@@ -19,9 +19,9 @@ namespace StreamingTextures
 	/** Optional coverage never overrides DDS, geometry or special-consumer protection. */
 	struct Categories
 	{
-		bool landscapeStatics = false;
-		bool alphaTestedStatics = false;
-		bool emissiveStatics = false;
+		bool landscapeStatics = true;
+		bool alphaTestedStatics = true;
+		bool emissiveStatics = true;
 		bool terrain = true;
 		bool parallax = true;
 		bool operator==(const Categories&) const = default;

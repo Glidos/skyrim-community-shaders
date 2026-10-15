@@ -517,9 +517,9 @@ public:
 			NeuralRendering::CharacterPolicy::kDefaultHair;
 		bool neuralCharacterHumansEnabled = true;
 		bool neuralCharacterOtherHumanoidsEnabled = true;
-		bool neuralCharacterCreaturesEnabled = true;
-		bool neuralCharacterAnimalsEnabled = true;
-		bool neuralCharacterOtherActorsEnabled = true;
+		bool neuralCharacterCreaturesEnabled = NeuralRendering::CharacterPolicy::kDefaultCreatures;
+		bool neuralCharacterAnimalsEnabled = NeuralRendering::CharacterPolicy::kDefaultAnimals;
+		bool neuralCharacterOtherActorsEnabled = NeuralRendering::CharacterPolicy::kDefaultOtherActors;
 		bool neuralCharacterProviderBlending = false;
 		bool neuralCharacterArmorEnabled = NeuralRendering::CharacterPolicy::kDefaultArmor;
 		bool neuralCharacterWeaponsEnabled = NeuralRendering::CharacterPolicy::kDefaultWeapons;

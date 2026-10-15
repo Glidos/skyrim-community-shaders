@@ -542,8 +542,8 @@ void CheckParallaxCoverage()
 {
 	using namespace StreamingTextures;
 	Categories allowed;
-	Require(allowed.parallax && allowed.terrain && !allowed.landscapeStatics && !allowed.alphaTestedStatics && !allowed.emissiveStatics,
-		"Only Terrain and Parallax coverage should default on");
+	Require(allowed.parallax && allowed.terrain && allowed.landscapeStatics && allowed.alphaTestedStatics && allowed.emissiveStatics,
+		"All optional texture coverage should default on");
 	allowed = ParseCategories(nlohmann::json::object());
 	allowed.parallax = true;
 	Require(allowed.Allows(Parallax) && !allowed.Allows(Parallax | Terrain), "Parallax implicitly enabled terrain");
@@ -812,7 +812,7 @@ int main()
 		TextureStreaming terrainControl;
 		Util::Widgets::clicks = { { "Terrain", false } };
 		terrainControl.DrawSettings();
-		Require(!terrainControl.state->categories.terrain && terrainControl.state->categories.parallax && !terrainControl.state->categories.landscapeStatics, "Terrain UI was not independent");
+		Require(!terrainControl.state->categories.terrain && terrainControl.state->categories.parallax && terrainControl.state->categories.landscapeStatics, "Terrain UI was not independent");
 		Util::Widgets::clicks = { { "Parallax", false } };
 		terrainControl.DrawSettings();
 		Require(!terrainControl.state->categories.parallax && !terrainControl.state->categories.terrain, "Parallax UI changed terrain consent");
@@ -822,6 +822,7 @@ int main()
 		parallaxLoaded.LoadSettings(parallaxSaved);
 		Require(!parallaxLoaded.state->categories.parallax && !parallaxLoaded.state->categories.terrain, "Saved disabled coverage was overwritten by defaults");
 		TextureStreaming feature;
+		feature.state->categories = { false, false, false, true, true };
 		Util::Widgets::clicks = { { "Landscape", true }, { "Cutouts", true }, { "Emissive", true } };
 		feature.DrawSettings();
 		Require(feature.state->categories == Categories{ true, true, true, true, true } && Util::Widgets::clicks.empty(), "UI did not apply all independent category toggles");

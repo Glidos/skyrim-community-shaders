@@ -95,7 +95,9 @@ namespace globals
 				float neuralCharacterFaceStrength = 1.0f, neuralCharacterSkinStrength = 1.0f, neuralCharacterHairStrength = 0.65f;
 				float neuralCharacterArmorStrength = 1.0f, neuralCharacterWeaponsStrength = 1.0f;
 				bool neuralCharacterHumansEnabled = true, neuralCharacterOtherHumanoidsEnabled = true;
-				bool neuralCharacterCreaturesEnabled = true, neuralCharacterAnimalsEnabled = true, neuralCharacterOtherActorsEnabled = true;
+				bool neuralCharacterCreaturesEnabled = NeuralRendering::CharacterPolicy::kDefaultCreatures;
+				bool neuralCharacterAnimalsEnabled = NeuralRendering::CharacterPolicy::kDefaultAnimals;
+				bool neuralCharacterOtherActorsEnabled = NeuralRendering::CharacterPolicy::kDefaultOtherActors;
 				unsigned neuralRenderingMode = 0;
 				unsigned neuralRenderingModelResolutionPercent = 100;
 				bool neuralRenderingPressureResolutionEnabled = true;

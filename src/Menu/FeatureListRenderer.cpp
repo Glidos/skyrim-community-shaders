@@ -60,6 +60,7 @@ namespace
 	constexpr float featureDescriptionScale = 1.4f;
 	constexpr float featureTitleScale = (4.0f / 3.0f) * .82f;
 	constexpr float footerTextScale = 14.0f / 12.0f;
+	constexpr size_t footerActionCount = 3;
 	constexpr float footerButtonPadding = 1.85f;
 	constexpr float footerButtonHeight = 2.1f;
 	constexpr float footerDetailTextScale = .95f;
@@ -68,21 +69,35 @@ namespace
 	constexpr float footerVerticalPadding = .15f;
 	constexpr float footerStackGap = .5f;
 	constexpr float footerOpacity = MenuUI::SettingsSurfaceOpacityScale;
+	constexpr std::array footerStatusLabels{ "CSX settings not saved", "Unsaved CSX settings", "CSX settings saved" };
 
 	float SettingsActionTextWidth(const char* label)
 	{
 		return ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize() * footerTextScale, FLT_MAX, 0, label).x;
 	}
 
-	std::array<const char*, 3> SettingsActionLabels(const MenuUI::SettingsFooter* external = nullptr, float availableWidth = 0)
+	float SettingsActionSpacing(const MenuUI::SettingsFooter* external, float availableWidth)
+	{
+		const float requested = ImGui::GetStyle().ItemSpacing.x;
+		const float limit = std::max(0.0f, (availableWidth - footerActionCount) / (footerActionCount - 1));
+		return external ? requested : std::clamp(requested, 0.0f, limit);
+	}
+
+	std::array<const char*, footerActionCount> SettingsActionLabels(const MenuUI::SettingsFooter* external = nullptr, float availableWidth = 0)
 	{
 		const auto labels = external ? std::array{ external->actions[0].label, external->actions[1].label, external->actions[2].label } : std::array{ "Save settings", "Load saved", "Restore defaults" };
-		const float fullWidth = SettingsActionTextWidth(labels[0]) + SettingsActionTextWidth(labels[1]) + SettingsActionTextWidth(labels[2]) +
-		                        ImGui::GetFontSize() * footerButtonPadding * 3 + ImGui::GetStyle().ItemSpacing.x * 2;
-		if ((availableWidth > 0 ? availableWidth : ImGui::GetContentRegionAvail().x) >= fullWidth)
+		const float width = availableWidth > 0 ? availableWidth : ImGui::GetContentRegionAvail().x;
+		const auto fits = [&](const auto& candidates) {
+			return SettingsActionTextWidth(candidates[0]) + SettingsActionTextWidth(candidates[1]) + SettingsActionTextWidth(candidates[2]) +
+			           ImGui::GetFontSize() * footerButtonPadding * footerActionCount + SettingsActionSpacing(external, width) * (footerActionCount - 1) <=
+			       width;
+		};
+		if (fits(labels))
 			return labels;
-		if (!external)
-			return { "Save", "Load", "Defaults" };
+		if (!external) {
+			const std::array compact{ "Save", "Load", "Defaults" };
+			return fits(compact) ? compact : std::array{ "", "", "" };
+		}
 		auto compact = labels;
 		for (size_t index = 0; index < compact.size(); ++index)
 			if (external->actions[index].compactLabel)
@@ -92,8 +107,11 @@ namespace
 
 	float SettingsActionButtonWidth(size_t index, const MenuUI::SettingsFooter* external = nullptr, float availableWidth = 0)
 	{
-		const float width = SettingsActionTextWidth(SettingsActionLabels(external, availableWidth)[index]) + ImGui::GetFontSize() * footerButtonPadding;
-		return std::min(width, std::max(1.0f, availableWidth > 0 ? availableWidth : ImGui::GetContentRegionAvail().x));
+		const auto* label = SettingsActionLabels(external, availableWidth)[index];
+		const float width = SettingsActionTextWidth(label) + ImGui::GetFontSize() * footerButtonPadding;
+		const float available = availableWidth > 0 ? availableWidth : ImGui::GetContentRegionAvail().x;
+		const float limit = !external && !*label ? (available - SettingsActionSpacing(external, available) * (footerActionCount - 1)) / footerActionCount : available;
+		return std::min(width, std::max(1.0f, limit));
 	}
 
 	bool SettingsActionButton(size_t a_index, const MenuUI::SettingsFooter* external = nullptr, float availableWidth = 0)
@@ -105,12 +123,16 @@ namespace
 		ImGui::PushFont(ImGui::GetFont(), font * footerTextScale);
 		ImGui::PushStyleVar(ImGuiStyleVar_ButtonTextAlign, { 1, .5f });
 		const SKSE::stl::scope_exit restoreAlign([] { ImGui::PopStyleVar(); ImGui::PopFont(); });
-		const bool clicked = ImGui::Button(label, { width, font * footerButtonHeight });
+		ImGui::PushID(static_cast<int>(a_index));
+		const SKSE::stl::scope_exit restoreId([] { ImGui::PopID(); });
+		const std::string buttonLabel = std::string(label) + "###SettingsAction";
+		const bool clicked = ImGui::Button(buttonLabel.c_str(), { width, font * footerButtonHeight });
 		const auto minimum = ImGui::GetItemRectMin();
-		const float extent = font;
+		const float extent = std::min(font, std::max(1.0f, width - font * .6f));
+		const float x = minimum.x + (*label ? font * .3f : (width - extent) * .5f);
 		const float y = minimum.y + (ImGui::GetItemRectSize().y - extent) * .5f;
 		Util::DrawActionGlyph(ImGui::GetWindowDrawList(), external && a_index == 2 ? Util::ActionGlyph::LoadSettings : glyphs[a_index],
-			{ minimum.x + font * .3f, y }, { minimum.x + font * .3f + extent, y + extent }, ImGui::GetColorU32(ImGuiCol_Text));
+			{ x, y }, { x + extent, y + extent }, ImGui::GetColorU32(ImGuiCol_Text));
 		return clicked;
 	}
 
@@ -118,13 +140,13 @@ namespace
 	{
 		float backgroundLeft;
 		float backgroundRight;
-		float contentWidth;
+		float availableActionWidth;
 		float actionsLeft;
 		float statusLeft;
 		float statusWidth;
 		float actionsHeight;
 		int actionRows;
-		std::array<ImVec2, 3> actionOffsets;
+		std::array<ImVec2, footerActionCount> actionOffsets;
 		bool stacked;
 	};
 
@@ -133,29 +155,38 @@ namespace
 		const float width = ImGui::GetContentRegionAvail().x;
 		const float font = ImGui::GetFontSize();
 		const float spacing = ImGui::GetStyle().ItemSpacing.x;
-		constexpr size_t count = 3;
+		constexpr size_t count = footerActionCount;
 		const auto cardInsets = MenuUI::SettingsPage::OverviewCardInsets(a_page, width);
 		const float backgroundLeft = std::min(cardInsets.x, std::max(0.0f, width - cardInsets.y - font * 4));
 		const float gutter = std::min(font * .75f, (width - backgroundLeft - cardInsets.y) * .05f);
 		const float statusLeft = backgroundLeft + gutter;
 		const float right = width - cardInsets.y - gutter;
 		const float contentWidth = std::max(1.0f, right - statusLeft);
-		std::array<float, 3> buttonWidths{};
-		float actionsWidth = spacing * (count - 1);
+		float availableActionWidth = contentWidth;
+		if (!external) {
+			const float statusWidth = font + std::max({ SettingsActionTextWidth(footerStatusLabels[0]), SettingsActionTextWidth(footerStatusLabels[1]), SettingsActionTextWidth(footerStatusLabels[2]) });
+			const float minimumActionsWidth = font * footerButtonPadding * count + spacing * (count - 1);
+			const float reservedStatusWidth = std::min(statusWidth, std::max(font, contentWidth - minimumActionsWidth - font));
+			availableActionWidth = std::max(static_cast<float>(count), contentWidth - reservedStatusWidth - font);
+		}
+		std::array<float, footerActionCount> buttonWidths{};
+		const float buttonSpacing = SettingsActionSpacing(external, availableActionWidth);
+		float actionsWidth = buttonSpacing * (count - 1);
 		for (size_t index = 0; index < count; ++index) {
-			buttonWidths[index] = SettingsActionButtonWidth(index, external, contentWidth);
+			buttonWidths[index] = SettingsActionButtonWidth(index, external, availableActionWidth);
 			actionsWidth += buttonWidths[index];
 		}
-		const bool wrapActions = actionsWidth > contentWidth;
-		const float inset = wrapActions ? statusLeft : std::clamp(MenuUI::SettingsPage::OverviewLastColumnInset(a_page, width), statusLeft, std::max(statusLeft, right - actionsWidth));
-		const bool stacked = inset - statusLeft < font * 12;
+		const bool wrapActions = external && actionsWidth > contentWidth;
+		const float inset = !external ? right - actionsWidth : wrapActions ? statusLeft :
+		                                                                     std::clamp(MenuUI::SettingsPage::OverviewLastColumnInset(a_page, width), statusLeft, std::max(statusLeft, right - actionsWidth));
+		const bool stacked = external && inset - statusLeft < font * 12;
 		const float statusWidth = stacked ? contentWidth : inset - statusLeft - font;
-		const float actionSpacing = spacing + (wrapActions ? 0 : std::max(0.0f, right - inset - actionsWidth) / (count - 1));
-		std::array<ImVec2, 3> offsets{};
+		const float actionSpacing = buttonSpacing + (wrapActions ? 0 : std::max(0.0f, right - inset - actionsWidth) / (count - 1));
+		std::array<ImVec2, footerActionCount> offsets{};
 		float x = 0, y = 0;
 		int rows = 1;
 		for (size_t index = 0; index < count; ++index) {
-			if (index && x + buttonWidths[index] > right - inset + .01f) {
+			if (external && index && x + buttonWidths[index] > right - inset + .01f) {
 				x = 0;
 				y += font * footerButtonHeight + ImGui::GetStyle().ItemSpacing.y;
 				++rows;
@@ -163,7 +194,7 @@ namespace
 			offsets[index] = { x, y };
 			x += buttonWidths[index] + actionSpacing;
 		}
-		return { backgroundLeft, cardInsets.y, contentWidth, inset, statusLeft, std::max(1.0f, statusWidth), y + font * footerButtonHeight, rows, offsets, stacked };
+		return { backgroundLeft, cardInsets.y, availableActionWidth, inset, statusLeft, std::max(1.0f, statusWidth), y + font * footerButtonHeight, rows, offsets, stacked };
 	}
 
 	float SettingsFooterContentHeight(const SettingsFooterLayout& layout)
@@ -225,14 +256,15 @@ namespace
 		const float contentHeight = SettingsFooterContentHeight(layout);
 		const ImVec2 start{ footerStart.x, footerStart.y + 1 + font * footerVerticalPadding };
 		const float actionsY = start.y + (layout.stacked ? 0 : (contentHeight - layout.actionsHeight) * .5f);
-		const ImVec2 statusStart{ start.x + layout.statusLeft, start.y + (layout.stacked ? layout.actionsHeight + font * footerStackGap : (contentHeight - font * footerStatusHeight) * .5f) };
+		const float statusHeight = font * (external ? footerStatusHeight : footerTextScale);
+		const ImVec2 statusStart{ start.x + layout.statusLeft, start.y + (layout.stacked ? layout.actionsHeight + font * footerStackGap : (contentHeight - statusHeight) * .5f) };
 		const auto& menu = *globals::menu;
 		const auto& palette = menu.GetTheme().StatusPalette;
 		const bool error = external ? external->error : menu.IsSettingsSaveMessageError() && !menu.GetSettingsSaveMessage().empty();
 		const bool dirty = external ? external->dirty : menu.HasUnsavedSettings();
-		const char* status = external ? external->status.c_str() : error ? "CSX settings not saved" :
-		                                                       dirty     ? "Unsaved CSX settings" :
-		                                                                   "CSX settings saved";
+		const size_t statusIndex = error ? 0 : dirty ? 1 :
+		                                               2;
+		const char* status = external ? external->status.c_str() : footerStatusLabels[statusIndex];
 		const std::string detail = external ? external->detail : error ? menu.GetSettingsSaveMessage() :
 		                                                     dirty     ? "Save to keep your current choices." :
 		                                                                 "Your choices are up to date.";
@@ -240,17 +272,20 @@ namespace
 		                                                         Util::Color::SecondaryText();
 		auto* draw = ImGui::GetWindowDrawList();
 		{
-			draw->PushClipRect({ statusStart.x - font * .2f, statusStart.y }, { statusStart.x + layout.statusWidth, statusStart.y + font * footerStatusHeight }, true);
+			draw->PushClipRect({ statusStart.x - font * .2f, statusStart.y }, { statusStart.x + layout.statusWidth, statusStart.y + statusHeight }, true);
 			const SKSE::stl::scope_exit restoreClip([draw] { draw->PopClipRect(); });
-			const ImVec2 marker{ statusStart.x + font * .35f, statusStart.y + font * footerStatusHeight * .5f };
-			draw->AddCircleFilled(marker, font * .52f, ImGui::GetColorU32({ statusColor.x, statusColor.y, statusColor.z, .10f }));
-			draw->AddCircleFilled(marker, font * .26f, ImGui::GetColorU32(statusColor));
+			const float markerScale = external ? font : std::min(font, layout.statusWidth);
+			const ImVec2 marker{ statusStart.x + markerScale * .35f, statusStart.y + statusHeight * .5f };
+			draw->AddCircleFilled(marker, markerScale * .52f, ImGui::GetColorU32({ statusColor.x, statusColor.y, statusColor.z, .10f }));
+			draw->AddCircleFilled(marker, markerScale * .26f, ImGui::GetColorU32(statusColor));
 			draw->AddText(nullptr, font * footerTextScale, { statusStart.x + font, statusStart.y }, ImGui::GetColorU32(statusColor), status);
-			draw->AddText(nullptr, font * footerDetailTextScale, { statusStart.x + font, statusStart.y + font * (footerTextScale + footerStatusLineGap) }, ImGui::GetColorU32(Util::Color::SecondaryText()), detail.c_str());
+			if (external)
+				draw->AddText(nullptr, font * footerDetailTextScale, { statusStart.x + font, statusStart.y + font * (footerTextScale + footerStatusLineGap) }, ImGui::GetColorU32(Util::Color::SecondaryText()), detail.c_str());
 		}
 		ImGui::SetCursorScreenPos(statusStart);
-		ImGui::Dummy({ layout.statusWidth, font * footerStatusHeight });
-		Util::AddTooltip(detail.c_str());
+		ImGui::Dummy({ layout.statusWidth, statusHeight });
+		const std::string statusHelp = external ? detail : std::string(status) + "\n" + detail;
+		Util::AddTooltip(statusHelp.c_str());
 		const char* blockedHelp = external ? nullptr : MenuUI::GetGlobalSettingsActionBlockReason(MenuUI::GlobalSettingsAction::Save);
 		const auto actionsGuard = Util::DisableGuard(blockedHelp != nullptr);
 		const auto addActionTooltip = [&](const char* help) {
@@ -270,8 +305,8 @@ namespace
 			ImGui::PushStyleColor(ImGuiCol_Text, dirty ? (brightness > .55f ? ImVec4(.08f, .08f, .08f, 1) : ImVec4(1, 1, 1, 1)) : ImGui::GetStyleColorVec4(ImGuiCol_Text));
 			const SKSE::stl::scope_exit restoreText([] { ImGui::PopStyleColor(); });
 			if (external)
-				DrawExternalAction(0, *external, layout.contentWidth);
-			else if (SettingsActionButton(0, nullptr, layout.contentWidth))
+				DrawExternalAction(0, *external, layout.availableActionWidth);
+			else if (SettingsActionButton(0, nullptr, layout.availableActionWidth))
 				MenuUI::InvokeGlobalSettingsAction(MenuUI::GlobalSettingsAction::Save);
 		}
 		if (!external)
@@ -280,8 +315,8 @@ namespace
 		{
 			const auto secondaryStyle = Util::StyledButtonWrapper(secondary, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered), ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
 			if (external)
-				DrawExternalAction(1, *external, layout.contentWidth);
-			else if (SettingsActionButton(1, nullptr, layout.contentWidth))
+				DrawExternalAction(1, *external, layout.availableActionWidth);
+			else if (SettingsActionButton(1, nullptr, layout.availableActionWidth))
 				MenuUI::InvokeGlobalSettingsAction(MenuUI::GlobalSettingsAction::Load);
 		}
 		if (!external)
@@ -290,13 +325,13 @@ namespace
 		{
 			const auto outlineStyle = Util::StyledButtonWrapper({ 0, 0, 0, 0 }, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered), ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
 			if (external)
-				DrawExternalAction(2, *external, layout.contentWidth);
+				DrawExternalAction(2, *external, layout.availableActionWidth);
 			else if (a_defaults) {
-				a_defaults(layout.contentWidth);
+				a_defaults(layout.availableActionWidth);
 				if (blockedHelp)
 					addActionTooltip(blockedHelp);
 			} else {
-				if (SettingsActionButton(2, nullptr, layout.contentWidth))
+				if (SettingsActionButton(2, nullptr, layout.availableActionWidth))
 					MenuUI::InvokeGlobalSettingsAction(MenuUI::GlobalSettingsAction::RestoreDefaults);
 				addActionTooltip(MenuUI::GetGlobalSettingsActionHelp(MenuUI::GlobalSettingsAction::RestoreDefaults));
 			}
