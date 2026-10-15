@@ -12,7 +12,7 @@ namespace AdaptiveBalanceTest
 		Appearance result{};
 		result.fill(1.0f);
 		result[47] = 0.0f;  // Custom godray tint contributes only when explicitly requested.
-		result[49] = result[50] = result[51] = 0.0f;
+		result[51] = 0.0f;
 		return result;
 	}
 }

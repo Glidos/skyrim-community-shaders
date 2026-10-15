@@ -67,7 +67,7 @@ namespace
 
 	bool IsCompatibleLegacyUnifiedPreset(const PresetCompatibility::Evaluation& a_evaluation, const Version& a_current)
 	{
-		// Existing NR and FOV presets are migrated by the current settings loaders.
+		// Older Unified presets use current loaders and defaults for added optional fields.
 		if (a_current.major != 3 || a_current.minor != 20 || a_current.runtime != "VR" ||
 			(a_evaluation.presetId != "csx-unified-performance" &&
 				a_evaluation.presetId != "csx-unified-balanced" &&
@@ -75,7 +75,7 @@ namespace
 			return false;
 		return (a_evaluation.settingsContractRevision == 8 &&
 				   a_evaluation.minimumVersion == "3.19" && a_evaluation.maximumVersionExclusive == "3.20") ||
-		       ((a_evaluation.settingsContractRevision == 8 || a_evaluation.settingsContractRevision == 9 || a_evaluation.settingsContractRevision == 10) &&
+		       ((a_evaluation.settingsContractRevision == 8 || a_evaluation.settingsContractRevision == 9 || a_evaluation.settingsContractRevision == 10 || a_evaluation.settingsContractRevision == 11 || a_evaluation.settingsContractRevision == 12) &&
 				   a_evaluation.minimumVersion == "3.20" && a_evaluation.maximumVersionExclusive == "3.21");
 	}
 

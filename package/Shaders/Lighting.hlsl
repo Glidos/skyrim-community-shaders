@@ -3,6 +3,7 @@
 
 #include "Common/CharacterCategoryMask.hlsli"
 #include "Common/Color.hlsli"
+#include "Common/EyeAppearance.hlsli"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/GBuffer.hlsli"
 #include "Common/LodLandscape.hlsli"
@@ -4034,6 +4035,18 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	diffuseColor = reflectionDiffuseColor;
 
+#	if defined(EYE)
+	const float eyeSpecularBrightness = EyeAppearance::SpecularMultiplier();
+	specularColor *= eyeSpecularBrightness;
+	envColor *= eyeSpecularBrightness;
+#		if defined(DEFERRED)
+	indirectLobeWeights.specular *= eyeSpecularBrightness;
+#		else
+	// Forward indirect specular is combined before the final irradiance conversion.
+	indirectLobeWeights.specular *= EyeAppearance::SpecularMultiplier(false);
+#		endif
+#	endif
+
 #	if (defined(ENVMAP) || defined(MULTI_LAYER_PARALLAX) || defined(EYE))
 #		if defined(DYNAMIC_CUBEMAPS)
 	if (!dynamicCubemap)
@@ -4106,6 +4119,16 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	{
 		Skylighting::ApplySkylighting(color.xyz, directionalAmbientColor, outputAlbedo, skylightingDiffuse);
 	}
+#	endif
+
+#	if defined(EYE)
+	const float eyeBrightness = EyeAppearance::BrightnessMultiplier(false);
+	const float eyeBrightnessLinear = EyeAppearance::BrightnessMultiplier(true);
+	color.xyz *= eyeBrightness;
+	outputAlbedo *= eyeBrightness;
+	directionalAmbientColor *= eyeBrightness;
+	specularColor *= eyeBrightnessLinear;
+	indirectLobeWeights.specular *= eyeBrightnessLinear;
 #	endif
 
 #	if !defined(DEFERRED)

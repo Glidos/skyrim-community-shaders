@@ -2106,12 +2106,14 @@ namespace
 	void DrawAppearanceSettings(AdaptiveBalanceAppearanceSettings& appearance)
 	{
 		constexpr std::array groups{ "Direct and Ambient Lighting", "Fog and Clouds", "Sky Gradient",
-			"Stars", "Sky Static Mist", "Particles and Glow Sprites", "Godrays and Cloud Shadows" };
+			"Stars", "Sky Static Mist", "Particles and Glow Sprites", "Godrays and Cloud Shadows", "Eyes" };
 		MenuUI::SectionHeading("Appearance controls");
 		for (const auto* group : groups) {
 			if (!ImGui::CollapsingHeader(group))
 				continue;
-			if (std::string_view(group) == "Godrays and Cloud Shadows")
+			if (std::string_view(group) == "Eyes")
+				ImGui::TextWrapped("Specular Brightness adjusts eye highlights and reflections. Eye Brightness scales all eye lighting. One preserves the original appearance; zero removes that contribution. Applies to eye materials in the scene, including reflections.");
+			else if (std::string_view(group) == "Godrays and Cloud Shadows")
 				ImGui::TextWrapped("Adjust active Volumetric Lighting and Cloud Shadows. Scale 1 and colour contribution 0 preserve their settings.");
 			else if (std::string_view(group) == "Particles and Glow Sprites")
 				ImGui::TextWrapped("Glow sprites include additive non-fire effects, such as some magic. Particle influence adjusts received light; fire has separate controls.");

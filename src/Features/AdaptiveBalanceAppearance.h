@@ -47,10 +47,14 @@ struct AdaptiveBalanceAppearanceSettings
 	float3 godrayTint = { 1.0f, 1.0f, 1.0f };
 	float godrayTintAmount = 0.0f;
 	float godraySaturation = 1.0f;
-	float padding[3]{};
+	float eyeSpecularBrightness = 1.0f;
+	float eyeBrightness = 1.0f;
+	float padding{};
 };
 static_assert(sizeof(AdaptiveBalanceAppearanceSettings) == 208);
 static_assert(offsetof(AdaptiveBalanceAppearanceSettings, godraySaturation) == 192);
+static_assert(offsetof(AdaptiveBalanceAppearanceSettings, eyeSpecularBrightness) == 196);
+static_assert(offsetof(AdaptiveBalanceAppearanceSettings, eyeBrightness) == 200);
 
 namespace AdaptiveBalanceAppearance
 {
@@ -74,6 +78,8 @@ namespace AdaptiveBalanceAppearance
 		float maximum;
 	};
 	inline constexpr std::array kScalars{
+		ScalarField{ "eyeSpecularBrightness", "Eye Specular Brightness", "Eyes", &Settings::eyeSpecularBrightness, 0.0f, 5.0f, 1.0f },
+		ScalarField{ "eyeBrightness", "Eye Brightness", "Eyes", &Settings::eyeBrightness, 0.0f, 5.0f, 1.0f },
 		ScalarField{ "directionalSaturation", "Directional Saturation", "Direct and Ambient Lighting", &Settings::directionalSaturation, 0.0f, 2.0f, 1.0f },
 		ScalarField{ "directionalCurve", "Directional Colour Curve", "Direct and Ambient Lighting", &Settings::directionalCurve, 0.1f, 4.0f, 1.0f },
 		ScalarField{ "ambientSaturation", "Ambient Saturation", "Direct and Ambient Lighting", &Settings::ambientSaturation, 0.0f, 2.0f, 1.0f },

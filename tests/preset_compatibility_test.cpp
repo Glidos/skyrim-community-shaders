@@ -68,7 +68,7 @@ int main(int argc, char** argv)
 	assert(!older.ShouldApply());
 
 	for (const auto presetId : { "csx-unified-performance", "csx-unified-balanced", "csx-unified-quality" }) {
-		for (const auto revision : { 8u, 9u, 10u }) {
+		for (const auto revision : { 8u, 9u, 10u, 11u, 12u }) {
 			auto legacy = CompatiblePreset();
 			auto& marker = legacy["Preset Compatibility"];
 			marker["presetId"] = presetId;
@@ -86,7 +86,7 @@ int main(int argc, char** argv)
 			assert(!PresetCompatibility::Evaluate(legacy, "CSX 3.20.0-VR").ShouldApply());
 		}
 	}
-	for (const auto revision : { 5u, 7u, 12u }) {
+	for (const auto revision : { 5u, 7u, PresetCompatibility::kSettingsContractRevision + 1 }) {
 		auto incompatibleContract = CompatiblePreset();
 		incompatibleContract["Preset Compatibility"]["settingsContract"]["revision"] = revision;
 		assert(!PresetCompatibility::Evaluate(incompatibleContract, "CSX 3.20.0-VR").ShouldApply());

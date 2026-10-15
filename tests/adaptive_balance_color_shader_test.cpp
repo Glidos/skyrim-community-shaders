@@ -137,7 +137,8 @@ namespace
 					 std::pair{ "particleIntensity", 148u }, std::pair{ "particleDirectionalInfluence", 152u }, std::pair{ "particleAmbientInfluence", 156u },
 					 std::pair{ "particlePointInfluence", 160u }, std::pair{ "cloudShadowStrength", 164u }, std::pair{ "godrayIntensity", 168u },
 					 std::pair{ "godrayOpacity", 172u }, std::pair{ "godrayTint", 176u }, std::pair{ "godrayTintAmount", 188u },
-					 std::pair{ "godraySaturation", 192u }, std::pair{ "padding", 196u } }) {
+					 std::pair{ "godraySaturation", 192u }, std::pair{ "eyeSpecularBrightness", 196u },
+					 std::pair{ "eyeBrightness", 200u }, std::pair{ "padding", 204u } }) {
 				D3D11_SHADER_TYPE_DESC member{};
 				Check(appearance->GetMemberTypeByName(name)->GetDesc(&member));
 				Require(member.Offset == offset, "Appearance buffer layout differs from C++");
@@ -603,6 +604,40 @@ namespace
 		return checked;
 	}
 
+	unsigned VerifyEyeAppearance(ID3D11Device* device, ID3D11DeviceContext* context, bool vr)
+	{
+		unsigned checked = 0;
+		for (bool eye : { false, true }) {
+			Fixture fixture(device, vr, ShaderMode::Appearance, eye ? std::vector<const char*>{ "EYE" } : std::vector<const char*>{});
+			for (bool linear : { false, true }) {
+				for (uint32_t scene : { 0u, 1u, 2u }) {
+					for (float shine : { 0.0f, 0.5f, 1.0f, 5.0f }) {
+						for (float brightness : { 0.0f, 0.5f, 1.0f, 5.0f }) {
+							auto appearance = AdaptiveBalanceTest::NeutralAppearance();
+							appearance[49] = shine;
+							appearance[50] = brightness;
+							for (uint32_t route : { 7u, 8u, 9u, 10u }) {
+								const auto result = fixture.DrawAppearance(context, linear, scene, route, appearance);
+								float multiplier = eye && scene != 0 ? (route == 7 || route == 10 ? shine : brightness) : 1.0f;
+								if ((route == 9 || route == 10) && !linear)
+									multiplier = std::pow(multiplier, 1.0f / 1.6f);
+								auto expected = pointLightColors;
+								for (auto& pixel : expected)
+									for (size_t channel = 0; channel < 3; ++channel)
+										pixel[channel] *= multiplier;
+								CompareAppearance(result, expected, "Eye controls changed the wrong material, preview or lighting contribution");
+								if (multiplier == 1.0f)
+									RequireAppearanceIdentity(result);
+								checked += unsigned(result.size());
+							}
+						}
+					}
+				}
+			}
+		}
+		return checked;
+	}
+
 	constexpr uint32_t grayscaleColor = 1u << 19;
 	constexpr uint32_t grayscaleAlpha = 1u << 20;
 	constexpr uint32_t bothPaletteFlags = grayscaleColor | grayscaleAlpha;
@@ -937,6 +972,7 @@ int main()
 			}
 			lightSamples += VerifyLightModes(device.Get(), context.Get(), vr);
 			appearanceSamples += VerifyAppearanceModes(device.Get(), context.Get(), vr);
+			appearanceSamples += VerifyEyeAppearance(device.Get(), context.Get(), vr);
 			fireSamples += VerifyFireModes(device.Get(), context.Get(), vr);
 			for (bool fade : { false, true })
 				VerifyBlend(device.Get(), context.Get(), vr, fade);

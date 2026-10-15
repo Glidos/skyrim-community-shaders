@@ -345,7 +345,9 @@ namespace SharedData
 		float3 godrayTint;
 		float godrayTintAmount;
 		float godraySaturation;
-		float3 padding;
+		float eyeSpecularBrightness;
+		float eyeBrightness;
+		float padding;
 	};
 
 	struct AdaptiveBalanceSettings

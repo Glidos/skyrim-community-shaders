@@ -391,7 +391,7 @@ namespace
 		}
 		return {
 			{ "type", "object" }, { "minProperties", 1 }, { "additionalProperties", false },
-			{ "description", "Partial Global appearance update. Requires Global lightingAdvanced; omitted fields retain their saved values. RGB tints are three finite numeric channels." },
+			{ "description", "Partial Global appearance update. Requires Global lightingAdvanced; omitted fields retain their saved values. RGB tints are three finite numeric channels. eyeSpecularBrightness scales eye highlights and reflections; eyeBrightness scales all eye lighting. Both accept 0..5, default 1, and preserve non-eye materials and previews." },
 			{ "properties", std::move(properties) }
 		};
 	}
@@ -1393,6 +1393,8 @@ namespace MenuDevBenchBridge
 				{ "type", "object" }, { "description", "Main-thread context at the DevBench call, independently framed from the asynchronous grass and profiler samples. Unavailable scene values are omitted." }
 			};
 			document["inputSchema"]["properties"]["visuals"]["properties"]["appearance"] = BuildAdaptiveBalanceAppearanceSchema();
+			document["description"] = document["description"].get<std::string>() +
+			                          " set_adaptive_balance_visuals accepts appearance.eyeSpecularBrightness and appearance.eyeBrightness in [0,5] (default 1). They scale eye highlights/reflections and overall eye lighting respectively, require Global lightingAdvanced, and remain neutral while Adaptive Balance is disabled.";
 			document["inputSchema"]["properties"]["depthOfField"] = MenuDepthOfFieldSettingsPolicy::Schema();
 			const auto dofValues = document["inputSchema"]["properties"]["depthOfField"]["properties"]["sceneDof"]["properties"]["values"];
 			const json liveDof = { { "oneOf", json::array({ dofValues, { { "type", "null" } } }) } };

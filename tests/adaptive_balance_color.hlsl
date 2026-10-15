@@ -2,6 +2,9 @@
 #	define LL_COLOR_ADJUSTMENTS_USE_EXTRA_FLAGS
 #endif
 #include "Common/AdaptiveBalanceColor.hlsli"
+#if defined(APPEARANCE_TEST)
+#	include "Common/EyeAppearance.hlsli"
+#endif
 #if defined(FIRE_TEST)
 #	include "Common/AdaptiveBalanceFire.hlsli"
 #endif
@@ -55,6 +58,12 @@ RWTexture2D<float4> Result : register(u0);
 		graded = Color::PointLight(color, isLinear);
 		original = Color::Light(color, isLinear) * ((ENABLE_LL_COLOR_ADJUSTMENTS && !isLinear) ? Math::PI : 1.0f) *
 		           Color::GetPointLightMultiplier(isLinear);
+	} else if (appearanceParameters.x == 7) {
+		graded = color * EyeAppearance::SpecularMultiplier();
+	} else if (appearanceParameters.x == 10) {
+		graded = color * EyeAppearance::SpecularMultiplier(false);
+	} else if (appearanceParameters.x == 8 || appearanceParameters.x == 9) {
+		graded = color * EyeAppearance::BrightnessMultiplier(appearanceParameters.x == 8);
 	} else {
 		graded = lerp(appearanceMaterial.xyz, AdaptiveBalanceAppearance::ApplyFog(color), appearanceControls.w);
 		original = lerp(appearanceMaterial.xyz, color, appearanceControls.w);
