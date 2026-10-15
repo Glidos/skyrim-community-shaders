@@ -3815,6 +3815,35 @@ if(BUILD_CONTROLLER_TESTS)
         tests/shader_cache_provenance_test.cpp
     )
     include("${PROJECT_SOURCE_DIR}/tests/shader_cache_variants.cmake")
+    set(_shader_block_test_dir
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/shader-block-formatting"
+    )
+    set(_shader_block_test_headers
+        "${_shader_block_test_dir}/shader_block_vertex_under_test.h"
+        "${_shader_block_test_dir}/shader_block_pixel_compute_under_test.h"
+    )
+    add_custom_command(
+        OUTPUT ${_shader_block_test_headers}
+        COMMAND
+            "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
+            "-DOUTPUT_DIRECTORY=${_shader_block_test_dir}" -P
+            "${PROJECT_SOURCE_DIR}/tests/extract_shader_block_formatting.cmake"
+        DEPENDS
+            src/ShaderCache.cpp
+            tests/extract_shader_block_formatting.cmake
+            tests/extract_source_region.cmake
+        VERBATIM
+    )
+    add_controller_test(shader_block_formatting_test ShaderBlockFormatting tests/shader_block_formatting_test.cpp)
+    target_sources(
+        shader_block_formatting_test
+        PRIVATE ${_shader_block_test_headers}
+    )
+    target_include_directories(
+        shader_block_formatting_test
+        PRIVATE "${_shader_block_test_dir}"
+    )
+    set_tests_properties(ShaderBlockFormatting PROPERTIES TIMEOUT 30)
     set(_shader_allocation_dir
         "${CMAKE_CURRENT_BINARY_DIR}/generated/shader-allocation"
     )
