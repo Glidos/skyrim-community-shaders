@@ -33,7 +33,8 @@ int main()
 			performanceSchema.contains("parallelCommandSubmissions"));
 	require(descriptor.at("description").get<std::string>().find("parallelEyes") != std::string::npos);
 	const auto& packedProperty = descriptor.at("inputSchema").at("properties").at("characterPackedCrops");
-	require(packedProperty.at("type") == "boolean" && packedProperty.at("default") == true);
+	require(packedProperty.at("type") == "boolean" && packedProperty.at("default") == NeuralRendering::CharacterSettings{}.packedCrops);
+	require(descriptor.at("description").get<std::string>().find("characterPackedCrops (Multi-Crop) defaults false") != std::string::npos);
 	for (const auto& value : { json(true), json(false), json(1), json("true"), json(nullptr) }) {
 		NeuralRenderingConfigurationRequest request;
 		json error;

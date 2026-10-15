@@ -125,6 +125,7 @@ void CheckStreamingInventory(ID3D11Device* device)
 		RE::BSGeometry geometry;
 		StreamingInventoryFixture::TextureStreaming::State state;
 		state.categories.terrain = true;
+		state.categories.landscapeStatics = false;
 		state.ObserveTexture(&source, &geometry, true, terrainFirst ? Terrain : 0u);
 		state.ObserveTexture(&source, &geometry, true, terrainFirst ? 0u : Terrain);
 		Origin observed;
