@@ -1,6 +1,6 @@
 set(_ui_regression_dir "${CMAKE_CURRENT_BINARY_DIR}/generated/ui-regressions")
 set(_ui_regression_headers)
-foreach(name IN ITEMS wand_types wand_pose escape markers header_button docked_icon_size docked_header theme_save atomic_write filename blur_initialization blur_lifecycle)
+foreach(name IN ITEMS wand_types wand_pose vr_scroll_types vr_cursor_delta vr_scroll vr_input_release escape markers header_button docked_icon_size docked_header theme_save atomic_write filename blur_initialization blur_lifecycle)
     list(APPEND _ui_regression_headers "${_ui_regression_dir}/ui_${name}.h")
 endforeach()
 add_custom_command(
@@ -8,7 +8,7 @@ add_custom_command(
     COMMAND "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
         "-DOUTPUT_DIRECTORY=${_ui_regression_dir}" -P
         "${PROJECT_SOURCE_DIR}/tests/extract_ui_regressions.cmake"
-    DEPENDS src/Features/VR/WandPointing.cpp src/Menu.cpp
+    DEPENDS src/Features/VR/WandPointing.cpp src/Features/VR/Input.cpp src/Menu.cpp
         src/CSEditor/EditorWindow.cpp src/Menu/MenuHeaderRenderer.cpp
         src/Menu/ThemeManager.cpp src/Menu/BackgroundBlur.cpp src/Utils/FileSystem.cpp
         tests/extract_ui_regressions.cmake tests/extract_source_region.cmake
@@ -16,8 +16,9 @@ add_custom_command(
 )
 add_custom_target(ui_regression_sources DEPENDS ${_ui_regression_headers})
 add_controller_test(ui_input_regression_test UIInputRegression tests/ui_input_regression_test.cpp)
+add_controller_test(vr_menu_scroll_test VRMenuScroll tests/vr_menu_scroll_test.cpp)
 add_controller_test(ui_persistence_regression_test UIPersistenceRegression tests/ui_persistence_regression_test.cpp)
-foreach(target IN ITEMS ui_input_regression_test ui_persistence_regression_test)
+foreach(target IN ITEMS ui_input_regression_test ui_persistence_regression_test vr_menu_scroll_test)
     add_dependencies(${target} ui_regression_sources)
     target_include_directories(${target} PRIVATE "${_ui_regression_dir}")
     target_link_libraries(${target} PRIVATE imgui::imgui nlohmann_json::nlohmann_json)

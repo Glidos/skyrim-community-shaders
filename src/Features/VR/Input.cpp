@@ -729,6 +729,9 @@ void VR::ReleaseMenuImGuiInputState()
 	CancelWandMouseInput(*this);
 	gBlockRawTriggerUntilRelease.fill(true);
 	gVRScrollAccums.clear();
+	// Gameplay stick samples must not keep driving a newly opened menu.
+	primaryControllerState.thumbsticks = {};
+	secondaryControllerState.thumbsticks = {};
 	gHasLastMenuNavigationMode = false;
 	gLastMenuNavigationUsesWand = false;
 
