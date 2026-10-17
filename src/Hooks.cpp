@@ -960,7 +960,9 @@ namespace GrassExtensions
 			const bool ready = func(shader, technique);
 			auto* state = globals::state;
 			auto* cache = globals::shaderCache;
-			if (!ready || !globals::features::truePBR.loaded || !globals::features::grassLighting.loaded ||
+			const bool needsCustomPair = globals::features::grassOptimizations.loaded ||
+			                             (globals::features::truePBR.loaded && globals::features::grassLighting.loaded);
+			if (!ready || !needsCustomPair ||
 				!cache->IsEnabled() || !state->ShaderEnabled(RE::BSShader::Type::Grass))
 				return ready;
 			auto* vertex = cache->GetVertexShader(*shader, state->modifiedVertexDescriptor);
