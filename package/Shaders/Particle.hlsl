@@ -256,6 +256,7 @@ cbuffer PerGeometry : register(b2)
 #	endif
 
 #	define LinearSampler SampSourceTexture
+#	include "Common/Permutation.hlsli"
 #	include "Common/ShadowSampling.hlsli"
 
 PS_OUTPUT main(PS_INPUT input)
@@ -305,7 +306,10 @@ PS_OUTPUT main(PS_INPUT input)
 	positionWS.xyz = positionWS.xyz / positionWS.w;
 
 	float llDirLightMult = (Color::UseLinearLightingColorAdjustments() && !SharedData::linearLightingSettings.isDirLightLinear) ? SharedData::linearLightingSettings.dirLightMult : 1.0f;
-	float dirWorldShadow = ShadowSampling::GetWorldShadow(positionWS.xyz, FrameBuffer::CameraPosAdjust[eyeIndex].xyz, eyeIndex);
+	float dirWorldShadow = 1.0;
+	// Menu and reflection passes do not share the world shadow coordinates.
+	if ((Permutation::ExtraShaderDescriptor & (Permutation::ExtraFlags::InWorld | Permutation::ExtraFlags::InReflection)) == Permutation::ExtraFlags::InWorld)
+		dirWorldShadow = ShadowSampling::GetWorldShadow(positionWS.xyz, FrameBuffer::CameraPosAdjust[eyeIndex].xyz, eyeIndex);
 	float dirSoftShadow = 1.0;
 	float dirDetailedShadow = 1.0;
 #	if defined(VOLUMETRIC_SHADOWS)
