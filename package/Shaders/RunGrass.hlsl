@@ -975,8 +975,8 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	directionalAmbientColor = Color::ApplyAmbientBalance(directionalAmbientColor);
 	diffuseColor += directionalAmbientColor;
-	diffuseColor += subsurfaceColor * albedo;
 	diffuseColor *= albedo;
+	diffuseColor += subsurfaceColor * albedo;
 
 	directionalAmbientColor *= albedo;
 
