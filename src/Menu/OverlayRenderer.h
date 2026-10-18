@@ -66,7 +66,7 @@ private:
 	static bool ShouldDrawFeatureOverlay(const OverlayFeature& overlay, const Menu& menu);
 	static void HandleFontReload(Menu& menu, float& cachedFontSize, float currentFontSize);
 	static bool ApplyVROverlayDisplaySize();
-	static void InitializeImGuiFrame(Menu& menu);
+	static void InitializeImGuiFrame(Menu& menu, bool acceptsInput);
 	static void RenderShaderCompilationStatus(const std::function<const char*(std::vector<InputCombo>)>& keyIdToString);
 	static void RenderShaderBlockingStatus();
 	static void RenderFirstTimeSetupOverlay();

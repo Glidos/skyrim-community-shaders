@@ -406,8 +406,25 @@ void OverlayRenderer::RenderOverlay(
 	editorWindow->UpdateOpenState();
 
 	auto drawableOverlays = CollectDrawableFeatureOverlays(menu);
+	auto& io = ImGui::GetIO();
+	auto& weatherPicker = globals::features::weatherPicker;
+	const bool weatherAcceptsInput = weatherPicker.WeatherDetailsWindow.ShowInOverlay && menu.overlayVisible &&
+	                                 std::ranges::find(drawableOverlays, &weatherPicker) != drawableOverlays.end() &&
+	                                 weatherPicker.CanInteractWithDetails();
+	// Raw hotkeys run first so gameplay can still open the menu or end a preview.
+	const bool acceptsInput = !menu.IsPreviewFlying() && (menu.ShouldSwallowInput() || weatherAcceptsInput);
+	io.SetAppAcceptingEvents(acceptsInput);
+	if (!acceptsInput) {
+		if (globals::features::vr.IsOpenVRCompatible())
+			globals::features::vr.ReleaseMenuImGuiInputState();
+		io.ClearEventsQueue();
+		io.ClearInputKeys();
+		io.ClearInputMouse();
+		io.WantSetMousePos = false;
+		ImGui::ClearActiveID();
+	}
+
 	if (ShouldSkipRendering(menu, !drawableOverlays.empty())) {
-		auto& io = ImGui::GetIO();
 		io.ClearInputKeys();
 		io.ClearEventsQueue();
 		globals::features::vr.DiscardQueuedImGuiClickOwners();
@@ -417,7 +434,7 @@ void OverlayRenderer::RenderOverlay(
 	}
 
 	HandleFontReload(menu, cachedFontSize, currentFontSize);
-	InitializeImGuiFrame(menu);
+	InitializeImGuiFrame(menu, acceptsInput);
 	auto& performanceOverlay = globals::features::performanceOverlay;
 	if (ABTestingManager::GetSingleton()->IsEnabled() ||
 		std::ranges::find(drawableOverlays, &performanceOverlay) != drawableOverlays.end()) {
@@ -432,7 +449,6 @@ void OverlayRenderer::RenderOverlay(
 
 	if (editorWindow->open) {
 		bool flying = editorWindow->IsPreviewFlying();
-		auto& io = ImGui::GetIO();
 		io.MouseDrawCursor = !flying;
 		if (flying)
 			io.MousePos = { -FLT_MAX, -FLT_MAX };  // prevent hover/tooltips during active flying
@@ -452,7 +468,7 @@ void OverlayRenderer::RenderOverlay(
 	RenderFirstTimeSetupOverlay();
 	ABTestingManager::GetSingleton()->DrawOverlayUI();
 	PatchOverlappingWindowBackgrounds();
-	if (globals::features::vr.IsOpenVRCompatible()) {
+	if (acceptsInput && globals::features::vr.IsOpenVRCompatible()) {
 		globals::features::vr.UpdateWandHoverFeedback();
 	}
 	FinalizeImGuiFrame(drawableOverlays);
@@ -639,7 +655,7 @@ bool OverlayRenderer::ApplyVROverlayDisplaySize()
 	return true;
 }
 
-void OverlayRenderer::InitializeImGuiFrame(Menu& menu)
+void OverlayRenderer::InitializeImGuiFrame(Menu& menu, bool acceptsInput)
 {
 	// Start the Dear ImGui frame
 	ImGui_ImplDX11_NewFrame();
@@ -657,10 +673,12 @@ void OverlayRenderer::InitializeImGuiFrame(Menu& menu)
 		if (usingVROverlayCanvas) {
 			// The desktop mirror uses an aspect-correct presentation of the VR canvas,
 			// anchored to the desktop origin. Mirror mouse input through the same transform.
-			auto& io = ImGui::GetIO();
-			io.MousePos = GetDesktopMirrorCursor(desc.OutputWindow, io.DisplaySize,
-				ImVec2(static_cast<float>(desc.BufferDesc.Width), static_cast<float>(desc.BufferDesc.Height)));
-			io.AddMousePosEvent(io.MousePos.x, io.MousePos.y);
+			if (acceptsInput) {
+				auto& io = ImGui::GetIO();
+				io.MousePos = GetDesktopMirrorCursor(desc.OutputWindow, io.DisplaySize,
+					ImVec2(static_cast<float>(desc.BufferDesc.Width), static_cast<float>(desc.BufferDesc.Height)));
+				io.AddMousePosEvent(io.MousePos.x, io.MousePos.y);
+			}
 		} else {
 			const float displayW = static_cast<float>(desc.BufferDesc.Width);
 			const float displayH = static_cast<float>(desc.BufferDesc.Height);
@@ -668,7 +686,7 @@ void OverlayRenderer::InitializeImGuiFrame(Menu& menu)
 		}
 	}
 
-	if (globals::features::vr.IsOpenVRCompatible()) {
+	if (acceptsInput && globals::features::vr.IsOpenVRCompatible()) {
 		// Let desktop/Win32 input establish the baseline first, then queue active
 		// VR controller or wand ownership before ImGui consumes this frame.
 		globals::features::vr.ProcessControllerInputForImGui();
