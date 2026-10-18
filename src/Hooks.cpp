@@ -930,7 +930,16 @@ namespace GrassExtensions
 	{
 		static void thunk(RE::BSShader* shader, RE::BSRenderPass* pass, uint32_t renderFlags)
 		{
+			// Native setup advances property history before CPU shader constants may be readable.
+			auto* const windProperty = pass ? pass->shaderProperty : nullptr;
+			std::optional<uint32_t> nativeWindTimer;
+			if (windProperty) {
+				auto* property = static_cast<RE::BSGrassShaderProperty*>(windProperty);
+				nativeWindTimer = GrassRuntime::GetPropertyData(property, globals::game::isVR).windTimer;
+			}
 			func(shader, pass, renderFlags);
+			if (pass && pass->shaderProperty != windProperty)
+				nativeWindTimer.reset();
 
 			auto state = globals::state;
 
@@ -948,7 +957,7 @@ namespace GrassExtensions
 					state->permutationData.ExtraShaderDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::GrassSphereNormal);
 				}
 			}
-			globals::features::grassOptimizations.PrepareGeometry(pass, shader, renderFlags, func.get());
+			globals::features::grassOptimizations.PrepareGeometry(pass, shader, renderFlags, func.get(), nativeWindTimer);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
