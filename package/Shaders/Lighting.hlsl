@@ -2176,6 +2176,10 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float2 uvOriginal_ddx = ddx(uvOriginal);
 	float2 uvOriginal_ddy = ddy(uvOriginal);
 
+#	if defined(TERRAIN_VARIATION_MESH) || (defined(TERRAIN_VARIATION) && defined(LANDSCAPE))
+	InitializeTerrainStochasticGradients(uvOriginal_ddx, uvOriginal_ddy);
+#	endif
+
 #	if !defined(LANDSCAPE) && (defined(TERRAIN_VARIATION_MESH) || defined(EMAT))
 	StochasticOffsets meshOffset = (StochasticOffsets)0;
 #		if defined(TERRAIN_VARIATION_MESH)
@@ -2183,7 +2187,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	                         (Permutation::ExtraFeatureDescriptor & Permutation::ExtraFeatureFlags::TVMeshVariation) != 0;
 	[branch] if (applyMeshTV)
 	{
-		g_terrainStochasticLodBase = ComputeTerrainStochasticLodBase(uvOriginal);
 		meshOffset = ComputeStochasticOffsetsMesh(uvOriginal);
 	}
 #		else
@@ -2210,14 +2213,14 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 #	endif
 
 #	if defined(LANDSCAPE)
+#		if defined(TERRAIN_VARIATION)
+	StochasticOffsets sharedOffset = ComputeStochasticOffsets(input.TexCoord0.zw);
+#		elif defined(EMAT)
+	StochasticOffsets sharedOffset = (StochasticOffsets)0;
+#		endif
 #		if defined(EMAT)
 	float mipLevels[6];
 	float terrainShadowMipLevels[6];
-#			if defined(TERRAIN_VARIATION)
-	StochasticOffsets sharedOffset = ComputeStochasticOffsets(input.TexCoord0.zw);
-#			else
-	StochasticOffsets sharedOffset = (StochasticOffsets)0;
-#			endif
 	float cachedDirectionalTerrainParallaxShadow = 1.0;
 	bool hasCachedDirectionalTerrainParallaxShadow = false;
 	bool hasCachedTerrainShadowBaseHeight = false;
@@ -2529,10 +2532,9 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 #	if defined(LANDSCAPE)
 #		if defined(TERRAIN_VARIATION)
-	g_terrainStochasticLodBase = ComputeTerrainStochasticLodBase(uv);
-#			define SampleTerrainColor(TEX, SAMP, UV, OFFSET) StochasticEffect(TEX, SAMP, UV, OFFSET)
-#			define SampleTerrainNormal(TEX, SAMP, UV, OFFSET) StochasticEffectNormal(TEX, SAMP, UV, OFFSET)
-#			define SampleTerrainMaterialData(TEX, SAMP, UV, OFFSET) StochasticEffectMaterialData(TEX, SAMP, UV, OFFSET)
+#			define SampleTerrainColor(TEX, SAMP, UV, OFFSET) StochasticEffect(TEX, SAMP, UV, OFFSET, true)
+#			define SampleTerrainNormal(TEX, SAMP, UV, OFFSET) StochasticEffectNormal(TEX, SAMP, UV, OFFSET, true)
+#			define SampleTerrainMaterialData(TEX, SAMP, UV, OFFSET) StochasticEffectMaterialData(TEX, SAMP, UV, OFFSET, true)
 #		else
 #			define SampleTerrainColor(TEX, SAMP, UV, OFFSET) TEX.SampleBias(SAMP, UV, SharedData::MipBias)
 #			define SampleTerrainNormal(TEX, SAMP, UV, OFFSET) TEX.SampleBias(SAMP, UV, SharedData::MipBias)
