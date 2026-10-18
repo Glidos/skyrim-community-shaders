@@ -10,6 +10,7 @@ and detailed test or provenance records stay in ignored local documentation.
 -   [VSCode setup](vscode-setup.md): editor support and optional shader deployment.
 -   [Runtime downloads](runtime-downloads.md): DLL development when runtime payloads are unavailable.
 -   [Build identities](build-provenance.md): manifests, artifact hashes, and verification.
+-   [DLL loader diagnostic](dll-load-smoke.md): optional repeated loading of a built DLL in a surrogate host.
 -   [Test-build versioning](test-build-versioning.md): reproducible test distributions.
 -   [Release distribution](csx-release-distribution.md): complete AIO packaging and fork publication.
 
