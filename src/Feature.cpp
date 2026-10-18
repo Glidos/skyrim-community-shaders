@@ -419,9 +419,10 @@ bool Feature::ReapplyOverrideSettings()
 		return false;
 
 	const auto restoreOriginalSettings = [&]() noexcept {
+		bool settingsRestored = false;
 		try {
 			LoadSettings(originalSettings);
-			synchronizeWeatherBaseline();
+			settingsRestored = true;
 		} catch (const std::exception& e) {
 			logger::error(
 				"Failed to restore settings after applying overrides for {}: {}",
@@ -429,6 +430,36 @@ bool Feature::ReapplyOverrideSettings()
 		} catch (...) {
 			logger::error(
 				"Failed to restore settings after applying overrides for {}",
+				featureName);
+		}
+
+		if (!settingsRestored) {
+			try {
+				RestoreDefaultSettings();
+			} catch (const std::exception& e) {
+				logger::error(
+					"Failed to restore defaults after override recovery failed for {}: {}",
+					featureName, e.what());
+				return;
+			} catch (...) {
+				logger::error(
+					"Failed to restore defaults after override recovery failed for {}",
+					featureName);
+				return;
+			}
+			logger::warn("Restored defaults after override recovery failed for {}", featureName);
+		}
+
+		// A weather refresh failure must not discard successfully recovered settings.
+		try {
+			synchronizeWeatherBaseline();
+		} catch (const std::exception& e) {
+			logger::error(
+				"Failed to synchronize weather after override recovery for {}: {}",
+				featureName, e.what());
+		} catch (...) {
+			logger::error(
+				"Failed to synchronize weather after override recovery for {}",
 				featureName);
 		}
 	};
