@@ -371,7 +371,6 @@ void IBL::Prepass()
 
 	auto& dynamicCubemaps = globals::features::dynamicCubemaps;
 
-	auto& envTexture = dynamicCubemaps.envTexture;
 	const IBL::Settings runtimeSettings = GetSanitizedSettings(settings);
 	const bool dynamicIBLEnabled = IsRuntimeEnabled() && envIBLTexture && skyIBLTexture;
 	const bool staticIBLEnabled = IsStaticIBLEnabled(runtimeSettings) && staticDiffuseIBLTexture && staticSpecularIBLTexture;
@@ -388,7 +387,7 @@ void IBL::Prepass()
 	if (!diffuseIBLShader)
 		return;
 
-	std::array<ID3D11ShaderResourceView*, 1> srvs = { (dynamicCubemaps.loaded && envTexture) ? envTexture->srv.get() : nullptr };
+	std::array<ID3D11ShaderResourceView*, 1> srvs = { dynamicCubemaps.loaded ? dynamicCubemaps.GetPublishedCubemap() : nullptr };
 	std::array<ID3D11UnorderedAccessView*, 1> uavs = { envIBLTexture->uav.get() };
 	std::array<ID3D11SamplerState*, 1> samplers = { Deferred::GetSingleton()->linearSampler };
 
