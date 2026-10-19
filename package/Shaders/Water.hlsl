@@ -1954,7 +1954,7 @@ PS_OUTPUT main(PS_INPUT input)
 
 	float screenNoise = Random::InterleavedGradientNoise(Stereo::EyeStableNoiseCoord(input.HPosition.xy, SharedData::BufferDim.xy), SharedData::FrameCount);
 
-	float3 specularColor = GetWaterSpecularColor(input, normal, viewDirection, distanceFactor, depthControl.y, eyeIndex);
+	float3 specularColor = GetWaterSpecularColor(input, normal, viewDirection, distanceBlendFactor, depthControl.y, eyeIndex);
 	// LOD Blending chooses the height-faded reflection source inside
 	// GetWaterSpecularColor. Apply the independent global amount only after that
 	// blend has completed, so neither setting changes the other's interpolation.
