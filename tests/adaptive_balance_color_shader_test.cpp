@@ -70,6 +70,7 @@ namespace
 		Scene,
 		PointLights,
 		SceneLights,
+		ReflectionComposition,
 		Appearance,
 		Fire
 	};
@@ -98,7 +99,9 @@ namespace
 				defines.push_back({ "FIRE_TEST", "1" });
 			for (const auto* define : extraDefines)
 				defines.push_back({ define, "1" });
-			auto code = Compile(L"tests/adaptive_balance_color.hlsl", defines, "cs_5_0");
+			auto code = Compile(mode == ShaderMode::ReflectionComposition ? FORWARD_COMPOSITION_TEST_SHADER :
+																			L"tests/adaptive_balance_color.hlsl",
+				defines, "cs_5_0");
 			Check(D3DReflect(code->GetBufferPointer(), code->GetBufferSize(), IID_PPV_ARGS(reflection.GetAddressOf())));
 			Check(device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, shader.GetAddressOf()));
 			Util::SetResourceName(shader.Get(), "AdaptiveColorTest::CS");
@@ -110,7 +113,7 @@ namespace
 			feature->SetMember("SharedData::adaptiveBalanceSettings", "pointLightCurve", 1.0f);
 			for (const auto* name : { "fireIntensity", "fireSaturation", "fireCurve" })
 				feature->SetMember("SharedData::adaptiveBalanceSettings", name, 1.0f);
-			if (mode == ShaderMode::Fire || mode == ShaderMode::Appearance || mode == ShaderMode::PointLights)
+			if (mode == ShaderMode::Fire || mode == ShaderMode::Appearance || mode == ShaderMode::PointLights || mode == ShaderMode::ReflectionComposition)
 				permutation = std::make_unique<ConstantBuffer>(device, reflection.Get(), "Permutation::PerShader");
 			if (lights || mode == ShaderMode::Appearance) {
 				feature->SetMember("SharedData::linearLightingSettings", "lightGamma", 2.2f);
@@ -207,6 +210,18 @@ namespace
 			inputs->SetVariable("appearanceTint", tint);
 			inputs->SetVariable("appearanceMaterial", material);
 			permutation->SetVariable("Permutation::ExtraShaderDescriptor", scene);
+			return Dispatch(context);
+		}
+
+		Pixels DrawReflections(ID3D11DeviceContext* context, bool linearLighting, uint32_t sceneFlags, const Appearance& appearance,
+			Pixel compositionInputs, Pixel weights, const Pixels& bases)
+		{
+			feature->SetMember("SharedData::linearLightingSettings", "enableLinearLighting", uint32_t(linearLighting));
+			feature->SetMember("SharedData::adaptiveBalanceSettings", "appearance", appearance);
+			inputs->SetVariable("colors", bases);
+			inputs->SetVariable("reflectionInputs", compositionInputs);
+			inputs->SetVariable("reflectionWeights", weights);
+			permutation->SetVariable("Permutation::ExtraShaderDescriptor", sceneFlags);
 			return Dispatch(context);
 		}
 
@@ -704,6 +719,85 @@ namespace
 		return checked;
 	}
 
+	unsigned VerifyReflectionComposition(ID3D11Device* device, ID3D11DeviceContext* context, bool vr)
+	{
+		Pixels bases;
+		for (size_t i = 0; i < bases.size(); ++i) {
+			const float base = std::array{ 0.0f, 0.01f, 0.05f, 0.2f, 0.5f, 1.0f, 2.0f, 4.0f }[i];
+			bases[i] = { base, base * 0.5f, base * 2, 1 };
+		}
+		unsigned checked = 0;
+		for (uint32_t material : { 0u, 1u, 2u }) {
+			const bool pbr = material == 1;
+			const bool eye = material == 2;
+			for (bool sky : { false, true }) {
+				for (bool dynamic : { true, false }) {
+					for (uint32_t wet : { 0u, 1u, 2u }) {
+						if (!dynamic && wet != 0)
+							continue;
+						std::vector<const char*> defines;
+						for (auto [enabled, name] : { std::pair{ pbr, "TRUE_PBR" }, { eye, "EYE" }, { sky, "SKYLIGHTING" },
+								 { dynamic, "DYNAMIC_CUBEMAPS" }, { wet == 1, "WETTERNESS" }, { wet == 2, "WETNESS_EFFECTS" } })
+							if (enabled)
+								defines.push_back(name);
+						Fixture fixture(device, vr, ShaderMode::ReflectionComposition, defines);
+						auto appearance = AdaptiveBalanceTest::NeutralAppearance();
+						appearance[49] = eye ? 2.0f : 1.0f;
+						appearance[50] = eye ? 1.5f : 1.0f;
+						for (bool linear : { false, true }) {
+							for (uint32_t sceneFlags : { 0u, 1u, 2u, 4u }) {
+								const bool scene = (sceneFlags & 3u) != 0;
+								const bool linearAdjustments = linear && scene;
+								for (float direct : { 0.0f, 0.015f }) {
+									for (float roughness : { 0.5f, 1.0f }) {
+										for (Pixel weights : { Pixel{ 1, 0, 1, 0 }, Pixel{ 0, 1, 1, 0 },
+												 Pixel{ 0.4f, 0.7f, 0.35f, 0.25f }, Pixel{ 0, 0, 0.6f, 1 }, Pixel{ 1, 1, 0.35f, 1 } }) {
+											const auto actual = fixture.DrawReflections(context, linear, sceneFlags, appearance, { 0.01f, 0.02f, direct, roughness }, weights, bases);
+											const float scale = pbr && !linearAdjustments ? 0.65f : 1.0f;
+											const float eyeSpecular = scene ? appearance[49] : 1.0f;
+											const float eyeBrightnessLinear = scene ? appearance[50] : 1.0f;
+											const float eyeBrightness = linearAdjustments ? eyeBrightnessLinear : std::pow(eyeBrightnessLinear, 1.0f / 1.6f);
+											float specular = direct * scale * eyeSpecular;
+											float fallback = 0;
+											if (dynamic) {
+												specular += weights[0] * eyeSpecular * (wet == 1 ? 1 - weights[3] : 1) * 0.01f;
+												if (wet == 1 || (wet == 2 && roughness < 1))
+													specular += weights[1] * 0.02f;
+											} else {
+												fallback = weights[0] * (linearAdjustments ? eyeSpecular : std::pow(eyeSpecular, 1.0f / 1.6f)) * 0.2f;
+											}
+											specular *= eyeBrightnessLinear;
+											auto expected = bases;
+											for (auto& pixel : expected) {
+												for (size_t c = 0; c < 3; ++c) {
+													const float base = (pixel[c] * scale + fallback) * (sky ? weights[2] : 1) * eyeBrightness;
+													pixel[c] = linearAdjustments ? base + specular : std::pow(std::pow(base, 1.6f) + specular, 1.0f / 1.6f);
+												}
+											}
+											try {
+												CompareAppearance(actual, expected, "Production forward reflection composition changed lighting domains");
+												for (const auto& pixel : actual)
+													Require(Close(pixel[3], specular), "Forward linear specular energy changed");
+												if (!linearAdjustments && !pbr && !eye && !sky && dynamic && wet == 0 && direct == 0 && weights[0] == 1)
+													Require(Close(actual[2][0], 0.08200233f), "Forward reflection dark-base regression");
+											} catch (...) {
+												std::cerr << "Composition VR=" << vr << " material=" << material << " sky=" << sky << " dynamic=" << dynamic
+														  << " wet=" << wet << " LL=" << linear << " sceneFlags=" << sceneFlags << " direct=" << direct << " roughness=" << roughness << '\n';
+												throw;
+											}
+											checked += unsigned(actual.size());
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		return checked;
+	}
+
 	unsigned VerifyEyeAppearance(ID3D11Device* device, ID3D11DeviceContext* context, bool vr)
 	{
 		unsigned checked = 0;
@@ -1045,13 +1139,22 @@ namespace
 	}
 }
 
-int main()
+int main(int argc, char** argv)
 {
 	try {
 		ComPtr<ID3D11Device> device;
 		ComPtr<ID3D11DeviceContext> context;
 		Check(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
 			D3D11_SDK_VERSION, device.GetAddressOf(), nullptr, context.GetAddressOf()));
+		const bool reflectionsOnly = argc == 2 && std::string_view(argv[1]) == "--reflections";
+		Require(argc == 1 || reflectionsOnly, "Unknown shader test arguments");
+		if (reflectionsOnly) {
+			unsigned checked = 0;
+			for (bool vr : { false, true })
+				checked += VerifyReflectionComposition(device.Get(), context.Get(), vr);
+			std::cout << checked << " production forward reflection samples passed on WARP (SE/AE and VR).\n";
+			return 0;
+		}
 		unsigned lightSamples = 0;
 		unsigned fireSamples = 0;
 		unsigned appearanceSamples = 0;

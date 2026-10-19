@@ -1,0 +1,10 @@
+include("${PROJECT_ROOT}/tests/extract_source_region.cmake")
+file(MAKE_DIRECTORY "${OUTPUT_DIRECTORY}")
+file(READ "${PROJECT_ROOT}/package/Shaders/Lighting.hlsl" _lighting)
+extract_between("${_lighting}" "\tdiffuseColor = reflectionDiffuseColor;" "\n\tfloat3 fogColor =" composition.hlsli)
+extract_between("${_lighting}" "bool IsFiniteFloat3(float3 v)" "\nfloat3 SafeNormalize3(" sanitize.hlsli)
+file(READ "${OUTPUT_DIRECTORY}/composition.hlsli" COMPOSITION)
+file(READ "${OUTPUT_DIRECTORY}/sanitize.hlsli" SANITIZE)
+# The excerpt ends before fog, inside the final forward-only encode guard.
+string(APPEND COMPOSITION "\n#\tendif\n")
+configure_file("${PROJECT_ROOT}/tests/forward_reflection_composition.hlsl.in" "${OUTPUT_DIRECTORY}/forward_reflection_composition.hlsl" @ONLY)
