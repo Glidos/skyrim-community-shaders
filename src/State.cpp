@@ -31,6 +31,7 @@
 #include <pystring/pystring.h>
 
 #include "Deferred.h"
+#include "EngineFixes/LODBlendRingFix.h"
 #include "FeatureIssues.h"
 #include "Features/AdaptiveBrightness.h"
 #include "Features/CSEditor.h"
@@ -892,6 +893,7 @@ void State::Reset()
 	frameCount++;
 	frameCountAtomic.store(frameCount, std::memory_order_relaxed);
 	UpdateSaveLoadSafeMode();
+	LODBlendRingFix::GetInstance().Update();
 
 	globals::shaderCache->TickActiveShaderCapture(globals::menu && globals::menu->IsEnabled);
 	globals::shaderCache->ProcessPendingClear();

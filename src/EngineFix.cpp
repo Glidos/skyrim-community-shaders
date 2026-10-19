@@ -3,6 +3,7 @@
 
 #include "EngineFixes/CullPoolExhaustionFix.h"
 #include "EngineFixes/EffectShaderNoDecalsFix.h"
+#include "EngineFixes/LODBlendRingFix.h"
 #include "EngineFixes/ShadowmapCascadeCullingFix.h"
 #include "EngineFixes/ShadowmapCascadeRasterizerFix.h"
 #include "EngineFixes/VRGrassLifetimeFix.h"
@@ -20,6 +21,7 @@ const std::vector<EngineFix*>& EngineFix::GetOnPostPostLoadFixesList()
 		&sunShadowReceiverFix,
 		&cullPoolExhaustionFix,
 		&effectShaderNoDecalsFix,
+		&LODBlendRingFix::GetInstance(),
 		&shadowmapCascadeCullingFix,
 		&shadowmapRasterizerFix,
 		&vrGrassLifetimeFix
