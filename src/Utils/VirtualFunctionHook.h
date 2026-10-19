@@ -23,9 +23,11 @@ namespace Util
 		DetourAttachResult AttachDetourTransaction(void** a_original, void* a_hook, const Operations& a_operations)
 		{
 			long result = a_operations.Begin();
-			if (result != NO_ERROR)
+			// A busy transaction belongs to an earlier call; other Begin failures can retain ownership.
+			if (result == ERROR_INVALID_OPERATION)
 				return { result, false };
-			result = a_operations.UpdateThread();
+			if (result == NO_ERROR)
+				result = a_operations.UpdateThread();
 			if (result == NO_ERROR)
 				result = a_operations.Attach(a_original, a_hook);
 			if (result != NO_ERROR) {
