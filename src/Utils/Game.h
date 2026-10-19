@@ -6,6 +6,12 @@
 #include <cstddef>
 #include <cstdint>
 
+namespace RE
+{
+	class BSGeometry;
+	class BSParticleShaderRainEmitter;
+}
+
 namespace Util::detail
 {
 	template <class T>
@@ -51,6 +57,9 @@ namespace Util
 {
 	/** Defers cloud-pass rebuilding and releases the old sky model after a native ForceWeather call. */
 	void RefreshForcedWeatherSky(RE::Sky* a_sky);
+
+	/** @brief Returns the rain emitter, or null for missing or non-rain precipitation. */
+	RE::BSParticleShaderRainEmitter* GetRainEmitterFromPrecipGeometry(RE::BSGeometry* a_precipObject);
 
 	/** @brief Rejects implausible addresses; this does not establish pointee lifetime or readability. */
 	[[nodiscard]] inline bool IsLikelyValidPointer(const void* pointer, std::size_t alignment = alignof(void*))

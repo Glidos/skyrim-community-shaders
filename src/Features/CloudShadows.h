@@ -4,6 +4,8 @@ struct CloudShadows : Feature
 {
 private:
 	static constexpr std::string_view MOD_ID = "139185";
+	bool occlusionClearedWithoutClouds = false;
+	bool ClearOcclusionWithoutClouds();
 
 public:
 	struct alignas(16) Settings

@@ -6,6 +6,8 @@
 #include "Utils/ResourceName.h"
 #include "Utils/UI.h"
 
+#include <algorithm>
+
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	CloudShadows::Settings,
 	Enabled,
@@ -149,6 +151,7 @@ void CloudShadows::SkyShaderHacks()
 		if (side == -1)
 			return;
 
+		occlusionClearedWithoutClouds = false;
 		CheckResourcesSide(side);
 
 		rtvs[3] = cubemapCloudOccRTVs[side];
@@ -158,7 +161,8 @@ void CloudShadows::SkyShaderHacks()
 		UINT sampleMask = 0xffffffff;
 
 		context->OMSetBlendState(cloudShadowBlendState, blendFactor, sampleMask);
-		// This override follows the engine state flush; the next draw must refresh blending.
+		// This override follows the engine state flush; the next draw must restore its output state.
+		globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_RENDERTARGET);
 		globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_ALPHA_BLEND);
 
 		auto cubemapDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kCUBEMAP_REFLECTIONS];
@@ -187,6 +191,27 @@ void CloudShadows::ModifySky(RE::BSRenderPass* Pass)
 	}
 }
 
+bool CloudShadows::ClearOcclusionWithoutClouds()
+{
+	auto* sky = globals::game::sky;
+	auto* context = globals::d3d::context;
+	if (!sky || !context || !texCubemapCloudOcc || !texCubemapCloudOcc->resource || !texCubemapCloudOcc->srv ||
+		!std::ranges::all_of(cubemapCloudOccRTVs, [](auto* rtv) { return rtv != nullptr; }))
+		return false;
+
+	if (sky->clouds && sky->clouds->numLayers != 0) {
+		occlusionClearedWithoutClouds = false;
+	} else if (!occlusionClearedWithoutClouds) {
+		// Without cloud draws, per-face capture cannot remove the previous weather's occlusion.
+		CS_GPU_PASS("CloudShadows::ClearCloudlessOcclusion");
+		const float black[4]{};
+		for (auto* rtv : cubemapCloudOccRTVs)
+			context->ClearRenderTargetView(rtv, black);
+		occlusionClearedWithoutClouds = true;
+	}
+	return true;
+}
+
 void CloudShadows::ReflectionsPrepass()
 {
 	if (!settings.Enabled)
@@ -194,8 +219,8 @@ void CloudShadows::ReflectionsPrepass()
 
 	Util::FrameChecker frameChecker;
 	if (frameChecker.IsNewFrame()) {
-		if ((globals::game::sky->mode.get() != RE::Sky::Mode::kFull) ||
-			!globals::game::sky->currentClimate)
+		if (!IsCloudShadowSceneReady() || !ClearOcclusionWithoutClouds() ||
+			!texCubemapCloudOccCopy || !texCubemapCloudOccCopy->resource || !texCubemapCloudOccCopy->srv)
 			return;
 
 		auto context = globals::d3d::context;
@@ -216,8 +241,7 @@ void CloudShadows::EarlyPrepass()
 	if (!settings.Enabled)
 		return;
 
-	if ((globals::game::sky->mode.get() != RE::Sky::Mode::kFull) ||
-		!globals::game::sky->currentClimate)
+	if (!IsCloudShadowSceneReady() || !ClearOcclusionWithoutClouds())
 		return;
 
 	auto context = globals::d3d::context;
@@ -229,6 +253,7 @@ void CloudShadows::EarlyPrepass()
 
 void CloudShadows::SetupResources()
 {
+	occlusionClearedWithoutClouds = false;
 	auto renderer = globals::game::renderer;
 	auto device = globals::d3d::device;
 

@@ -196,12 +196,12 @@ void InteriorSun::DirShadowLightCulling::thunk(RE::BSShadowDirectionalLight* dir
 		if (portalGraph) {
 			singleton.PopulateReplacementJobArrays(cell, portalGraph, dirLight, jobArrays);
 			passedJobArrays = &singleton.replacementJobArrays;
-		} else
-			singleton.currentCell = nullptr;
+		} else {
+			singleton.ClearArrays();
+		}
 	} else {
 		if (!singleton.arraysCleared)
 			singleton.ClearArrays();
-		singleton.currentCell = nullptr;
 	}
 
 	func(dirLight, *passedJobArrays, nodes);
@@ -224,6 +224,8 @@ void InteriorSun::ClearArrays()
 	for (auto& jobArray : replacementJobArrays)
 		jobArray.clear();
 
+	currentCell = nullptr;
+	currentPortalGraph.reset();
 	arraysCleared = true;
 }
 
@@ -236,15 +238,15 @@ void InteriorSun::SetRuntimeEnabled(bool a_enabled)
 void InteriorSun::PopulateReplacementJobArrays(const RE::TESObjectCELL* cell, const RE::NiPointer<RE::BSPortalGraph>& portalGraph, const RE::BSShadowDirectionalLight* dirLight, RE::BSTArray<RE::BSTArray<RE::NiPointer<RE::NiAVObject>>>& jobArrays)
 {
 	CS_PROFILE_CPU_SCOPE("InteriorSun::PrepareShadowJobs");
-	if (cell != currentCell) {
+	if (cell != currentCell || portalGraph != currentPortalGraph) {
 		InitialiseOnNewCell(portalGraph);
 		currentCell = cell;
+		currentPortalGraph = portalGraph;
 	}
 
 	const auto jobArraySize = jobArrays.size();
 	if (jobArraySize == 0) {
 		ClearArrays();
-		currentCell = nullptr;
 		return;
 	}
 

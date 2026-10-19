@@ -59,6 +59,10 @@ namespace
 	constexpr float kVRCullDistanceMax = 20480.0f;
 	constexpr int kResolutionModeMin = 0;
 	constexpr int kResolutionModeMax = 2;
+	constexpr int kNumSlicesMin = 1;
+	constexpr int kNumSlicesMax = 10;
+	constexpr int kNumStepsMin = 1;
+	constexpr int kNumStepsMax = 20;
 
 	class ScopedOCUEffectBuffer
 	{
@@ -287,8 +291,15 @@ namespace
 		       a_settings.EnableBlur;
 	}
 
+	void ClampSampleCounts(ScreenSpaceGI::Settings& a_settings)
+	{
+		a_settings.NumSlices = std::clamp<uint>(a_settings.NumSlices, kNumSlicesMin, kNumSlicesMax);
+		a_settings.NumSteps = std::clamp<uint>(a_settings.NumSteps, kNumStepsMin, kNumStepsMax);
+	}
+
 	void ApplyPlatformSettingOverrides(ScreenSpaceGI::Settings& a_settings)
 	{
+		ClampSampleCounts(a_settings);
 		a_settings.ResolutionMode = ClampResolutionMode(a_settings.ResolutionMode);
 		a_settings.ResourceProfile = ClampResourceProfile(a_settings.ResourceProfile);
 		a_settings.VRCullDistance = ClampVRCullDistance(a_settings.VRCullDistance);
@@ -515,16 +526,16 @@ void ScreenSpaceGI::DrawSettings()
 
 			if (showAdvanced) {
 				int numSlices = static_cast<int>(settings.NumSlices);
-				if (Util::Widgets::SliderInt("Slices", &numSlices, 1, 10))
-					settings.NumSlices = static_cast<uint>(std::clamp(numSlices, 1, 10));
+				if (Util::Widgets::SliderInt("Slices", &numSlices, kNumSlicesMin, kNumSlicesMax))
+					settings.NumSlices = static_cast<uint>(std::clamp(numSlices, kNumSlicesMin, kNumSlicesMax));
 				if (auto _tt = Util::HoverTooltipWrapper())
 					ImGui::Text(
 						"How many directions do the samples take.\n"
 						"Controls noise.");
 
 				int numSteps = static_cast<int>(settings.NumSteps);
-				if (Util::Widgets::SliderInt("Steps Per Slice", &numSteps, 1, 20))
-					settings.NumSteps = static_cast<uint>(std::clamp(numSteps, 1, 20));
+				if (Util::Widgets::SliderInt("Steps Per Slice", &numSteps, kNumStepsMin, kNumStepsMax))
+					settings.NumSteps = static_cast<uint>(std::clamp(numSteps, kNumStepsMin, kNumStepsMax));
 				if (auto _tt = Util::HoverTooltipWrapper())
 					ImGui::Text(
 						"Samples per direction. Controls lighting accuracy and noise at large effect radii.");
@@ -861,11 +872,11 @@ void ScreenSpaceGI::DrawPerformanceSettings(bool a_advanced)
 	if (a_advanced) {
 		ImGui::SeparatorText("Sampling");
 		int numSlices = static_cast<int>(settings.NumSlices);
-		if (Util::Widgets::SliderInt("Slices", &numSlices, 1, 10))
-			settings.NumSlices = static_cast<uint>(std::clamp(numSlices, 1, 10));
+		if (Util::Widgets::SliderInt("Slices", &numSlices, kNumSlicesMin, kNumSlicesMax))
+			settings.NumSlices = static_cast<uint>(std::clamp(numSlices, kNumSlicesMin, kNumSlicesMax));
 		int numSteps = static_cast<int>(settings.NumSteps);
-		if (Util::Widgets::SliderInt("Steps Per Slice", &numSteps, 1, 20))
-			settings.NumSteps = static_cast<uint>(std::clamp(numSteps, 1, 20));
+		if (Util::Widgets::SliderInt("Steps Per Slice", &numSteps, kNumStepsMin, kNumStepsMax))
+			settings.NumSteps = static_cast<uint>(std::clamp(numSteps, kNumStepsMin, kNumStepsMax));
 	}
 
 	if (IsResourceProfileRestartPending()) {
@@ -916,6 +927,7 @@ void ScreenSpaceGI::RestorePerformanceCostMeasurementState(const json& a_state)
 
 	const bool wasEnabled = settings.Enabled;
 	runtimeToggle.ReplaceSettings(settings, a_state.get<Settings>(), &Settings::Enabled);
+	ClampSampleCounts(settings);
 	settings.ResolutionMode = ClampResolutionMode(settings.ResolutionMode);
 	settings.ResourceProfile = ClampResourceProfile(settings.ResourceProfile);
 	settings.VRCullDistance = ClampVRCullDistance(settings.VRCullDistance);
