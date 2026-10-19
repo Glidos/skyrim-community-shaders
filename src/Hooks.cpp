@@ -62,6 +62,7 @@
 #include <shared_mutex>
 #include <string>
 #include <string_view>
+#include <windows.h>
 #include <winrt/base.h>
 
 std::unordered_map<void*, std::pair<std::unique_ptr<uint8_t[]>, size_t>> ShaderBytecodeMap;
@@ -1325,6 +1326,19 @@ struct ID3D11Device_CreateSamplerState
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
+/** @brief Clears failed buffer outputs left untouched by RenderDoc. */
+struct ID3D11Device_CreateBuffer
+{
+	static HRESULT STDMETHODCALLTYPE thunk(ID3D11Device* a_device, const D3D11_BUFFER_DESC* a_desc, const D3D11_SUBRESOURCE_DATA* a_initialData, ID3D11Buffer** a_buffer)
+	{
+		const HRESULT result = func(a_device, a_desc, a_initialData, a_buffer);
+		if (FAILED(result) && a_buffer)
+			*a_buffer = nullptr;
+		return result;
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
 struct BSShaderRenderTargets_Create
 {
 	/**
@@ -1598,6 +1612,9 @@ namespace Hooks
 			}
 
 			stl::detour_vfunc<23, ID3D11Device_CreateSamplerState>(globals::d3d::device);
+
+			if (GetModuleHandleW(L"renderdoc.dll"))
+				stl::detour_vfunc<3, ID3D11Device_CreateBuffer>(globals::d3d::device);
 
 			globals::InstallD3DHooks(globals::d3d::context);
 			CSX::Api::InitializeAcceptedDrawService(globals::d3d::context);
