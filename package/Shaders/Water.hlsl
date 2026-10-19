@@ -974,7 +974,7 @@ float3 GetWaterSpecularColor(PS_INPUT input, float3 normal, float3 viewDirection
 				sh2 skylighting = Skylighting::Sample(positionMSSkylight, R);
 				sh2 specularLobe = SphericalHarmonics::FauxSpecularLobe(normal, -viewDirection, 0.0);
 
-				float skylightingSpecular = Skylighting::EvaluateSpecular(skylighting, specularLobe, Skylighting::GetFadeOutFactor(input.WPosition.xyz));
+				float skylightingSpecular = Skylighting::EvaluateSpecular(skylighting, specularLobe, Skylighting::GetFadeOutFactor(positionMSSkylight));
 
 				float3 specularIrradiance = 1;
 
@@ -1709,15 +1709,18 @@ DiffuseOutput GetWaterDiffuseColor(
 		if (!(Permutation::PixelShaderDescriptor & Permutation::WaterFlags::Interior)) {
 #				if defined(SKYLIGHTING)
 			float3 skylightingPosition = lerp(input.WPosition.xyz, refractionWorldPosition.xyz, noise);
+			// Refraction fading stays anchored to the surface in the probe grid's shared eye space.
+			float3 surfacePositionMSSkylight = input.WPosition.xyz;
 
 #					if defined(VR)
 			float3 positionMSSkylight = skylightingPosition + FrameBuffer::CameraPosAdjust[eyeIndex].xyz - FrameBuffer::CameraPosAdjust[0].xyz;
+			surfacePositionMSSkylight += FrameBuffer::CameraPosAdjust[eyeIndex].xyz - FrameBuffer::CameraPosAdjust[0].xyz;
 #					else
 			float3 positionMSSkylight = skylightingPosition;
 #					endif
 
 			sh2 skylightingSH = Skylighting::SampleNoBias(positionMSSkylight);
-			skylightingDiffuse = Skylighting::EvaluateDiffuse(skylightingSH, float3(0, 0, 1), Skylighting::GetFadeOutFactor(input.WPosition.xyz));
+			skylightingDiffuse = Skylighting::EvaluateDiffuse(skylightingSH, float3(0, 0, 1), Skylighting::GetFadeOutFactor(surfacePositionMSSkylight));
 
 			float3 refractionDiffuseColorSkylight = Skylighting::MixDiffuse(skylightingDiffuse);
 			refractionDiffuseColor = Color::LinearToSkyrimGamma(Color::SkyrimGammaToLinear(refractionDiffuseColor) * refractionDiffuseColorSkylight);

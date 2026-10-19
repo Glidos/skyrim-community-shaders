@@ -3852,7 +3852,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float skylightingDiffuse = 1;
 	float skylightingFadeOutFactor = 1.0;
 	if (!SharedData::InInterior) {
-		skylightingFadeOutFactor = Skylighting::GetFadeOutFactor(input.WorldPosition.xyz);
+		skylightingFadeOutFactor = Skylighting::GetFadeOutFactor(positionMSSkylight);
 		skylightingDiffuse = Skylighting::EvaluateDiffuse(skylightingSH, ambientNormal, skylightingFadeOutFactor);
 	}
 #	endif
