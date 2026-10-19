@@ -1422,6 +1422,11 @@ namespace
 		bool a_tonemapSceneHdr)
 	{
 		const DXGI_FORMAT sourceFormat = sourceImage.GetMetadata().format;
+		// Capture colorspace controls transfer; strip the resource tag so DirectXTex
+		// cannot decode display bytes during encoding or the final format conversion.
+		if (DirectX::IsSRGB(sourceFormat) && !sourceImage.OverrideFormat(DirectX::MakeLinear(sourceFormat))) {
+			return nullptr;
+		}
 		if (IsLinearCapture(a_colorSpace, sourceFormat)) {
 			if (!EncodeLinearToSrgb(
 					sourceImage,
