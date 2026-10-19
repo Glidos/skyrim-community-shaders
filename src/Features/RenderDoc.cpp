@@ -110,8 +110,15 @@ void RenderDoc::Load()
 		auto runtimeName = std::string{ magic_enum::enum_name(REL::Module::GetRuntime()) };
 		auto gameVersion = Util::GetFormattedVersion(REL::Module::get().version());
 
-		// Build the path using std::filesystem so we don't hardcode separators
-		std::filesystem::path fileBase = capturesDir / std::format("Skyrim_{}_{}", runtimeName, gameVersion);
+		// RenderDoc only checks capture names within the current process.
+		SYSTEMTIME sessionStart{};
+		GetSystemTime(&sessionStart);
+		std::filesystem::path fileBase = capturesDir / std::format(
+														   "Skyrim_{}_{}_{:04}{:02}{:02}_{:02}{:02}{:02}_{:03}Z_{}",
+														   runtimeName, gameVersion,
+														   sessionStart.wYear, sessionStart.wMonth, sessionStart.wDay,
+														   sessionStart.wHour, sessionStart.wMinute, sessionStart.wSecond,
+														   sessionStart.wMilliseconds, GetCurrentProcessId());
 		renderDocApi->SetCaptureFilePathTemplate(fileBase.string().c_str());
 	} catch (const std::exception& e) {
 		logger::warn("[RenderDoc] Failed to prepare capture directory/template: {}", e.what());
