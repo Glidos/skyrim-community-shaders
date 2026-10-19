@@ -3681,9 +3681,17 @@ void LightLimitFix::Hooks::BSLightingShader_SetupGeometry::thunk(RE::BSShader* T
 
 void LightLimitFix::Hooks::BSEffectShader_SetupGeometry::thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
 {
+	using EffectFlags = SIE::ShaderCache::EffectShaderFlags;
+	constexpr auto sceneLightMask = static_cast<uint32_t>(EffectFlags::Lighting) | static_cast<uint32_t>(EffectFlags::Membrane);
+	const auto* state = globals::state;
+	// Only confirmed unlit passes bypass validation; either stage's lighting or
+	// membrane flags and unknown shader state retain the full guard.
+	const bool validateSceneLights = !This || !state || state->currentShader != This ||
+	                                 ((state->currentVertexDescriptor | state->currentPixelDescriptor) & sceneLightMask) != 0;
+
 	// Cache validated pairs for this frame, but reread the NiLight pointer so a
 	// recycled BSLight falls back to the full committed-range checks.
-	if (Pass && Pass->sceneLights && Pass->numLights > 0) {
+	if (validateSceneLights && Pass && Pass->sceneLights && Pass->numLights > 0) {
 		std::uint8_t validCount = 0;
 		auto& validationCache = globals::features::lightLimitFix.effectLightValidationCache;
 		for (std::uint8_t i = 0; i < Pass->numLights; ++i) {
