@@ -3,6 +3,7 @@
 #include "GpuPass.h"
 #include "Menu/SettingsPage.h"
 #include "Utils/Finite.h"
+#include "Utils/ResourceName.h"
 #include "Utils/UI.h"
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
@@ -147,6 +148,8 @@ void CloudShadows::SkyShaderHacks()
 		UINT sampleMask = 0xffffffff;
 
 		context->OMSetBlendState(cloudShadowBlendState, blendFactor, sampleMask);
+		// This override follows the engine state flush; the next draw must refresh blending.
+		globals::game::stateUpdateFlags->set(RE::BSGraphics::ShaderFlags::DIRTY_ALPHA_BLEND);
 
 		auto cubemapDepth = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kCUBEMAP_REFLECTIONS];
 		context->PSSetShaderResources(17, 1, &cubemapDepth.depthSRV);
@@ -274,6 +277,7 @@ void CloudShadows::SetupResources()
 		blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 
 		DX::ThrowIfFailed(device->CreateBlendState(&blendDesc, &cloudShadowBlendState));
+		Util::SetResourceName(cloudShadowBlendState, "CloudShadows::BlendState");
 	}
 }
 
