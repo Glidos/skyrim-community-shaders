@@ -2767,16 +2767,15 @@ namespace SIE
 			auto& cache = ShaderCache::Instance();
 			const auto key = SShaderCache::GetShaderString(shaderClass, shader, descriptor, true, descriptorDefines);
 
-			// Atomically check the shaderMap and either:
-			//  - return the blob if already Completed (cache hit),
-			//  - wait if another thread is compiling (Pending),
-			//  - claim the slot with Pending if nobody started yet.
+			// Pending requests wait for their owner; completed requests reuse its blob.
+			// Failed requests remain terminal until invalidation.
 			auto [claimResult, cachedBlob] = cache.ClaimCompilation(key, a_taskGeneration);
 			if (claimResult == ShaderCache::ClaimResult::CacheHit) {
 				cache.IncCacheHitTasks(a_taskGeneration);
 				return cachedBlob;
 			}
-			if (claimResult == ShaderCache::ClaimResult::RejectedStale) {
+			if (claimResult == ShaderCache::ClaimResult::Failed ||
+				claimResult == ShaderCache::ClaimResult::RejectedStale) {
 				return nullptr;
 			}
 
@@ -3577,6 +3576,7 @@ namespace SIE
 	void ShaderCache::Clear()
 	{
 		compilationSet.BumpGeneration();
+		Util::ClearShaderCompileFailures();
 
 		{
 			std::unique_lock diskCacheLock{ g_diskCacheMutationMutex };
@@ -3795,6 +3795,7 @@ namespace SIE
 	void ShaderCache::Clear(RE::BSShader::Type a_type)
 	{
 		compilationSet.BumpGeneration();
+		Util::ClearShaderCompileFailures();
 
 		logger::debug("Clearing cache for {}", magic_enum::enum_name(a_type));
 		std::lock_guard lockGuardV(vertexShadersMutex);
@@ -3840,6 +3841,7 @@ namespace SIE
 		{
 			static bool IsPending(const ShaderCacheResult& a_entry) { return a_entry.status == ShaderCompilationTask::Status::Pending; }
 			static bool IsCompleted(const ShaderCacheResult& a_entry) { return a_entry.status == ShaderCompilationTask::Status::Completed; }
+			static bool IsFailed(const ShaderCacheResult& a_entry) { return a_entry.status == ShaderCompilationTask::Status::Failed; }
 			static bool HasPayload(const ShaderCacheResult& a_entry) { return a_entry.blob != nullptr; }
 			static uint64_t GetGeneration(const ShaderCacheResult& a_entry) { return a_entry.generation; }
 		};
@@ -3995,6 +3997,9 @@ namespace SIE
 				logger::debug("Shader compilation in progress, waiting: {}", key);
 				mapCV.wait(lockM);
 				continue;
+			}
+			if (outcome == ClaimOutcome::Failed) {
+				return { ClaimResult::Failed, nullptr };
 			}
 			if (outcome == ClaimOutcome::RejectedStale) {
 				return { ClaimResult::RejectedStale, nullptr };
@@ -5546,6 +5551,8 @@ namespace SIE
 	RE::BSGraphics::VertexShader* ShaderCache::MakeAndAddVertexShader(const RE::BSShader& shader,
 		uint32_t descriptor, std::optional<uint64_t> a_taskGeneration)
 	{
+		if (!a_taskGeneration)
+			a_taskGeneration = compilationSet.generation.load(std::memory_order_acquire);
 		if (const auto shaderBlob =
 				SShaderCache::CompileShader(ShaderClass::Vertex, shader, descriptor, IsDiskCacheActive(), dependencyTracker.get(), a_taskGeneration)) {
 			if (IsTaskStale(a_taskGeneration)) {
@@ -5586,6 +5593,8 @@ namespace SIE
 	RE::BSGraphics::PixelShader* ShaderCache::MakeAndAddPixelShader(const RE::BSShader& shader,
 		uint32_t descriptor, std::optional<uint64_t> a_taskGeneration)
 	{
+		if (!a_taskGeneration)
+			a_taskGeneration = compilationSet.generation.load(std::memory_order_acquire);
 		if (const auto shaderBlob =
 				SShaderCache::CompileShader(ShaderClass::Pixel, shader, descriptor, IsDiskCacheActive(), dependencyTracker.get(), a_taskGeneration)) {
 			if (IsTaskStale(a_taskGeneration)) {
@@ -5626,6 +5635,8 @@ namespace SIE
 	RE::BSGraphics::ComputeShader* ShaderCache::MakeAndAddComputeShader(const RE::BSShader& shader,
 		uint32_t descriptor, std::optional<uint64_t> a_taskGeneration)
 	{
+		if (!a_taskGeneration)
+			a_taskGeneration = compilationSet.generation.load(std::memory_order_acquire);
 		if (const auto shaderBlob =
 				SShaderCache::CompileShader(ShaderClass::Compute, shader, descriptor, IsDiskCacheActive(), dependencyTracker.get(), a_taskGeneration)) {
 			if (IsTaskStale(a_taskGeneration)) {
@@ -6996,6 +7007,8 @@ namespace SIE
 		std::string lowerExtension = extension;
 		std::transform(lowerExtension.begin(), lowerExtension.end(), lowerExtension.begin(),
 			[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		if (lowerExtension == ".hlsl" || lowerExtension == ".hlsli")
+			Util::ClearShaderCompileFailures();
 		if (!std::filesystem::is_directory(filePath) && lowerExtension == ".hlsl") {
 			// Update cache with the modified shader
 			cache->InsertModifiedShaderMap(shaderTypeString, modifiedTime);

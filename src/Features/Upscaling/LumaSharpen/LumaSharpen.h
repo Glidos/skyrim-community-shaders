@@ -43,5 +43,6 @@ private:
 	void CreateComputeShader();
 
 	winrt::com_ptr<ID3D11ComputeShader> lumaSharpenComputeShader;
+	bool shaderUnavailableLogged = false;
 	ConstantBuffer* lumaSharpenConfigCB = nullptr;
 };

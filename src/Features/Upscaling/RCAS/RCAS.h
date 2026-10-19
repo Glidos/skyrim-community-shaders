@@ -59,5 +59,6 @@ private:
 	void CreateComputeShader();
 
 	winrt::com_ptr<ID3D11ComputeShader> rcasComputeShader;
+	bool shaderUnavailableLogged = false;
 	ConstantBuffer* rcasConfigCB = nullptr;
 };

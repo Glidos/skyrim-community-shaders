@@ -35,4 +35,7 @@ namespace Util
 		const char* ProgramType,
 		const char* Program = "main",
 		ShaderCompileTiming* a_timing = nullptr);
+
+	/** Permit standalone retries without retaining failures from pre-reset attempts. */
+	void ClearShaderCompileFailures();
 }

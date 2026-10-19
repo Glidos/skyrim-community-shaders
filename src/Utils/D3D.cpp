@@ -6,6 +6,7 @@
 #include "State.h"
 #include "Utils/Format.h"
 #include "Utils/RendererContextAccess.h"
+#include "Utils/ShaderDefines.h"
 #include "Utils/ShaderInclude.h"
 #include <DDSTextureLoader.h>
 #include <DirectXTex.h>
@@ -13,10 +14,28 @@
 #include <d3dcompiler.h>
 #include <limits>
 #include <mutex>
+#include <set>
+#include <string>
 #include <string_view>
+#include <tuple>
 
 namespace Util
 {
+	namespace
+	{
+		using ShaderCompileFailureKey = std::tuple<std::wstring, std::string, std::string, uint32_t, std::string>;
+		std::mutex shaderCompileFailuresMutex;
+		std::set<ShaderCompileFailureKey> shaderCompileFailures;
+		uint64_t shaderCompileFailureGeneration = 0;
+	}
+
+	void ClearShaderCompileFailures()
+	{
+		std::lock_guard lock{ shaderCompileFailuresMutex };
+		++shaderCompileFailureGeneration;
+		shaderCompileFailures.clear();
+	}
+
 	VRDepthLayout DetectVRDepthLayout(uint32_t a_depthWidth, int a_viewportWidthPerEye)
 	{
 		if (!a_depthWidth || a_viewportWidthPerEye <= 0)
@@ -314,11 +333,29 @@ namespace Util
 		if (globals::shaderCache->IsDiskCache())
 			flags |= D3DCOMPILE_SKIP_VALIDATION;
 
+		const ShaderCompileFailureKey failureKey{
+			FilePath, ProgramType, Program, flags, ShaderDefines::Serialize(macros)
+		};
+		uint64_t failureGeneration;
+		{
+			std::lock_guard lock{ shaderCompileFailuresMutex };
+			if (shaderCompileFailures.contains(failureKey))
+				return nullptr;
+			failureGeneration = shaderCompileFailureGeneration;
+		}
+		const auto recordFailure = [&] {
+			std::lock_guard lock{ shaderCompileFailuresMutex };
+			// An edit or reset must not inherit an older in-flight failure.
+			if (failureGeneration == shaderCompileFailureGeneration)
+				shaderCompileFailures.insert(failureKey);
+		};
+
 		auto compile = [&]() -> winrt::com_ptr<ID3DBlob> {
 			winrt::com_ptr<ID3DBlob> shaderBlob;
 			winrt::com_ptr<ID3DBlob> shaderErrors;
 
 			if (!std::filesystem::exists(FilePath)) {
+				recordFailure();
 				logger::error("Failed to compile shader; {} does not exist", str);
 				return nullptr;
 			}
@@ -341,6 +378,7 @@ namespace Util
 					queryQpc());
 			}
 			if (FAILED(compilationResult)) {
+				recordFailure();
 				auto errorText = shaderErrors ? std::string_view(static_cast<const char*>(shaderErrors->GetBufferPointer()), shaderErrors->GetBufferSize()) : std::string_view("Unknown error");
 				if (!errorText.empty() && errorText.back() == '\0')
 					errorText.remove_suffix(1);

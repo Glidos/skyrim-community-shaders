@@ -605,6 +605,7 @@ namespace SIE
 		enum class ClaimResult
 		{
 			CacheHit,  // Already compiled; use the returned blob
+			Failed,    // Retry only after the entry is invalidated
 			Claimed,   // Claimed as Pending; caller must compile and call AddCompletedShader
 			RejectedStale
 		};
