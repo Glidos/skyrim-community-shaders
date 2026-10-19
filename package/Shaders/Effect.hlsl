@@ -746,11 +746,13 @@ float3 GetLightingColor(float3 msPosition, float3 worldPosition, float2 screenPo
 	if (!(Permutation::ExtraShaderDescriptor & Permutation::ExtraFlags::InWorld))
 #		endif
 	{
+		const float effectLightingMult = Color::EffectLightingMult();
 		// Saturation needs the complete light color before its channels are accumulated.
-		float3 pointLightColor = ApplyParticlePointInfluence(Color::PointLight(float3(PLightColorR.x, PLightColorG.x, PLightColorB.x)));
-		color.x += dot(pointLightColor.x * lightFadeMul * Color::EffectLightingMult(), 1.0.xxxx);
-		color.y += dot(pointLightColor.y * lightFadeMul * Color::EffectLightingMult(), 1.0.xxxx);
-		color.z += dot(pointLightColor.z * lightFadeMul * Color::EffectLightingMult(), 1.0.xxxx);
+		[unroll] for (uint lightIndex = 0; lightIndex < 4; lightIndex++)
+		{
+			float3 pointLightColor = float3(PLightColorR[lightIndex], PLightColorG[lightIndex], PLightColorB[lightIndex]);
+			color += ApplyParticlePointInfluence(Color::PointLight(pointLightColor)) * lightFadeMul[lightIndex] * effectLightingMult;
+		}
 	}
 
 	return color;
