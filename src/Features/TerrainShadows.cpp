@@ -364,11 +364,14 @@ bool TerrainShadows::UpdateShadow(bool a_refreshImmediately)
 		context->CSSetShaderResources(60, (uint)srvs.size(), srvs.data());
 	}
 
-	auto accumulator = *globals::game::currentAccumulator.get();
-	auto shadowSceneNode = accumulator->GetRuntimeData().activeShadowSceneNode;
+	// Early prepasses require the world scene before the world accumulator is current.
+	auto* shadowSceneNode = globals::game::smState ? globals::game::smState->shadowSceneNode[0] : nullptr;
 	if (!shadowSceneNode)
 		return false;
-	auto sunLight = skyrim_cast<RE::NiDirectionalLight*>(shadowSceneNode->GetRuntimeData().sunLight->light.get());
+	auto* sceneSunLight = shadowSceneNode->GetRuntimeData().sunLight;
+	if (!sceneSunLight)
+		return false;
+	auto sunLight = skyrim_cast<RE::NiDirectionalLight*>(sceneSunLight->light.get());
 	if (!sunLight)
 		return false;
 
