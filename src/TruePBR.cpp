@@ -707,6 +707,16 @@ namespace Permutations
 		AddLightingShaderDescriptors(SIE::ShaderCache::LightingShaderTechniques::MTLandLODBlend, landFlagValues, result);
 		return result;
 	}
+
+	std::unordered_set<uint32_t> GeneratePBRUtilityPixelPermutations()
+	{
+		using enum SIE::ShaderCache::UtilityShaderFlags;
+		constexpr std::array flags{ Vc, AlphaTest, TreeAnim };
+		constexpr uint32_t constantFlags = static_cast<uint32_t>(Texture) |
+		                                   static_cast<uint32_t>(RenderBaseTexture) |
+		                                   static_cast<uint32_t>(TruePbr);
+		return GenerateFlagPermutations(flags, constantFlags);
+	}
 }
 
 void TruePBR::GenerateShaderPermutations(RE::BSShader* shader)
@@ -725,6 +735,9 @@ void TruePBR::GenerateShaderPermutations(RE::BSShader* shader)
 			else
 				std::ignore = shaderCache->GetPixelShader(*shader, pixelShaderDescriptor);
 		}
+	} else if (shader->shaderType == RE::BSShader::Type::Utility) {
+		for (auto descriptor : Permutations::GeneratePBRUtilityPixelPermutations())
+			std::ignore = shaderCache->GetPixelShader(*shader, descriptor);
 	}
 }
 
@@ -1113,6 +1126,42 @@ struct BSLightingShaderProperty_GetRenderPasses
 			currentPass = currentPass->next;
 		}
 
+		return renderPasses;
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+struct BSLightingShaderProperty_GetRenderPasses_LocalMap
+{
+	static RE::BSShaderProperty::RenderPassArray* thunk(RE::BSLightingShaderProperty* property, RE::BSGeometry* geometry, std::uint32_t renderFlags, RE::BSShaderAccumulator* accumulator)
+	{
+		auto* renderPasses = func(property, geometry, renderFlags, accumulator);
+		if (renderPasses == nullptr || property == nullptr)
+			return renderPasses;
+		if (!Util::IsLikelyValidPointer(renderPasses, alignof(RE::BSShaderProperty::RenderPassArray))) {
+			static std::atomic_flag loggedInvalidRenderPassAddress{};
+			if (!loggedInvalidRenderPassAddress.test_and_set(std::memory_order_relaxed))
+				logger::error("[TruePBR] Invalid local-map render-pass pointer {:X} (geometry: {})",
+					reinterpret_cast<std::uintptr_t>(renderPasses), GetGeometryName(geometry));
+			return nullptr;
+		}
+
+		const bool isPbr = globals::features::truePBR.settings.Enabled &&
+		                   (TryGetRegisteredPBRLandscapeMaterial(property, geometry) != nullptr ||
+							   TryGetRegisteredPBRMaterial(property, geometry) != nullptr);
+		using enum SIE::ShaderCache::UtilityShaderFlags;
+		constexpr uint32_t utilityTechniqueStart = 0x2B;
+		for (auto* pass = renderPasses->head; pass != nullptr; pass = pass->next) {
+			if (pass->shader == nullptr || pass->shader->shaderType != RE::BSShader::Type::Utility ||
+				pass->passEnum < utilityTechniqueStart)
+				continue;
+			auto technique = pass->passEnum - utilityTechniqueStart;
+			// Pass arrays can be reused after material or feature settings change.
+			technique &= ~static_cast<uint32_t>(TruePbr);
+			if (isPbr && (technique & static_cast<uint32_t>(RenderBaseTexture)))
+				technique |= static_cast<uint32_t>(TruePbr);
+			pass->passEnum = technique + utilityTechniqueStart;
+		}
 		return renderPasses;
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
@@ -1854,6 +1903,7 @@ void TruePBR::PostPostLoad()
 	logger::info("Hooking BSLightingShaderProperty");
 	stl::write_vfunc<0x18, BSLightingShaderProperty_LoadBinary>(RE::VTABLE_BSLightingShaderProperty[0]);
 	stl::write_vfunc<0x2A, BSLightingShaderProperty_GetRenderPasses>(RE::VTABLE_BSLightingShaderProperty[0]);
+	stl::write_vfunc<0x2C, BSLightingShaderProperty_GetRenderPasses_LocalMap>(RE::VTABLE_BSLightingShaderProperty[0]);
 	stl::detour_thunk<BSLightingShaderProperty_OnLoadTextureSet>(REL::RelocationID(99865, 106510));
 
 	logger::info("Hooking BSLightingShader");

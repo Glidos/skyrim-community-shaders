@@ -1926,6 +1926,9 @@ namespace SIE
 			if (descriptor & static_cast<uint32_t>(LocalMapFogOfWar)) {
 				defines[lastIndex++] = { "LOCALMAP_FOGOFWAR", nullptr };
 			}
+			if (descriptor & static_cast<uint32_t>(TruePbr)) {
+				defines[lastIndex++] = { "TRUE_PBR", nullptr };
+			}
 
 			if (descriptor & (static_cast<uint32_t>(RenderShadowmask) |
 								 static_cast<uint32_t>(RenderShadowmaskDpb) |

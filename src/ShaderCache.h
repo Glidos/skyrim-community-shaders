@@ -964,6 +964,7 @@ namespace SIE
 			LodObject = 1 << 27,
 			LocalMapFogOfWar = 1 << 28,
 			OpaqueEffect = 1 << 29,
+			TruePbr = 1u << 30,
 		};
 
 		// Shader blocking data for developer mode

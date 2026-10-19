@@ -1,6 +1,7 @@
 captured_shader_variants: 3425
-# Lighting pixel keys are normalized; the captured count retains source provenance.
-normalized_shader_variants: 3093
+# Inventory includes normalized Lighting keys and supplemental PBR Utility variants.
+# The captured count retains source provenance.
+normalized_shader_variants: 3101
 common_defines:
     - D3DCOMPILE_DEBUG
     - D3DCOMPILE_SKIP_OPTIMIZATION
@@ -13790,6 +13791,58 @@ shaders:
                   - PSHADER
                   - SHADOWSPLITCOUNT=3
               entries:
+                  - entry: Utility:Pixel:42000002
+                    defines:
+                        - RENDER_BASE_TEXTURE
+                        - TEXTURE
+                        - TRUE_PBR
+                  - entry: Utility:Pixel:42000003
+                    defines:
+                        - RENDER_BASE_TEXTURE
+                        - TEXTURE
+                        - TRUE_PBR
+                        - VC
+                  - entry: Utility:Pixel:42000082
+                    defines:
+                        - ALPHA_TEST
+                        - RENDER_BASE_TEXTURE
+                        - TEXTURE
+                        - TRUE_PBR
+                  - entry: Utility:Pixel:42000083
+                    defines:
+                        - ALPHA_TEST
+                        - RENDER_BASE_TEXTURE
+                        - TEXTURE
+                        - TRUE_PBR
+                        - VC
+                  - entry: Utility:Pixel:46000002
+                    defines:
+                        - RENDER_BASE_TEXTURE
+                        - TEXTURE
+                        - TREE_ANIM
+                        - TRUE_PBR
+                  - entry: Utility:Pixel:46000003
+                    defines:
+                        - RENDER_BASE_TEXTURE
+                        - TEXTURE
+                        - TREE_ANIM
+                        - TRUE_PBR
+                        - VC
+                  - entry: Utility:Pixel:46000082
+                    defines:
+                        - ALPHA_TEST
+                        - RENDER_BASE_TEXTURE
+                        - TEXTURE
+                        - TREE_ANIM
+                        - TRUE_PBR
+                  - entry: Utility:Pixel:46000083
+                    defines:
+                        - ALPHA_TEST
+                        - RENDER_BASE_TEXTURE
+                        - TEXTURE
+                        - TREE_ANIM
+                        - TRUE_PBR
+                        - VC
                   - entry: Utility:Pixel:10000003
                     defines: &id520
                         - LOCALMAP_FOGOFWAR
