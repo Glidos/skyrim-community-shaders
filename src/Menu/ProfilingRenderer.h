@@ -10,6 +10,7 @@
 #include <imgui.h>
 
 #include "Profiler.h"
+#include "Utils/GraphSampleGate.h"
 #include "Utils/LegitProfiler.h"
 #include "Utils/VRFrameTiming.h"
 
@@ -115,11 +116,14 @@ private:
 	static inline std::vector<GroupEntry> cachedGroups;
 
 	static inline ImGuiUtils::ProfilerGraph gpuGraph{ Profiler::kHistorySize };
+	static inline Util::GraphSampleGate gpuGraphGate;
 
 	struct FeatureGraphState
 	{
 		ImGuiUtils::ProfilerGraph gpuGraph{ kFeatureGraphHistorySize };
 		ImGuiUtils::ProfilerGraph cpuGraph{ kFeatureGraphHistorySize };
+		Util::GraphSampleGate gpuGate;
+		Util::GraphSampleGate cpuGate;
 	};
 	struct FeatureTimingEntry
 	{
@@ -176,7 +180,7 @@ private:
 		TimingAttribution attribution = TimingAttribution::Feature,
 		bool useSelfTimesForTotal = false,
 		const std::vector<Profiler::TimerResult>* timingResults = nullptr);
-	static bool RenderFeatureTimingGraph(const std::string& featurePrefix, const FeatureTimingData& data, ImGuiUtils::ProfilerGraph& graph, int graphHeight);
+	static bool RenderFeatureTimingGraph(const std::string& featurePrefix, const FeatureTimingData& data, ImGuiUtils::ProfilerGraph& graph, Util::GraphSampleGate& gate, int graphHeight);
 	static bool RenderTimingSection(const std::string& key, const FeatureTimingData& data, bool cpuMode, bool showTable, const FeatureTimingData* statistics = nullptr);
 	static bool RenderFeatureTimingData(const std::string& featurePrefix, FeatureTimingMode featureMode, bool showTable);
 };

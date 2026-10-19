@@ -651,6 +651,8 @@ void ProfilingRenderer::RenderTimingModeToggle()
 	if (newMode != timingMode) {
 		timingMode = newMode;
 		timeSinceLastUpdate = kStatsRefreshSeconds;
+		gpuGraph = ImGuiUtils::ProfilerGraph{ Profiler::kHistorySize };
+		gpuGraphGate.Reset();
 	}
 }
 
@@ -710,7 +712,8 @@ void ProfilingRenderer::RenderGraph()
 	if (tasks.empty())
 		return;
 
-	gpuGraph.LoadFrameData(tasks.data(), tasks.size());
+	if (globals::state && gpuGraphGate.ShouldSample(globals::state->frameCount, profiler.GetHistoryEpoch()))
+		gpuGraph.LoadFrameData(tasks.data(), tasks.size());
 
 	float maxFrameTimeSec = gpuGraph.GetPeakFrameTime() * kGraphHeadroomScale;
 	if (maxFrameTimeSec < kMainGraphMinFrameTimeSec)
@@ -809,7 +812,7 @@ ProfilingRenderer::FeatureTimingData ProfilingRenderer::CollectFeatureTimingData
 	return data;
 }
 
-bool ProfilingRenderer::RenderFeatureTimingGraph(const std::string& featurePrefix, const FeatureTimingData& data, ImGuiUtils::ProfilerGraph& graph, int graphHeight)
+bool ProfilingRenderer::RenderFeatureTimingGraph(const std::string& featurePrefix, const FeatureTimingData& data, ImGuiUtils::ProfilerGraph& graph, Util::GraphSampleGate& gate, int graphHeight)
 {
 	(void)featurePrefix;
 
@@ -832,7 +835,8 @@ bool ProfilingRenderer::RenderFeatureTimingGraph(const std::string& featurePrefi
 	if (tasks.empty())
 		return false;
 
-	graph.LoadFrameData(tasks.data(), tasks.size());
+	if (globals::state && gate.ShouldSample(globals::state->frameCount, globals::profiler->GetHistoryEpoch()))
+		graph.LoadFrameData(tasks.data(), tasks.size());
 
 	float maxFrameTimeSec = graph.GetPeakFrameTime() * kGraphHeadroomScale;
 	if (maxFrameTimeSec < kFeatureGraphMinFrameTimeSec)
@@ -861,7 +865,8 @@ bool ProfilingRenderer::RenderTimingSection(const std::string& key, const Featur
 	if (!shared) {
 		auto& state = featureGraphs[key];
 		auto& graph = cpuMode ? state.cpuGraph : state.gpuGraph;
-		if (RenderFeatureTimingGraph(key, data, graph, 100))
+		auto& gate = cpuMode ? state.cpuGate : state.gpuGate;
+		if (RenderFeatureTimingGraph(key, data, graph, gate, 100))
 			ImGui::Spacing();
 	}
 
@@ -1293,8 +1298,13 @@ void ProfilingRenderer::RenderFeatureTimers(const std::string& featurePrefix)
 		mode = chosen;
 
 	mode = std::clamp(mode, static_cast<int>(FeatureTimingMode::Off), static_cast<int>(FeatureTimingMode::CPU));
-	if (chosen >= 0)
+	if (chosen >= 0 && featureMode != static_cast<FeatureTimingMode>(mode)) {
 		featureMode = static_cast<FeatureTimingMode>(mode);
+		if (auto it = featureGraphs.find(featurePrefix); it != featureGraphs.end()) {
+			it->second.gpuGate.Reset();
+			it->second.cpuGate.Reset();
+		}
+	}
 
 	if (featureMode == FeatureTimingMode::Off) {
 		ImGui::TextDisabled("Feature profiling is off.");
