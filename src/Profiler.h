@@ -1,5 +1,6 @@
 #pragma once
 
+#include "RenderTargetStats.h"
 #include "Utils/FlatFrameTiming.h"
 #include "Utils/PassTimingCapture.h"
 #include "Utils/ProfilerTiming.h"
@@ -159,6 +160,16 @@ public:
 	bool IsUserEnabled() const { return userEnabled.load(std::memory_order_acquire); }
 	/** @brief Requests sources for the next frame; concurrent requests combine. */
 	void RequestCapture(CaptureMode a_mode = CaptureMode::Both);
+	/** Render-thread request for the next capture frame; false immediately releases target queries. */
+	void RequestRenderTargetCapture(bool requested);
+	/** Allocation-free draw-path gate; target intervals are independent of pass totals. */
+	bool IsRenderTargetCaptureActive() const { return renderTargetCaptureActive; }
+	/** Record one engine draw using the active profiler frame's shared GPU clock. */
+	void CountRenderTargetDraw(uint32_t depthStencil, uint32_t renderTarget);
+	/** Owner-thread published view, sharing the existing frame clock but no pass slots. */
+	const RenderTargetStats& GetRenderTargetStats() const { return renderTargetStats; }
+	/** Number of retained target timestamps; zero after capture is stopped. */
+	uint32_t GetRenderTargetQueryCount() const;
 	/** Optionally align newly observed scopes with preceding valid inactive frames. */
 	bool StartBoundedCapture(uint32_t a_frameCount, bool a_clearHistory, uint64_t& a_sessionId, bool a_alignInactiveFrames = false);
 	bool CancelBoundedCapture(uint64_t a_sessionId);
@@ -272,6 +283,7 @@ private:
 
 	struct FrameQueries
 	{
+		RenderTargetStats::Frame renderTargets;
 		winrt::com_ptr<ID3D11Query> disjoint;
 		winrt::com_ptr<ID3D11Query> wholeFrameBegin;
 		winrt::com_ptr<ID3D11Query> wholeFrameEnd;
@@ -310,6 +322,12 @@ private:
 	};
 
 	ID3D11DeviceContext* context = nullptr;
+	RenderTargetStats renderTargetStats;
+	bool renderTargetCaptureRequested = false;
+	bool renderTargetCaptureActive = false;
+	bool renderTargetCaptureRetained = false;
+	bool renderTargetFrameUnavailable = false;
+	void StopRenderTargetCapture();
 
 	FrameQueries frames[kFrameLatency];
 	struct FlatTiming

@@ -38,6 +38,7 @@
 #include "Features/GrassOptimizations/GrassBucketRenderer.h"
 #include "Features/InteriorSun.h"
 #include "Features/LightLimitFix.h"
+#include "Features/PerformanceOverlay.h"
 #include "Features/ScreenshotFeature.h"
 #include "Features/TerrainBlending.h"
 #include "Features/TerrainHelper.h"
@@ -1135,6 +1136,7 @@ struct IDXGISwapChain_Present
 		if (globals::game::isVR)
 			CSX::Api::AdvanceAcceptedDrawFrame(globals::d3d::context);
 		menu->DrawOverlay();
+		globals::features::performanceOverlay.UpdateRenderTargetCapture();
 		globals::features::screenshotFeature.OnBeforePresent(This);
 		globals::features::screenshotFeature.DrawPostCaptureIndicator();
 

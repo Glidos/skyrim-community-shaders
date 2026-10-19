@@ -4845,7 +4845,10 @@ if(BUILD_CONTROLLER_TESTS)
         ProfilerTiming
         tests/profiler_timing_test.cpp
     )
-    target_sources(profiler_timing_test PRIVATE src/Profiler.cpp)
+    target_sources(
+        profiler_timing_test
+        PRIVATE src/Profiler.cpp src/RenderTargetStats.cpp
+    )
     target_compile_definitions(
         profiler_timing_test
         PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN

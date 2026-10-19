@@ -104,6 +104,8 @@ const std::vector<Profiler::TimerResult>& Profiler::GetImmediateCpuResults(bool 
 
 void Profiler::ResetFrameState(FrameQueries& frame)
 {
+	if (frame.renderTargets.tracked || !frame.renderTargets.spans.empty())
+		RenderTargetStats::ResetFrame(frame.renderTargets);
 	CancelFrameCaptures(frame, "capture_reset");
 	frame.activeCount = 0;
 	frame.detailCount = 0;
@@ -208,6 +210,7 @@ void Profiler::Initialize(ID3D11Device* device, ID3D11DeviceContext* a_context, 
 
 void Profiler::Release()
 {
+	StopRenderTargetCapture();
 	++historyEpoch;
 	UpdateGpuCaptureEpoch(false, true);
 	if (flatTiming && frameActive && context)
@@ -266,6 +269,7 @@ void Profiler::SetUserEnabled(bool a_enabled)
 {
 	userEnabled.store(a_enabled, std::memory_order_release);
 	if (!a_enabled) {
+		StopRenderTargetCapture();
 		UpdateGpuCaptureEpoch(false);
 		if (flatTiming) {
 			flatTiming->history.Reset();
@@ -279,6 +283,55 @@ void Profiler::SetUserEnabled(bool a_enabled)
 		if (boundedCapture.state == CaptureSessionState::Running)
 			boundedCapture.state = CaptureSessionState::Cancelled;
 	}
+}
+
+void Profiler::StopRenderTargetCapture()
+{
+	renderTargetCaptureRequested = false;
+	renderTargetFrameUnavailable = false;
+	if (!renderTargetCaptureRetained)
+		return;
+	renderTargetCaptureRetained = false;
+	renderTargetCaptureActive = false;
+	for (auto& frame : frames)
+		frame.renderTargets = {};
+	renderTargetStats.Clear();
+}
+
+void Profiler::RequestRenderTargetCapture(bool requested)
+{
+	if (!requested || !initialized || !IsUserEnabled()) {
+		StopRenderTargetCapture();
+		return;
+	}
+	renderTargetCaptureRequested = true;
+	renderTargetCaptureRetained = true;
+	RequestCapture(CaptureMode::GPU);
+}
+
+void Profiler::CountRenderTargetDraw(uint32_t depthStencil, uint32_t renderTarget)
+{
+	if (!renderTargetCaptureActive || renderTargetFrameUnavailable || !IsEnabled() || !Captures(CaptureMode::GPU))
+		return;
+	if (!frameActive && gpuAcquisitionBlocked) {
+		renderTargetFrameUnavailable = true;
+		return;
+	}
+	if (!frameActive)
+		BeginFrame();
+	if (frameActive)
+		renderTargetStats.CountDraw(frames[writeFrame].renderTargets, context, depthStencil, renderTarget);
+	else
+		renderTargetFrameUnavailable = true;
+}
+
+uint32_t Profiler::GetRenderTargetQueryCount() const
+{
+	uint32_t count = 0;
+	for (const auto& frame : frames)
+		for (const auto& span : frame.renderTargets.spans)
+			count += static_cast<uint32_t>(static_cast<bool>(span.begin)) + static_cast<uint32_t>(static_cast<bool>(span.end));
+	return count;
 }
 
 void Profiler::RequestCapture(CaptureMode a_mode)
@@ -349,6 +402,7 @@ std::vector<Profiler::ExternalGpuTiming> Profiler::GetExternalGpuTimings() const
 
 void Profiler::LatchCaptureRequest()
 {
+	renderTargetFrameUnavailable = false;
 	gpuAcquisitionBlocked = false;
 	const auto requested = captureRequested.exchange(0, std::memory_order_acq_rel);
 	activeCaptureMode = IsUserEnabled() ? static_cast<CaptureMode>(requested) : CaptureMode::None;
@@ -360,6 +414,8 @@ void Profiler::LatchCaptureRequest()
 		activeCaptureMode = CaptureMode::Both;
 	captureActive.store(activeCaptureMode != CaptureMode::None, std::memory_order_release);
 	UpdateGpuCaptureEpoch(Captures(CaptureMode::GPU));
+	renderTargetCaptureActive = renderTargetCaptureRequested && Captures(CaptureMode::GPU);
+	renderTargetCaptureRequested = false;
 }
 
 bool Profiler::StartBoundedCapture(uint32_t a_frameCount, bool a_clearHistory, uint64_t& a_sessionId, bool a_alignInactiveFrames)
@@ -411,6 +467,7 @@ const std::vector<Profiler::TimerResult>* Profiler::GetBoundedCaptureResults(uin
 
 void Profiler::ClearTimers()
 {
+	StopRenderTargetCapture();
 	++historyEpoch;
 	UpdateGpuCaptureEpoch(GetGpuCaptureEpoch() != 0, true);
 	if (flatTiming) {
@@ -525,6 +582,8 @@ void Profiler::BeginFrame()
 		boundedCapture.submittedFrames++;
 	}
 	frameActive = true;
+	frame.renderTargets.tracked = renderTargetCaptureActive;
+	frame.renderTargets.failed = renderTargetFrameUnavailable;
 	acquiredSlotsThisFrame = 0;
 	context->Begin(frame.disjoint.get());
 }
@@ -896,6 +955,7 @@ void Profiler::EndCpuPass()
 void Profiler::EndFrame(uint32_t a_frameCount)
 {
 	if (!initialized || !context) {
+		StopRenderTargetCapture();
 		captureRequested.store(false, std::memory_order_release);
 		captureActive.store(false, std::memory_order_release);
 		activeCaptureMode = CaptureMode::None;
@@ -905,6 +965,12 @@ void Profiler::EndFrame(uint32_t a_frameCount)
 		completedCpuTimers.clear();
 		return;
 	}
+
+	// Empty target frames still retire old scene values through the shared clock.
+	if (renderTargetCaptureActive && !frameActive && !gpuAcquisitionBlocked && !renderTargetFrameUnavailable)
+		BeginFrame();
+	if (frameActive && frames[writeFrame].renderTargets.open)
+		RenderTargetStats::CloseSpan(frames[writeFrame].renderTargets, context);
 
 	if (Captures(CaptureMode::CPU))
 		PublishImmediateCpuResults(a_frameCount);
@@ -921,6 +987,8 @@ void Profiler::EndFrame(uint32_t a_frameCount)
 	const bool hadGpuFrame = frameActive;
 	if (!frameActive) {
 		const bool slotAvailable = CollectResults();
+		if (renderTargetCaptureActive)
+			renderTargetStats.MarkFrameUnavailable();
 		if (!slotAvailable) {
 			// The independent CPU view already owns this frame; never merge it into a later one.
 			completedCpuTimers.clear();
@@ -1195,8 +1263,12 @@ bool Profiler::CollectResults()
 			};
 			if (!readTimers(frame.timers, intervals, failures) || !readTimers(frame.detailTimers, detailIntervals, detailFailures))
 				return false;
+			if (frame.renderTargets.tracked && !renderTargetStats.ResolveFrame(frame.renderTargets, context, disjointData.Frequency, true))
+				return false;
 			gpuFrameResolved = true;
 		} else {
+			if (frame.renderTargets.tracked)
+				renderTargetStats.ResolveFrame(frame.renderTargets, context, 0, false);
 			gpuCaptureValid = false;
 			const char* reason = hr != S_OK ? "query_failed" : disjointData.Disjoint ? "gpu_clock_disjoint" :
 			                                                                           "invalid_gpu_frequency";

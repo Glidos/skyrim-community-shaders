@@ -568,6 +568,14 @@ void State::Draw()
 			}
 		}
 
+		if (currentShader && globals::profiler->IsRenderTargetCaptureActive()) {
+			if (auto* shadowState = globals::game::shadowState) {
+				const uint32_t depthStencil = globals::game::isVR ? shadowState->GetVRRuntimeData().depthStencil : shadowState->GetRuntimeData().depthStencil;
+				const uint32_t renderTarget = static_cast<uint32_t>(globals::game::isVR ? shadowState->GetVRRuntimeData().renderTargets[0] : shadowState->GetRuntimeData().renderTargets[0]);
+				globals::profiler->CountRenderTargetDraw(depthStencil, renderTarget);
+			}
+		}
+
 		if (globals::menu->overlayVisible && globals::features::performanceOverlay.loaded && globals::features::performanceOverlay.IsOverlayVisible()) {
 			ScopedStateDrawPhaseTimer phaseDiag(StateDrawPhase::DebugOverlay, stateDrawDiagFrame, stateDrawDiagActive);
 			Debug();

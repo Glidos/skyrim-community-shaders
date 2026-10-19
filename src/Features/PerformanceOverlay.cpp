@@ -29,6 +29,7 @@
 #include "Menu/OverlayRenderer.h"
 #include "Menu/ProfilingRenderer.h"
 #include "PerformanceOverlay.h"
+#include "RE/B/BSShaderRenderTargets.h"
 #include "State.h"
 #include "Utils/FileSystem.h"
 #include "Utils/Format.h"
@@ -55,6 +56,23 @@ constexpr float kDefaultFrameTimeMs = 1000.0f / kDefaultFPS;
 
 namespace
 {
+	std::string RenderTargetBindingName(uint32_t depthStencil, uint32_t renderTarget)
+	{
+		std::string name;
+		if (renderTarget != static_cast<uint32_t>(RE::RENDER_TARGETS::kNONE)) {
+			const auto label = magic_enum::enum_name(static_cast<RE::RENDER_TARGETS::RENDER_TARGET>(renderTarget));
+			name = label.empty() ? std::format("RT {}", renderTarget) : std::string(label);
+		}
+		if (depthStencil != static_cast<uint32_t>(RE::RENDER_TARGETS_DEPTHSTENCIL::kNONE)) {
+			const auto label = magic_enum::enum_name(static_cast<RE::RENDER_TARGETS_DEPTHSTENCIL::RENDER_TARGET_DEPTHSTENCIL>(depthStencil));
+			if (!name.empty())
+				name += " + ";
+			name += label.empty() ? std::format("DS {}", depthStencil) : std::string(label);
+			name += " (depth)";
+		}
+		return name.empty() ? "None" : name;
+	}
+
 	void DrawPerformanceHUDOverlayHelp()
 	{
 		ImGui::TextUnformatted("Displays the performance panel in the standalone HUD, which can stay visible after CSX settings close.");
@@ -139,6 +157,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	ShowInOverlay,
 	ShowDrawCalls,
 	ShowCSPasses,
+	ShowRenderTargets,
 	ShowVRAM,
 	ShowFPS,
 	ShowPreFGFrameTimeGraph,
@@ -217,6 +236,7 @@ void PerformanceOverlay::DrawSettings()
 			Util::Widgets::Checkbox("Show FPS Counter", &this->settings.ShowFPS);
 			Util::Widgets::Checkbox("Show Draw Calls", &this->settings.ShowDrawCalls);
 			Util::Widgets::Checkbox("Show CSX Render Passes", &this->settings.ShowCSPasses);
+			DrawRenderTargetControl();
 			Util::Widgets::Checkbox("Show VRAM Usage", &this->settings.ShowVRAM);
 
 			bool isFrameGenerationActive = globals::features::upscaling.IsFrameGenerationActive();
@@ -411,7 +431,7 @@ void PerformanceOverlay::DrawOverlay()
 		const float fpsWidth = ImGui::CalcTextSize(fpsText.c_str()).x;
 		minWidth = std::max(minWidth, fpsWidth + Settings::kLabelPadding * scale);
 	}
-	if (this->settings.ShowDrawCalls) {
+	if (this->settings.ShowDrawCalls || this->settings.ShowRenderTargets) {
 		minWidth = std::max(minWidth, Settings::kDrawCallsTableWidth * scale * this->settings.TextSize);
 	}
 	const bool hasVRAMSection = this->settings.ShowVRAM &&
@@ -468,6 +488,13 @@ void PerformanceOverlay::DrawOverlay()
 		needsSeparator = true;
 	}
 
+	if (this->settings.ShowRenderTargets) {
+		if (needsSeparator)
+			ImGui::Separator();
+		DrawRenderTargets(false);
+		needsSeparator = true;
+	}
+
 	if (hasVRAMSection) {
 		if (needsSeparator)
 			ImGui::Separator();
@@ -491,6 +518,119 @@ void PerformanceOverlay::DrawOverlay()
 // ============================================================================
 // CORE PERFORMANCE DISPLAY FUNCTIONS
 // ============================================================================
+
+void PerformanceOverlay::SetRenderTargetsEnabled(bool enabled)
+{
+	settings.ShowRenderTargets = enabled;
+	if (!enabled) {
+		overlayRenderTargetsRequested = profilingRenderTargetsRequested = false;
+		if (globals::profiler)
+			globals::profiler->RequestRenderTargetCapture(false);
+	}
+}
+
+void PerformanceOverlay::DrawRenderTargetControl()
+{
+	bool enabled = settings.ShowRenderTargets;
+	if (Util::Widgets::Checkbox("Show Render Targets", &enabled))
+		SetRenderTargetsEnabled(enabled);
+	Util::AddTooltip("Collect approximate GPU target intervals only while this table is visible and Profiling is enabled. The overlay also requires its Enabled switch. Closing both views stops collection and releases its queries.");
+}
+
+void PerformanceOverlay::DrawRenderTargetProfiling()
+{
+	if (ImGui::CollapsingHeader("Render Targets")) {
+		DrawRenderTargetControl();
+		if (settings.ShowRenderTargets)
+			DrawRenderTargets(true);
+	}
+}
+
+void PerformanceOverlay::DrawRenderTargets(bool profilingView)
+{
+	if (!loaded || !globals::profiler || !globals::profiler->IsInitialized()) {
+		ImGui::TextDisabled("Render target profiler is unavailable.");
+		return;
+	}
+	if (!globals::profiler->IsUserEnabled()) {
+		ImGui::TextDisabled("Render target profiling is off. Enable Profiling to collect.");
+		return;
+	}
+	(profilingView ? profilingRenderTargetsRequested : overlayRenderTargetsRequested) = true;
+	const auto& stats = globals::profiler->GetRenderTargetStats();
+	ImGui::TextUnformatted("Render targets: approximate D3D11 GPU intervals");
+	Util::AddTooltip(RenderTargetStats::kCoverage);
+	ImGui::TextDisabled("Includes intervening work and waits. NR queues excluded.");
+	if (stats.HasResourceFailure())
+		ImGui::TextDisabled("Target collection failed. Toggle Show Render Targets off to retry.");
+	if (stats.IsSpanLimitHit() || stats.IsBindingLimitHit())
+		ImGui::TextDisabled("Collection limit reached; this view is incomplete.");
+	if (!stats.HasGpuSample())
+		ImGui::TextDisabled("Waiting for a valid GPU timing sample.");
+	else
+		ImGui::Text("Timed intervals: %.2f ms", stats.GetTimedMs());
+	const auto rows = stats.GetRows();
+	if (rows.empty())
+		return;
+	const auto flags = ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX | ImGuiTableFlags_ScrollY;
+	const float height = ImGui::GetTextLineHeightWithSpacing() * static_cast<float>(std::min<size_t>(rows.size() + 2, 12));
+	if (ImGui::BeginTable("##RenderTargets", 3, flags, ImVec2(0.0f, height))) {
+		const SKSE::stl::scope_exit endTable([] { ImGui::EndTable(); });
+		ImGui::TableSetupScrollFreeze(0, 1);
+		ImGui::TableSetupColumn("Target binding");
+		ImGui::TableSetupColumn("Draw calls");
+		ImGui::TableSetupColumn("GPU interval (ms)");
+		ImGui::TableHeadersRow();
+		for (const auto& row : rows) {
+			ImGui::TableNextRow();
+			ImGui::TableNextColumn();
+			ImGui::TextUnformatted(RenderTargetBindingName(row.depthStencil, row.renderTarget).c_str());
+			ImGui::TableNextColumn();
+			ImGui::Text("%.0f", row.drawCalls);
+			ImGui::TableNextColumn();
+			if (stats.HasGpuSample())
+				ImGui::Text("%.2f", row.gpuMs);
+			else
+				ImGui::TextUnformatted("--");
+		}
+	}
+}
+
+void PerformanceOverlay::UpdateRenderTargetCapture()
+{
+	const auto* menu = globals::menu;
+	const bool visible = menu && ((overlayRenderTargetsRequested && settings.ShowInOverlay && menu->overlayVisible) ||
+									 (profilingRenderTargetsRequested && menu->IsEnabled));
+	if (globals::profiler)
+		globals::profiler->RequestRenderTargetCapture(loaded && settings.ShowRenderTargets && visible);
+	overlayRenderTargetsRequested = profilingRenderTargetsRequested = false;
+}
+
+#ifdef DEVBENCH_BRIDGE_ENABLED
+json PerformanceOverlay::GetRenderTargetDiagnostics() const
+{
+	json result = { { "enabled", settings.ShowRenderTargets }, { "overlayEnabled", settings.ShowInOverlay },
+		{ "profilingEnabled", globals::profiler && globals::profiler->IsUserEnabled() },
+		{ "active", globals::profiler && globals::profiler->IsRenderTargetCaptureActive() },
+		{ "coverage", RenderTargetStats::kCoverage }, { "includedInPassTotals", false } };
+	if (!globals::profiler)
+		return result;
+	const auto& stats = globals::profiler->GetRenderTargetStats();
+	result["allocatedQueries"] = globals::profiler->GetRenderTargetQueryCount();
+	result["resolvedFrames"] = stats.GetResolvedFrames();
+	result["invalidFrames"] = stats.GetInvalidFrames();
+	result["gpuSampleValid"] = stats.HasGpuSample();
+	result["timedGpuMs"] = stats.HasGpuSample() ? json(stats.GetTimedMs()) : json(nullptr);
+	result["spanLimitHit"] = stats.IsSpanLimitHit();
+	result["bindingLimitHit"] = stats.IsBindingLimitHit();
+	result["resourceFailure"] = stats.HasResourceFailure();
+	result["rows"] = json::array();
+	for (const auto& row : stats.GetRows())
+		result["rows"].push_back({ { "name", RenderTargetBindingName(row.depthStencil, row.renderTarget) }, { "depthStencil", row.depthStencil }, { "renderTarget", row.renderTarget },
+			{ "drawCalls", row.drawCalls }, { "gpuMs", stats.HasGpuSample() ? json(row.gpuMs) : json(nullptr) } });
+	return result;
+}
+#endif
 
 void PerformanceOverlay::DrawFPS()
 {

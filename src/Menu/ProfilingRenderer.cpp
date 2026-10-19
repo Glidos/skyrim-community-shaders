@@ -15,6 +15,7 @@
 #include <string_view>
 #include <unordered_map>
 
+#include "Features/PerformanceOverlay.h"
 #include "Features/Upscaling.h"
 #include "Globals.h"
 #include "RE/M/Misc.h"
@@ -1113,6 +1114,9 @@ void ProfilingRenderer::RenderStatistics(bool showTable, bool showModeToggle, bo
 	}
 
 	profiler.RequestCapture();
+
+	if (fullProfilerPage)
+		globals::features::performanceOverlay.DrawRenderTargetProfiling();
 
 	bool cpuMode = (timingMode == TimingMode::CPU);
 	if (showModeToggle) {
