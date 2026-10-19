@@ -21283,6 +21283,15 @@ void Upscaling::DataLoaded()
 	static auto fDRClampOffset = RE::GetINISetting("fDRClampOffset:Display");
 	fDRClampOffset->data.f = 0.0f;
 
+	if (auto* imageSpaceManager = RE::ImageSpaceManager::GetSingleton()) {
+		const auto visibilityIndex = RE::ImageSpaceManager::GetCurrentIndex(RE::ImageSpaceManager::ISLensFlareVisibility);
+		const auto& effects = imageSpaceManager->effects;
+		if (visibilityIndex < effects.size() && effects[visibilityIndex]) {
+			// The one-pixel-high visibility target must keep its full viewport under upscaling.
+			effects[visibilityIndex]->unk88 = false;
+		}
+	}
+
 	// VR + DLSS workaround: loading transitions need a temporal reset, but full
 	// DLSS resource rebuilds on every door load can flicker and stress the driver.
 	if (globals::game::isVR)
