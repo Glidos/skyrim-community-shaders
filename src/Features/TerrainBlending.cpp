@@ -19,13 +19,15 @@
 #include <cstdint>
 #include <intrin.h>
 #include <sstream>
+#include <stdexcept>
 #include <unordered_set>
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(
 	TerrainBlending::Settings,
 	Enabled,
 	TerrainCullDistance,
-	BlendStrength)
+	BlendStrength,
+	LandscapeSeams)
 
 namespace
 {
@@ -523,6 +525,14 @@ void TerrainBlending::DrawSettings()
 	}
 
 	ImGui::Spacing();
+	bool seams = settings.LandscapeSeams != 0;
+	if (Util::Widgets::Checkbox("Landscape Seam Blending", &seams))
+		settings.LandscapeSeams = seams ? 1u : 0u;
+	if (auto _tt = Util::HoverTooltipWrapper()) {
+		ImGui::TextWrapped("Blends texture borders between terrain quads using up to two neighbouring layers. Requires Terrain Blending and True PBR enabled. Adds GPU and terrain-loading work. Changes apply next frame; off releases seam resources and restores ordinary terrain shading.");
+	}
+
+	ImGui::Spacing();
 	if (ImGui::TreeNodeEx("Performance Options")) {
 		Util::Widgets::SliderFloat("Terrain Depth Culling Distance", &settings.TerrainCullDistance, 0.0f, 8192.0f, "%.0f units");
 		if (auto _tt = Util::HoverTooltipWrapper()) {
@@ -580,7 +590,11 @@ void TerrainBlending::RestorePerformanceCostMeasurementState(const json& a_state
 
 void TerrainBlending::LoadSettings(json& o_json)
 {
-	settings = o_json;
+	if (const auto it = o_json.find("LandscapeSeams"); it != o_json.end() &&
+													   (!it->is_number_integer() || (*it != 0 && *it != 1)))
+		throw std::invalid_argument("TerrainBlending.LandscapeSeams must be 0 or 1");
+	const auto candidate = o_json.get<Settings>();
+	settings = candidate;
 }
 
 void TerrainBlending::SaveSettings(json& o_json)

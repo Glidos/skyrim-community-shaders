@@ -1462,6 +1462,9 @@ namespace SIE
 				}
 			}
 
+			if ((descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::LandscapeSeams)) != 0)
+				defines[lastIndex++] = { "LANDSCAPE_SEAMS", nullptr };
+
 			for (auto* feature : Feature::GetFeatureList()) {
 				if (feature->loaded && feature->HasShaderDefine(RE::BSShader::Type::Lighting)) {
 					defines[lastIndex++] = { feature->GetShaderDefineName().data(), nullptr };

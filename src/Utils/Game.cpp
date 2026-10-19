@@ -30,6 +30,12 @@ namespace
 
 namespace Util
 {
+	RE::TESLandTexture* GetDefaultLandTexture()
+	{
+		static const auto address = REL::Relocation<RE::TESLandTexture**>(RELOCATION_ID(514783, 400936));
+		return *address;
+	}
+
 	RE::BSParticleShaderRainEmitter* GetRainEmitterFromPrecipGeometry(RE::BSGeometry* a_precipObject)
 	{
 		if (!a_precipObject)

@@ -1,4 +1,6 @@
 #include "State.h"
+#include "Features/TerrainBlending.h"
+#include "Features/TerrainSeams.h"
 #include "Features/TextureStreaming.h"
 #ifdef DEVBENCH_BRIDGE_ENABLED
 #	include "Diagnostics/EngineStutterMonitor.h"
@@ -852,6 +854,10 @@ void State::Reset()
 	if (globals::game::isVR)
 		globals::profiler->EndFrame(frameCount);
 	Feature::ForEachLoadedFeature("Reset", [](Feature* feature) { feature->Reset(); });
+	const auto& terrain = globals::features::terrainBlending;
+	const auto& pbr = globals::features::truePBR;
+	TerrainSeams::GetInstance().Update(terrain.loaded && terrain.settings.Enabled && terrain.settings.LandscapeSeams &&
+									   pbr.loaded && pbr.settings.Enabled && globals::shaderCache->IsEnabled());
 	if (!globals::game::ui->GameIsPaused())
 		timer += RE::GetSecondsSinceLastFrame();
 
@@ -2026,7 +2032,8 @@ void State::ModifyShaderLookup(const RE::BSShader& a_shader, uint& a_vertexDescr
 										(uint32_t)SIE::ShaderCache::LightingShaderFlags::AnisoLighting |
 										(uint32_t)SIE::ShaderCache::LightingShaderFlags::BaseObjectIsSnow |
 										(uint32_t)SIE::ShaderCache::LightingShaderFlags::Snow |
-										(uint32_t)SIE::ShaderCache::LightingShaderFlags::TruePbr);
+										(uint32_t)SIE::ShaderCache::LightingShaderFlags::TruePbr |
+										(uint32_t)SIE::ShaderCache::LightingShaderFlags::LandscapeSeams);
 
 				a_pixelDescriptor &= ~((uint32_t)SIE::ShaderCache::LightingShaderFlags::AmbientSpecular |
 									   (uint32_t)SIE::ShaderCache::LightingShaderFlags::ShadowDir |

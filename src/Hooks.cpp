@@ -2,6 +2,7 @@
 #include "Api/AcceptedDrawService.h"
 #include "Deferred.h"
 #include "EngineFixes/VRShadowBatch.h"
+#include "Features/TerrainSeams.h"
 
 #include "Utils/CharacterCategoryAuthoring.h"
 
@@ -754,6 +755,21 @@ bool Hooks::BSShader_BeginTechnique::thunk(RE::BSShader* shader, uint32_t vertex
 	const uint64_t totalStartTicks = phaseDiagActive ? ReadFrameDiagCounterTicks() : 0;
 	uint64_t phaseStartTicks = totalStartTicks;
 
+	constexpr auto seamsFlag = static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::LandscapeSeams);
+	if (shader->shaderType.get() == RE::BSShader::Type::Lighting && (pixelDescriptor & seamsFlag)) {
+		bool available = TerrainSeams::GetInstance().IsEnabled() && !skipPixelShader;
+		if (available) {
+			auto vertex = vertexDescriptor;
+			auto pixel = pixelDescriptor;
+			state->ModifyShaderLookup(*shader, vertex, pixel);
+			available = shaderCache->GetVertexShader(*shader, vertex) && shaderCache->GetPixelShader(*shader, pixel);
+		}
+		if (!available) {
+			vertexDescriptor &= ~seamsFlag;
+			pixelDescriptor &= ~seamsFlag;
+		}
+	}
+
 	state->updateShader = true;
 	state->currentShader = shader;
 	state->deferredPixelShaderMissing = false;
@@ -869,7 +885,10 @@ namespace LightingExtensions
 	{
 		static void thunk(RE::BSShader* shader, RE::BSRenderPass* pass, uint32_t renderFlags)
 		{
+			TerrainSeams::GetInstance().Restore();
 			globals::state->UpdateLightingShaderPermutation(pass);
+			if (pass && (globals::state->modifiedPixelDescriptor & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::LandscapeSeams)))
+				TerrainSeams::GetInstance().Bind(pass->geometry);
 			CharacterCategoryAuthoring::Update(pass);
 			globals::features::terrainVariation.UpdateMeshPermutation(pass);
 
@@ -897,9 +916,13 @@ struct AcceptedDrawRestoreGeometry
 {
 	static void thunk(RE::BSShader* a_shader, RE::BSRenderPass* a_pass, uint32_t a_flags)
 	{
-		CSX::Api::SuspendAcceptedDrawGeometry();
+		if constexpr (ShaderKind == 1)
+			TerrainSeams::GetInstance().Restore();
+		if (globals::game::isVR)
+			CSX::Api::SuspendAcceptedDrawGeometry();
 		func(a_shader, a_pass, a_flags);
-		CSX::Api::EndAcceptedDrawGeometry(a_pass);
+		if (globals::game::isVR)
+			CSX::Api::EndAcceptedDrawGeometry(a_pass);
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -1823,12 +1846,10 @@ namespace Hooks
 
 			// setup material for PBR
 			auto& truePBR = globals::features::truePBR;
-			if (truePBR.loaded && truePBR.TESObjectLAND_SetupMaterial(land)) {
-				// if PBR, we are done
-				return true;
-			}
-
-			return vanillaResult;
+			const bool pbrResult = truePBR.loaded && truePBR.TESObjectLAND_SetupMaterial(land);
+			if (vanillaResult || pbrResult)
+				TerrainSeams::GetInstance().TESObjectLAND_SetupMaterial(land);
+			return vanillaResult || pbrResult;
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -2376,9 +2397,9 @@ namespace Hooks
 		logger::info("Installing SetupGeometry hooks");
 		stl::write_vfunc<0x6, EffectExtensions::BSEffectShader_SetupGeometry>(RE::VTABLE_BSEffectShader[0]);
 		stl::write_vfunc<0x6, LightingExtensions::BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
+		stl::write_vfunc<0x7, AcceptedDrawRestoreGeometry<1>>(RE::VTABLE_BSLightingShader[0]);
 		if (globals::game::isVR) {
 			stl::write_vfunc<0x7, AcceptedDrawRestoreGeometry<0>>(RE::VTABLE_BSEffectShader[0]);
-			stl::write_vfunc<0x7, AcceptedDrawRestoreGeometry<1>>(RE::VTABLE_BSLightingShader[0]);
 			CSX::Api::AcceptedDrawGeometryHooksInstalled();
 		}
 		stl::write_thunk_call<GrassExtensions::BSGrassShaderProperty_ctor>(REL::RelocationID(15214, 15383).address() + REL::Relocate(0x45B, 0x4F5));

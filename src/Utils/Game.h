@@ -10,6 +10,7 @@ namespace RE
 {
 	class BSGeometry;
 	class BSParticleShaderRainEmitter;
+	class TESLandTexture;
 }
 
 namespace Util::detail
@@ -55,6 +56,8 @@ namespace Util::detail
 
 namespace Util
 {
+	/** Return the engine's default landscape texture for the current runtime. */
+	RE::TESLandTexture* GetDefaultLandTexture();
 	/** Defers cloud-pass rebuilding and releases the old sky model after a native ForceWeather call. */
 	void RefreshForcedWeatherSky(RE::Sky* a_sky);
 

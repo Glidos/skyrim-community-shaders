@@ -6,6 +6,7 @@
 
 #include "Features/GrassLighting.h"
 #include "Features/InteriorSun.h"
+#include "Features/TerrainSeams.h"
 #include "Features/Upscaling.h"
 #include "Hooks.h"
 #include "ShaderCache.h"
@@ -13,6 +14,7 @@
 #include "Util.h"
 #include "Utils/FileSystem.h"
 #include "Utils/Finite.h"
+#include "Utils/Game.h"
 #include "Utils/UI.h"
 
 #include <atomic>
@@ -1062,6 +1064,14 @@ struct BSLightingShaderProperty_LoadBinary
 	static inline REL::Relocation<decltype(thunk)> func;
 };
 
+bool TruePBR::IsPBRLandscapeGeometry(RE::BSGeometry* geometry) const
+{
+	if (!loaded || !settings.Enabled || !geometry)
+		return false;
+	auto* property = static_cast<RE::BSShaderProperty*>(geometry->GetGeometryRuntimeData().shaderProperty.get());
+	return TryGetRegisteredPBRLandscapeMaterial(property, geometry) != nullptr;
+}
+
 struct BSLightingShaderProperty_GetRenderPasses
 {
 	static RE::BSShaderProperty::RenderPassArray* thunk(RE::BSLightingShaderProperty* property, RE::BSGeometry* geometry, std::uint32_t renderFlags, RE::BSShaderAccumulator* accumulator)
@@ -1119,6 +1129,11 @@ struct BSLightingShaderProperty_GetRenderPasses
 
 				if (issEnabledAndInteriorWithSun)
 					lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::ShadowDir) | static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::DefShadow);
+
+				if ((lightingType == SIE::ShaderCache::LightingShaderTechniques::MTLand ||
+						lightingType == SIE::ShaderCache::LightingShaderTechniques::MTLandLODBlend) &&
+					TerrainSeams::GetInstance().IsBlended(geometry))
+					lightingFlags |= static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::LandscapeSeams);
 
 				lightingTechnique = (static_cast<uint32_t>(lightingType) << 24) | lightingFlags;
 				currentPass->passEnum = lightingTechnique + LightingTechniqueStart;
@@ -1568,12 +1583,6 @@ void SetupLandscapeTexture(BSLightingShaderMaterialPBRLandscape& material, RE::T
 	}
 }
 
-RE::TESLandTexture* GetDefaultLandTexture()
-{
-	static const auto defaultLandTextureAddress = REL::Relocation<RE::TESLandTexture**>(RELOCATION_ID(514783, 400936));
-	return *defaultLandTextureAddress;
-}
-
 bool TruePBR::TESObjectLAND_SetupMaterial(RE::TESObjectLAND* land)
 {
 	if (!settings.Enabled || land == nullptr) {
@@ -1636,7 +1645,7 @@ bool TruePBR::TESObjectLAND_SetupMaterial(RE::TESObjectLAND* land)
 			if (auto defTexture = land->loadedData->defQuadTextures[quadIndex]) {
 				SetupLandscapeTexture(*material, *defTexture, 0, textureSets);
 			} else {
-				SetupLandscapeTexture(*material, *GetDefaultLandTexture(), 0, textureSets);
+				SetupLandscapeTexture(*material, *Util::GetDefaultLandTexture(), 0, textureSets);
 			}
 			for (uint32_t textureIndex = 0; textureIndex < BSLightingShaderMaterialPBRLandscape::NumTiles - 1; ++textureIndex) {
 				if (auto landTexture = land->loadedData->quadTextures[quadIndex][textureIndex]) {
@@ -1940,7 +1949,7 @@ void TruePBR::DataLoaded()
 
 void TruePBR::SetupDefaultPBRLandTextureSet()
 {
-	auto* defaultLandTexture = GetDefaultLandTexture();
+	auto* defaultLandTexture = Util::GetDefaultLandTexture();
 	if (!defaultLandTexture)
 		return;
 
