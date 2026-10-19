@@ -928,6 +928,18 @@ namespace GrassExtensions
 
 	struct BSGrassShader_SetupGeometry
 	{
+		static void SetupNativeGeometry(RE::BSShader* shader, RE::BSRenderPass* pass, uint32_t renderFlags)
+		{
+			func(shader, pass, renderFlags);
+			const auto& grass = globals::features::grassOptimizations;
+			if (grass.loaded && grass.IsEnabled()) {
+				// Depth and color need the same sampler, including native fallback and batch re-preparation.
+				auto* shadowState = globals::game::shadowState;
+				shadowState->SetPSTextureAddressMode(0, RE::BSGraphics::TextureAddressMode::kClampSClampT);
+				shadowState->SetPSTextureFilterMode(0, RE::BSGraphics::TextureFilterMode::kAnisotropic);
+			}
+		}
+
 		static void thunk(RE::BSShader* shader, RE::BSRenderPass* pass, uint32_t renderFlags)
 		{
 			// Native setup advances property history before CPU shader constants may be readable.
@@ -937,7 +949,7 @@ namespace GrassExtensions
 				auto* property = static_cast<RE::BSGrassShaderProperty*>(windProperty);
 				nativeWindTimer = GrassRuntime::GetPropertyData(property, globals::game::isVR).windTimer;
 			}
-			func(shader, pass, renderFlags);
+			SetupNativeGeometry(shader, pass, renderFlags);
 			if (pass && pass->shaderProperty != windProperty)
 				nativeWindTimer.reset();
 
@@ -957,7 +969,7 @@ namespace GrassExtensions
 					state->permutationData.ExtraShaderDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::GrassSphereNormal);
 				}
 			}
-			globals::features::grassOptimizations.PrepareGeometry(pass, shader, renderFlags, func.get(), nativeWindTimer);
+			globals::features::grassOptimizations.PrepareGeometry(pass, shader, renderFlags, SetupNativeGeometry, nativeWindTimer);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};

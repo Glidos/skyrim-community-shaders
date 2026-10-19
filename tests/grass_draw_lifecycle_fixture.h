@@ -75,6 +75,30 @@ namespace RE
 	};
 	namespace BSGraphics
 	{
+		enum class TextureAddressMode
+		{
+			kClampSClampT
+		};
+		enum class TextureFilterMode
+		{
+			kAnisotropic
+		};
+		struct ShadowState
+		{
+			uint32_t addressUpdates = 0, filterUpdates = 0;
+			void SetPSTextureAddressMode(uint32_t slot, TextureAddressMode mode)
+			{
+				if (slot != 0 || mode != TextureAddressMode::kClampSClampT)
+					throw std::runtime_error("Unexpected grass texture addressing");
+				++addressUpdates;
+			}
+			void SetPSTextureFilterMode(uint32_t slot, TextureFilterMode mode)
+			{
+				if (slot != 0 || mode != TextureFilterMode::kAnisotropic)
+					throw std::runtime_error("Unexpected grass texture filtering");
+				++filterUpdates;
+			}
+		};
 		struct Renderer
 		{};
 		struct TriShape
@@ -251,12 +275,16 @@ namespace globals
 		inline bool isVR = false;
 		inline RE::BSGraphics::VertexShader* shader = nullptr;
 		inline RE::BSGraphics::VertexShader** currentVertexShader = &shader;
+		inline RE::BSGraphics::ShadowState shadowStateStorage;
+		inline RE::BSGraphics::ShadowState* shadowState = &shadowStateStorage;
 	}
 	namespace features
 	{
 		inline GrassBucketRenderer* renderer = nullptr;
 		inline struct GrassFeature
 		{
+			bool loaded = true, enabled = true;
+			bool IsEnabled() const { return enabled; }
 			GrassBucketRenderer& GetRenderer() { return *renderer; }
 			void PrepareGeometry(RE::BSRenderPass*, RE::BSShader*, uint32_t, GrassRuntime::SetupGeometry, std::optional<uint32_t>);
 		} grassOptimizations;
@@ -388,6 +416,9 @@ struct Fixture
 		active = this;
 		replacementProperty->windTimer = std::bit_cast<uint32_t>(3.f);
 		globals::features::renderer = &renderer;
+		globals::features::grassOptimizations.loaded = true;
+		globals::features::grassOptimizations.enabled = true;
+		globals::game::shadowStateStorage = {};
 		GrassBucketRenderer::nativeCalls = 0;
 		vertex.constantBuffers[2].data = constants.data();
 		globals::game::shader = &vertex;
