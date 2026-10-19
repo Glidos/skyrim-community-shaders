@@ -498,6 +498,9 @@ Menu::~Menu()
 	// Clean up blur resources
 	BackgroundBlur::Cleanup();
 
+	if (!initialized)
+		return;
+
 	ImGui_ImplDX11_Shutdown();
 	ImGui_ImplWin32_Shutdown();
 	ImGui::DestroyContext();
@@ -748,26 +751,36 @@ void Menu::UpdateSettingsDirtyState()
 
 void Menu::LoadTheme(json& o_json)
 {
-	if (o_json["Theme"].is_object()) {
-		bool hasFontRoles = o_json["Theme"].contains("FontRoles");
-		SanitizeFontRolesJson(o_json["Theme"]);
-		settings.Theme = o_json["Theme"];
-		PaletteFromJson(o_json["Theme"], settings.Theme.FullPalette);
-		MenuFonts::NormalizeFontRoles(settings.Theme, hasFontRoles);
-		settings.Theme.GlobalScale = MenuUI::Layout::SanitizeGlobalScale(settings.Theme.GlobalScale);
+	const auto theme = o_json.find("Theme");
+	if (theme == o_json.end() || !theme->is_object())
+		return;
 
-		auto& bodyRole = settings.Theme.FontRoles[static_cast<size_t>(FontRole::Body)];
+	try {
+		auto themeJson = *theme;
+		const bool hasFontRoles = themeJson.contains("FontRoles");
+		SanitizeFontRolesJson(themeJson);
+		auto candidate = themeJson.get<ThemeSettings>();
+		PaletteFromJson(themeJson, candidate.FullPalette);
+		MenuFonts::NormalizeFontRoles(candidate, hasFontRoles);
+		candidate.GlobalScale = MenuUI::Layout::SanitizeGlobalScale(candidate.GlobalScale);
+
+		auto& bodyRole = candidate.FontRoles[static_cast<size_t>(FontRole::Body)];
 		if (!Util::ValidateFont(bodyRole.File)) {
 			const auto& defaults = Menu::GetDefaultFontRole(FontRole::Body);
 			logger::warn("Font '{}' not found, falling back to default font '{}'",
 				bodyRole.File, defaults.File);
-			settings.Theme.FontRoles[static_cast<size_t>(FontRole::Body)] = defaults;
-			settings.Theme.FontName = defaults.File;
+			bodyRole = defaults;
+			candidate.FontName = defaults.File;
 		}
 
-		// Apply background blur enabled state from theme
+		// Finish parsing and snapshot allocation before publishing the new theme.
+		json snapshot = candidate;
+		PaletteToJson(snapshot, candidate.FullPalette);
+		settings.Theme = std::move(candidate);
+		savedThemeSnapshot = std::move(snapshot);
 		BackgroundBlur::SetEnabled(settings.Theme.BackgroundBlurEnabled);
-		AcceptCurrentThemeAsSaved();
+	} catch (const std::exception& e) {
+		logger::warn("Error loading theme: {}", e.what());
 	}
 }
 void Menu::SaveTheme(json& o_json)

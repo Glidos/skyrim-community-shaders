@@ -824,7 +824,7 @@ void OverlayRenderer::RenderShaderCompilationStatus(const std::function<const ch
 		}
 
 		if (renderDocAvailable)
-			ImGui::TextColored(themeSettings.StatusPalette.Warning, renderDocInformation.c_str());
+			ImGui::TextColored(themeSettings.StatusPalette.Warning, "%s", renderDocInformation.c_str());
 
 		ImGui::End();
 		return;
@@ -841,7 +841,7 @@ void OverlayRenderer::RenderShaderCompilationStatus(const std::function<const ch
 			DrawShaderCompilationFailures(failed, themeSettings);
 
 			if (renderDocAvailable)
-				ImGui::TextColored(themeSettings.StatusPalette.Warning, renderDocInformation.c_str());
+				ImGui::TextColored(themeSettings.StatusPalette.Warning, "%s", renderDocInformation.c_str());
 
 			ImGui::End();
 		}
@@ -851,7 +851,7 @@ void OverlayRenderer::RenderShaderCompilationStatus(const std::function<const ch
 			ImGui::End();
 			return;
 		}
-		ImGui::TextColored(themeSettings.StatusPalette.Warning, renderDocInformation.c_str());
+		ImGui::TextColored(themeSettings.StatusPalette.Warning, "%s", renderDocInformation.c_str());
 		ImGui::End();
 	}
 }

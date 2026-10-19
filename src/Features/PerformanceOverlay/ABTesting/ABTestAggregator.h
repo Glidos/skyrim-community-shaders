@@ -3,6 +3,7 @@
 #include <array>
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <vector>
 
 // A/B Testing constants
@@ -73,6 +74,7 @@ public:
 	void OnFrame(const std::vector<DrawCallRow>& rows);
 	/** Finalize the measured interval, or discard an unfinished warm-up. */
 	void OnTestEnd(Clock::time_point now = Clock::now());
+	/** Cached summaries of completed measured intervals; callers own the returned copy. */
 	std::vector<AggregatedDrawCallStats> GetAggregatedResults() const;
 	bool HasResults() const { return !intervals.empty(); }
 	/** True while the initial unmeasured Variant B interval is active. */
@@ -94,6 +96,7 @@ private:
 	void FinishInterval(Clock::time_point now);
 	std::vector<ABInterval> intervals;
 	std::unique_ptr<ABInterval> currentInterval;
+	mutable std::optional<std::vector<AggregatedDrawCallStats>> cachedResults;
 
 	// Test timing
 	std::chrono::steady_clock::time_point testStartTime;

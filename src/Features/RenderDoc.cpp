@@ -5,6 +5,7 @@
 #include "Globals.h"
 #include "Utils/FileSystem.h"
 #include "Utils/Format.h"
+#include "Utils/StringUtils.h"
 // Include additional core headers required by the feature implementation
 #include "Menu.h"
 #include "Plugin.h"
@@ -119,7 +120,7 @@ void RenderDoc::Load()
 														   sessionStart.wYear, sessionStart.wMonth, sessionStart.wDay,
 														   sessionStart.wHour, sessionStart.wMinute, sessionStart.wSecond,
 														   sessionStart.wMilliseconds, GetCurrentProcessId());
-		renderDocApi->SetCaptureFilePathTemplate(fileBase.string().c_str());
+		renderDocApi->SetCaptureFilePathTemplate(Util::PathToUtf8(fileBase).c_str());
 	} catch (const std::exception& e) {
 		logger::warn("[RenderDoc] Failed to prepare capture directory/template: {}", e.what());
 	}

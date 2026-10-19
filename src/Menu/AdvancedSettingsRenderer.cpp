@@ -4,6 +4,7 @@
 #include "Utils/WinApi.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <format>
 #include <imgui.h>
 #include <imgui_stdlib.h>
@@ -144,12 +145,12 @@ void AdvancedSettingsRenderer::RenderShaderThreading()
 	shaderCache->compilationThreadCount = std::clamp(shaderCache->compilationThreadCount, 1, maxThreads);
 	shaderCache->backgroundCompilationThreadCount = std::clamp(shaderCache->backgroundCompilationThreadCount, 1, maxThreads);
 
-	Util::Widgets::SliderInt("Compiler Threads", &shaderCache->compilationThreadCount, 1, maxThreads);
+	Util::Widgets::SliderInt("Compiler Threads", &shaderCache->compilationThreadCount, 1, maxThreads, "%d", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text(
 			"Startup compile threads. Default: 75%% of logical CPUs, including E-cores, at cooperative OS priority to leave system headroom. Higher compiles faster but may reduce responsiveness.");
 	}
-	Util::Widgets::SliderInt("Background Compiler Threads", &shaderCache->backgroundCompilationThreadCount, 1, maxThreads);
+	Util::Widgets::SliderInt("Background Compiler Threads", &shaderCache->backgroundCompilationThreadCount, 1, maxThreads, "%d", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text(
 			"Gameplay compile threads. Default: half the performance cores to protect render-thread time; workers resume normal game priority after startup. Higher compiles faster but may stutter.");
@@ -616,9 +617,16 @@ void AdvancedSettingsRenderer::RenderShaderBlockingPanel()
 		ImVec4 blockedBgColor = Util::Colors::GetError();
 		blockedBgColor.w = 0.15f;  // Semi-transparent background
 		ImGui::PushStyleColor(ImGuiCol_ChildBg, blockedBgColor);
+		const auto restoreStyle = SKSE::stl::scope_exit([] {
+			ImGui::PopStyleColor();
+			ImGui::PopStyleVar(2);
+		});
 
-		float maxHeight = ImGui::GetContentRegionAvail().y * 0.3f;  // Limit to 30% to keep Active Shaders visible
-		if (ImGui::BeginChild("##BlockedShaderInfo", ImVec2(0, maxHeight), true, ImGuiChildFlags_AutoResizeY)) {
+		const float maxHeight = std::max(1.0f, ImGui::GetContentRegionAvail().y * 0.3f);
+		ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, maxHeight));
+		const bool childVisible = ImGui::BeginChild("##BlockedShaderInfo", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
+		const auto endChild = SKSE::stl::scope_exit([] { ImGui::EndChild(); });
+		if (childVisible) {
 			Util::Text::Error("Shader Blocking Active");
 			ImGui::SameLine();
 			if (ImGui::Button("Stop Blocking##Section")) {
@@ -663,11 +671,6 @@ void AdvancedSettingsRenderer::RenderShaderBlockingPanel()
 				}
 			}
 		}
-		ImGui::EndChild();
-
-		ImGui::PopStyleVar();    // ChildRounding
-		ImGui::PopStyleVar();    // WindowBorderSize
-		ImGui::PopStyleColor();  // ChildBg
 	}
 
 	// Blocking hotkeys + enable toggle

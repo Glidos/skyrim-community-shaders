@@ -245,7 +245,7 @@ void PerformanceOverlay::DrawSettings()
 			Util::Widgets::Checkbox("Show Border", &this->settings.ShowBorder);
 			Util::Widgets::SliderFloat("Update Interval", &this->settings.UpdateInterval, 0.001f, PerformanceOverlay::Settings::kMaxUpdateInterval, "%.2f seconds");
 			Util::Widgets::SliderInt("Frame History Size", &this->settings.FrameHistorySize,
-				this->settings.kMinFrameHistorySize, this->settings.kMaxFrameHistorySize);
+				this->settings.kMinFrameHistorySize, this->settings.kMaxFrameHistorySize, "%d", ImGuiSliderFlags_AlwaysClamp);
 
 			ImGui::Separator();
 			ImGui::Text("Position:");
