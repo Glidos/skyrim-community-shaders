@@ -149,13 +149,15 @@ public:
 
 	winrt::com_ptr<ID3D11ShaderResourceView> envFilteredTextureArraySRV;
 
-	Texture2D* envTextureBC6H = nullptr;
-	Texture2D* envReflectionsTextureBC6H = nullptr;
-	Texture2D* bc6hScratchTexture = nullptr;
+	std::unique_ptr<Texture2D> envTextureBC6H;
+	std::unique_ptr<Texture2D> envReflectionsTextureBC6H;
+	std::unique_ptr<Texture2D> bc6hScratchTexture;
+	std::unique_ptr<Texture2D> bc6hTailScratchTexture;
 
 	uint32_t bc6hMipLevels = 0;
+	uint32_t bc6hScratchMipLevels = 0;
 
-	ID3D11UnorderedAccessView* bc6hScratchUAVs[9] = {};
+	std::array<winrt::com_ptr<ID3D11UnorderedAccessView>, 9> bc6hScratchUAVs;
 
 	// Editor window
 
@@ -292,6 +294,7 @@ private:
 	std::atomic_bool captureRefreshRequested{ false };
 #endif
 	bool SetupCapturePublicationResources(const D3D11_TEXTURE2D_DESC& a_desc, const D3D11_SHADER_RESOURCE_VIEW_DESC& a_srvDesc);
+	bool SetupCompressionResources(const D3D11_TEXTURE2D_DESC& a_desc);
 	static uint32_t SanitizeCubemapResolution(uint32_t a_resolution);
 	void RefreshActiveCubemapResolution();
 

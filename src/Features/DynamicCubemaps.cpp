@@ -702,7 +702,8 @@ bool DynamicCubemaps::CompressToBC6H(bool a_reflections)
 			cbData.MipLevel = level;
 			bc6hEncodeCB->Update(cbData);
 
-			context->CSSetUnorderedAccessViews(0, 1, &bc6hScratchUAVs[level], nullptr);
+			auto* uav = bc6hScratchUAVs[level].get();
+			context->CSSetUnorderedAccessViews(0, 1, &uav, nullptr);
 
 			std::uint32_t dispatchX = std::max(1u, (blocksX + 7) / 8);
 			std::uint32_t dispatchY = std::max(1u, (blocksY + 7) / 8);
@@ -720,13 +721,21 @@ bool DynamicCubemaps::CompressToBC6H(bool a_reflections)
 		context->CSSetShader(nullptr, nullptr, 0);
 	}
 
-	// BC formats are bitwise-compatible with matching block-equivalent uncompressed
-	// formats for CopyResource: an R32G32B32A32_UINT (W/4 × H/4) resource maps 1:1
-	// to a BC6H_UF16 (W × H) resource because each block is 16 bytes either way.
-	auto dst = a_reflections ? envReflectionsTextureBC6H : envTextureBC6H;
+	// Each UINT4 texel contains one BC6H block, including the padded 2x2 and 1x1 mips.
+	auto* dst = (a_reflections ? envReflectionsTextureBC6H : envTextureBC6H).get();
 	{
 		CS_GPU_PASS_SELECT(a_reflections, "DynamicCubemaps::PublishReflections", "DynamicCubemaps::Publish");
-		context->CopyResource(dst->resource.get(), bc6hScratchTexture->resource.get());
+		for (uint32_t level = 0; level < bc6hMipLevels; ++level) {
+			const bool tail = level >= bc6hScratchMipLevels;
+			auto* src = (tail ? bc6hTailScratchTexture : bc6hScratchTexture).get();
+			for (uint32_t face = 0; face < dst->desc.ArraySize; ++face) {
+				const auto srcSubresource = tail ?
+				                                D3D11CalcSubresource(0, (level - bc6hScratchMipLevels) * dst->desc.ArraySize + face, 1) :
+				                                D3D11CalcSubresource(level, face, bc6hScratchMipLevels);
+				context->CopySubresourceRegion(dst->resource.get(), D3D11CalcSubresource(level, face, bc6hMipLevels),
+					0, 0, 0, src->resource.get(), srcSubresource, nullptr);
+			}
+		}
 		context->CopyResource((a_reflections ? envReflectionsTexture : envTexture)->resource.get(), envFilteredTexture->resource.get());
 	}
 	cubemapValid[a_reflections ? 1 : 0] = true;
@@ -972,6 +981,80 @@ bool DynamicCubemaps::SetupCapturePublicationResources(const D3D11_TEXTURE2D_DES
 	return false;
 }
 
+bool DynamicCubemaps::SetupCompressionResources(const D3D11_TEXTURE2D_DESC& a_desc)
+{
+	if ((a_desc.Width != kPerformanceCubemapResolution && a_desc.Width != kQualityCubemapResolution) ||
+		a_desc.Height != a_desc.Width || a_desc.ArraySize != 6 || a_desc.SampleDesc.Count != 1 ||
+		a_desc.MipLevels != std::bit_width(a_desc.Width) || a_desc.MipLevels > bc6hScratchUAVs.size()) {
+		logger::error("Dynamic cubemap compression dimensions or mip count are unsupported; capture disabled");
+		return false;
+	}
+
+	auto* device = globals::d3d::device;
+	const uint32_t scratchMipLevels = std::bit_width(a_desc.Width / 4);
+	D3D11_TEXTURE2D_DESC scratchDesc{};
+	scratchDesc.Width = a_desc.Width / 4;
+	scratchDesc.Height = a_desc.Height / 4;
+	scratchDesc.MipLevels = scratchMipLevels;
+	scratchDesc.ArraySize = a_desc.ArraySize;
+	scratchDesc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
+	scratchDesc.SampleDesc.Count = 1;
+	scratchDesc.Usage = D3D11_USAGE_DEFAULT;
+	scratchDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+	auto scratch = std::make_unique<Texture2D>(scratchDesc, "DynamicCubemaps::BC6HScratch");
+
+	// Every mip below 4x4 still needs one block per face; it cannot shrink with the scratch chain.
+	auto tailDesc = scratchDesc;
+	tailDesc.Width = 1;
+	tailDesc.Height = 1;
+	tailDesc.MipLevels = 1;
+	tailDesc.ArraySize = a_desc.ArraySize * (a_desc.MipLevels - scratchMipLevels);
+	auto tailScratch = std::make_unique<Texture2D>(tailDesc, "DynamicCubemaps::BC6HTailScratch");
+
+	decltype(bc6hScratchUAVs) views;
+	D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
+	uavDesc.Format = scratchDesc.Format;
+	uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2DARRAY;
+	uavDesc.Texture2DArray.ArraySize = a_desc.ArraySize;
+	for (uint32_t level = 0; level < a_desc.MipLevels; ++level) {
+		const bool tail = level >= scratchMipLevels;
+		uavDesc.Texture2DArray.MipSlice = tail ? 0 : level;
+		uavDesc.Texture2DArray.FirstArraySlice = tail ? a_desc.ArraySize * (level - scratchMipLevels) : 0;
+		auto* texture = (tail ? tailScratch : scratch).get();
+		DX::ThrowIfFailed(device->CreateUnorderedAccessView(texture->resource.get(), &uavDesc, views[level].put()));
+		Util::SetResourceName(views[level].get(), "DynamicCubemaps::%s UAV mip%u", tail ? "BC6HTailScratch" : "BC6HScratch", level);
+	}
+
+	D3D11_TEXTURE2D_DESC compressedDesc{};
+	compressedDesc.Width = a_desc.Width;
+	compressedDesc.Height = a_desc.Height;
+	compressedDesc.MipLevels = a_desc.MipLevels;
+	compressedDesc.ArraySize = a_desc.ArraySize;
+	compressedDesc.Format = DXGI_FORMAT_BC6H_UF16;
+	compressedDesc.SampleDesc.Count = 1;
+	compressedDesc.Usage = D3D11_USAGE_DEFAULT;
+	compressedDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+	compressedDesc.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE;
+
+	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+	srvDesc.Format = compressedDesc.Format;
+	srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
+	srvDesc.TextureCube.MipLevels = a_desc.MipLevels;
+	auto environment = std::make_unique<Texture2D>(compressedDesc, "DynamicCubemaps::EnvTextureBC6H");
+	environment->CreateSRV(srvDesc);
+	auto reflections = std::make_unique<Texture2D>(compressedDesc, "DynamicCubemaps::EnvReflectionsBC6H");
+	reflections->CreateSRV(srvDesc);
+
+	bc6hScratchTexture = std::move(scratch);
+	bc6hTailScratchTexture = std::move(tailScratch);
+	bc6hScratchUAVs = std::move(views);
+	envTextureBC6H = std::move(environment);
+	envReflectionsTextureBC6H = std::move(reflections);
+	bc6hScratchMipLevels = scratchMipLevels;
+	bc6hMipLevels = a_desc.MipLevels;
+	return true;
+}
+
 void DynamicCubemaps::SetupResources()
 {
 	captureResourcesReady = false;
@@ -1110,67 +1193,8 @@ void DynamicCubemaps::SetupResourcesImpl()
 		envInferredTexture->CreateSRV(srvDesc);
 		envInferredTexture->CreateUAV(uavDesc);
 
-		// BC6H scratch: R32G32B32A32_UINT at quarter-resolution, 6-face array.
-		// Encoded directly into here via UAV, then CopyResource'd to the BC6H texture.
-		// Mip count must match the BC6H target so block-equivalent dimensions align.
-		{
-			std::uint32_t scratchBase = std::max(1u, texDesc.Width / 4);
-			bc6hMipLevels = 0;
-			for (std::uint32_t d = scratchBase; d > 0; d >>= 1)
-				++bc6hMipLevels;
-			// Clamp: must not exceed envTexture's mip count (source reads) or the UAV array size.
-			bc6hMipLevels = std::min<std::uint32_t>(bc6hMipLevels, mipLevels);
-			bc6hMipLevels = std::min<std::uint32_t>(bc6hMipLevels, static_cast<std::uint32_t>(std::size(bc6hScratchUAVs)));
-
-			D3D11_TEXTURE2D_DESC scratchDesc = {};
-			scratchDesc.Width = scratchBase;
-			scratchDesc.Height = std::max(1u, texDesc.Height / 4);
-			scratchDesc.MipLevels = bc6hMipLevels;
-			scratchDesc.ArraySize = 6;
-			scratchDesc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
-			scratchDesc.SampleDesc.Count = 1;
-			scratchDesc.Usage = D3D11_USAGE_DEFAULT;
-			scratchDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
-			scratchDesc.MiscFlags = 0;
-			bc6hScratchTexture = new Texture2D(scratchDesc, "DynamicCubemaps::BC6HScratch");
-
-			D3D11_UNORDERED_ACCESS_VIEW_DESC scratchUAVDesc = {};
-			scratchUAVDesc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
-			scratchUAVDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2DARRAY;
-			scratchUAVDesc.Texture2DArray.FirstArraySlice = 0;
-			scratchUAVDesc.Texture2DArray.ArraySize = 6;
-			for (std::uint32_t level = 0; level < bc6hMipLevels; ++level) {
-				scratchUAVDesc.Texture2DArray.MipSlice = level;
-				DX::ThrowIfFailed(device->CreateUnorderedAccessView(bc6hScratchTexture->resource.get(), &scratchUAVDesc, &bc6hScratchUAVs[level]));
-				Util::SetResourceName(bc6hScratchUAVs[level], "DynamicCubemaps::BC6HScratch UAV mip%u", level);
-			}
-		}
-
-		// BC6H compressed cubemap textures (shader-read-only).
-		{
-			D3D11_TEXTURE2D_DESC bc6hDesc = {};
-			bc6hDesc.Width = texDesc.Width;
-			bc6hDesc.Height = texDesc.Height;
-			bc6hDesc.MipLevels = bc6hMipLevels;
-			bc6hDesc.ArraySize = 6;
-			bc6hDesc.Format = DXGI_FORMAT_BC6H_UF16;
-			bc6hDesc.SampleDesc.Count = 1;
-			bc6hDesc.Usage = D3D11_USAGE_DEFAULT;
-			bc6hDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-			bc6hDesc.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE;
-
-			D3D11_SHADER_RESOURCE_VIEW_DESC bc6hSRVDesc = {};
-			bc6hSRVDesc.Format = DXGI_FORMAT_BC6H_UF16;
-			bc6hSRVDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
-			bc6hSRVDesc.TextureCube.MostDetailedMip = 0;
-			bc6hSRVDesc.TextureCube.MipLevels = bc6hMipLevels;
-
-			envTextureBC6H = new Texture2D(bc6hDesc, "DynamicCubemaps::EnvTextureBC6H");
-			envTextureBC6H->CreateSRV(bc6hSRVDesc);
-
-			envReflectionsTextureBC6H = new Texture2D(bc6hDesc, "DynamicCubemaps::EnvReflectionsBC6H");
-			envReflectionsTextureBC6H->CreateSRV(bc6hSRVDesc);
-		}
+		if (!SetupCompressionResources(texDesc))
+			return;
 
 		updateCubemapCB = std::make_unique<ConstantBuffer>(ConstantBufferDesc<UpdateCubemapCB>(), "DynamicCubemaps::UpdateCubemapCB");
 	}
