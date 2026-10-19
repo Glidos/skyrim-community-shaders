@@ -11,6 +11,7 @@
 #include <DDSTextureLoader.h>
 #include <DirectXTex.h>
 #include <algorithm>
+#include <cstring>
 #include <d3dcompiler.h>
 #include <limits>
 #include <mutex>
@@ -232,17 +233,19 @@ namespace Util
 
 	void SetResourceName(ID3D11DeviceChild* Resource, const char* Format, ...)
 	{
-		if (!Resource)
+		if (!Resource || !Format)
 			return;
 
-		char buffer[1024];
+		char buffer[1024]{};
 		va_list va;
 
 		va_start(va, Format);
 		int len = _vsnprintf_s(buffer, _TRUNCATE, Format, va);
 		va_end(va);
 
-		Resource->SetPrivateData(WKPDID_D3DDebugObjectNameT, len, buffer);
+		if (len < 0)
+			len = static_cast<int>(strnlen(buffer, sizeof(buffer)));
+		Resource->SetPrivateData(WKPDID_D3DDebugObjectNameT, static_cast<UINT>(len), buffer);
 	}
 
 	ID3D11DeviceChild* CompileShader(
