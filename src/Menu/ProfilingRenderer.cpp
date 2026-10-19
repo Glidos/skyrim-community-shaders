@@ -1,4 +1,7 @@
 #include "ProfilingRenderer.h"
+#ifdef DEVBENCH_BRIDGE_ENABLED
+#	include "Diagnostics/NvPerf.h"
+#endif
 #include "PerformanceTuningRenderer.h"
 #include "SettingsPage.h"
 
@@ -1081,6 +1084,10 @@ bool ProfilingRenderer::RenderEnabledControl()
 
 void ProfilingRenderer::RenderStatistics(bool showTable, bool showModeToggle, bool showEnabledToggle)
 {
+#ifdef DEVBENCH_BRIDGE_ENABLED
+	if (showTable)
+		NvPerf::DrawSettings();
+#endif
 	if (!globals::profiler || !globals::profiler->IsInitialized()) {
 		ImGui::TextDisabled("Profiler is unavailable.");
 		return;

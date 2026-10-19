@@ -1,4 +1,7 @@
 #include "Hooks.h"
+#if defined(DEVBENCH_BRIDGE_ENABLED) && defined(NVPERF_ENABLED)
+#	include "Diagnostics/NvPerf.h"
+#endif
 #include "Api/AcceptedDrawService.h"
 #include "Deferred.h"
 #include "EngineFixes/VRShadowBatch.h"
@@ -1101,6 +1104,9 @@ struct IDXGISwapChain_Present
 			return func(This, SyncInterval, Flags);
 
 #ifdef DEVBENCH_BRIDGE_ENABLED
+#	if defined(NVPERF_ENABLED)
+		NvPerf::OnPresentBegin();
+#	endif
 		CSX::Diagnostics::Stutters::Scope stutterPresent("DXGI::PresentHook", CSX::Diagnostics::Stutters::Boundary::Present);
 #endif
 		auto state = globals::state;
@@ -1150,6 +1156,9 @@ struct IDXGISwapChain_Present
 			state->startupMenuBlurSourceReady = true;
 
 		TracyD3D11Collect(state->tracyCtx);
+#if defined(DEVBENCH_BRIDGE_ENABLED) && defined(NVPERF_ENABLED)
+		NvPerf::OnPresentEnd();
+#endif
 		if (frameDiagActive)
 			LogFrameIntervalSpikeIfNeeded(presentBeginTicks, previousTicks, beforePresentTicks, afterPresentTicks, retval);
 

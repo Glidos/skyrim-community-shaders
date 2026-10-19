@@ -1,4 +1,7 @@
 #include "State.h"
+#if defined(DEVBENCH_BRIDGE_ENABLED) && defined(NVPERF_ENABLED)
+#	include "Diagnostics/NvPerf.h"
+#endif
 #include "Features/TerrainBlending.h"
 #include "Features/TerrainSeams.h"
 #include "Features/TextureStreaming.h"
@@ -2143,6 +2146,9 @@ void State::RefreshDrawAnnotations()
 
 void State::BeginDrawEvent(std::string_view title)
 {
+#if defined(DEVBENCH_BRIDGE_ENABLED) && defined(NVPERF_ENABLED)
+	NvPerf::PushRange(title);
+#endif
 	// Keep high-frequency draw annotations available to RenderDoc/PIX without
 	// creating a dynamic Tracy source location for every geometry draw.
 	if (pPerf.Get()) {
@@ -2153,12 +2159,18 @@ void State::BeginDrawEvent(std::string_view title)
 
 void State::EndDrawEvent()
 {
+#if defined(DEVBENCH_BRIDGE_ENABLED) && defined(NVPERF_ENABLED)
+	NvPerf::PopRange();
+#endif
 	if (pPerf.Get())
 		pPerf->EndEvent();
 }
 
 void State::BeginPerfEvent(std::string_view title)
 {
+#if defined(DEVBENCH_BRIDGE_ENABLED) && defined(NVPERF_ENABLED)
+	NvPerf::PushRange(title);
+#endif
 #ifdef TRACY_ENABLE
 	// Use dynamic source location so Tracy displays the title as the zone name
 	// rather than the static function name "BeginPerfEvent".
@@ -2179,6 +2191,9 @@ void State::BeginPerfEvent(std::string_view title)
 
 void State::EndPerfEvent()
 {
+#if defined(DEVBENCH_BRIDGE_ENABLED) && defined(NVPERF_ENABLED)
+	NvPerf::PopRange();
+#endif
 #ifdef TRACY_ENABLE
 	if (!s_tracyPerfZones.empty()) {
 		TracyCZoneEnd(s_tracyPerfZones.back());
