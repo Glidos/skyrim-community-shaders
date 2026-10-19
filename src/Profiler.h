@@ -2,6 +2,7 @@
 
 #include "Utils/FlatFrameTiming.h"
 #include "Utils/PassTimingCapture.h"
+#include "Utils/ProfilerTiming.h"
 
 #include <atomic>
 #include <cstdint>
@@ -59,8 +60,8 @@ public:
 			lastMs = ms;
 		}
 
-		float GetAverage() const;
-		float GetPercentile(float p) const;
+		/** @brief Calculates statistics from this owned history snapshot. */
+		Util::ProfilerTiming::Statistics GetStatistics() const;
 	};
 
 	struct TimerResult
@@ -162,7 +163,8 @@ public:
 	bool StartBoundedCapture(uint32_t a_frameCount, bool a_clearHistory, uint64_t& a_sessionId, bool a_alignInactiveFrames = false);
 	bool CancelBoundedCapture(uint64_t a_sessionId);
 	CaptureSessionProgress GetBoundedCaptureProgress() const;
-	const std::vector<TimerResult>* GetBoundedCaptureResults(uint64_t a_sessionId) const;
+	/** @brief Owner-thread view; false skips statistics for count/history-only readers. */
+	const std::vector<TimerResult>* GetBoundedCaptureResults(uint64_t a_sessionId, bool includeStatistics = true) const;
 	bool IsEnabled() const { return IsUserEnabled() && captureActive.load(std::memory_order_acquire); }
 	bool IsInitialized() const { return initialized; }
 	/** @brief Thread-safe token for active GPU capture; zero disables external queries. */
@@ -194,7 +196,10 @@ public:
 	/** @brief Null on VR; flat history retains source IDs while GPU queries are pending. */
 	const Util::FlatFrameTiming::History* GetFlatTiming() const { return flatTiming ? &flatTiming->history : nullptr; }
 
-	const std::vector<TimerResult>& GetResults() const { return results; }
+	/** @brief Owner-thread view; false leaves statistics unspecified and avoids calculating them. */
+	const std::vector<TimerResult>& GetResults(bool includeStatistics = true) const;
+	/** @brief Changes when live histories are reset or removed, invalidating display caches. */
+	uint64_t GetHistoryEpoch() const { return historyEpoch; }
 	/** @brief Returns the namespace used to group and aggregate a timer name. */
 	static std::string_view GetTimerRootName(std::string_view name);
 	float GetTotalTimeMs() const { return totalTimeMs; }
@@ -205,8 +210,8 @@ public:
 	uint32_t GetAcquiredSlots() const { return acquiredSlots; }
 	uint32_t GetPeakAcquiredSlots() const { return peakAcquiredSlots; }
 	uint32_t GetSlotRefusals() const { return slotRefusals; }
-	/** @brief CPU results published at their own frame boundary, independently of GPU queries. */
-	const std::vector<TimerResult>& GetImmediateCpuResults() const { return immediateCpuResults; }
+	/** @brief Owner-thread CPU view, independent of GPU queries; false skips statistics. */
+	const std::vector<TimerResult>& GetImmediateCpuResults(bool includeStatistics = true) const;
 	/** @brief Engine frame stamped on the retained independent CPU publication. */
 	uint32_t GetCapturedCpuFrameCount() const { return capturedCpuFrameCount; }
 	/** @brief CPU publications since initialization or history reset; zero means no data. */
@@ -350,7 +355,9 @@ private:
 	PerfEventCallback beginPerfEvent;
 	PerfEventCallback endPerfEvent;
 
-	std::vector<TimerResult> results;
+	mutable std::vector<TimerResult> results;
+	mutable bool resultsStatisticsDirty = true;
+	uint64_t historyEpoch = 0;
 
 	struct CpuTimer
 	{
@@ -404,7 +411,8 @@ private:
 	bool boundedCaptureAlignInactiveFrames = false;
 	std::vector<CaptureKnownTimer> boundedCaptureTimers;
 	std::unordered_map<std::string, size_t> boundedCaptureTimerIndex;
-	std::vector<TimerResult> boundedCaptureResults;
+	mutable std::vector<TimerResult> boundedCaptureResults;
+	mutable bool boundedStatisticsDirty = true;
 
 	struct ImmediateCpuTimer
 	{
@@ -416,7 +424,8 @@ private:
 	};
 	std::vector<ImmediateCpuTimer> immediateCpuTimers;
 	std::unordered_map<std::string, size_t> immediateCpuTimerIndex;
-	std::vector<TimerResult> immediateCpuResults;
+	mutable std::vector<TimerResult> immediateCpuResults;
+	mutable bool immediateCpuStatisticsDirty = true;
 	uint32_t capturedCpuFrameCount = 0;
 	uint64_t cpuPublicationCount = 0;
 	float immediateCpuTotalMs = 0.0f;

@@ -77,7 +77,9 @@ namespace globals
 			requestedMode = mode;
 		}
 		auto GetExternalGpuTimings() const { return externalGpuTimings; }
-		const auto& GetResults() const { return results; }
+		const auto& GetResults(bool = true) const { return results; }
+		uint64_t GetHistoryEpoch() const { return 0; }
+		uint64_t GetGpuCaptureEpoch() const { return 0; }
 	} source;
 	auto* profiler = &source;
 }

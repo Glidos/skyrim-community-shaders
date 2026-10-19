@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -88,6 +89,7 @@ private:
 	static inline TimingMode timingMode = TimingMode::GPU;
 	static inline float timeSinceLastUpdate = 0.0f;
 	static inline float lastFrameTime = 0.0f;
+	static inline uint64_t statisticsHistoryEpoch = 0;
 
 	struct PassEntry
 	{
@@ -144,6 +146,14 @@ private:
 		float maxP95 = 0.0f;
 		float maxP99 = 0.0f;
 	};
+	struct FeatureStatistics
+	{
+		FeatureTimingData data;
+		double updatedAt = -1.0;
+		uint64_t historyEpoch = 0;
+		uint64_t externalEpoch = 0;
+	};
+	static inline std::unordered_map<std::string, std::array<FeatureStatistics, 2>> featureStatistics;
 	static inline std::unordered_map<std::string, FeatureGraphState> featureGraphs;
 	static inline std::unordered_map<std::string, FeatureTimingMode> featureTimingModes;
 
@@ -167,6 +177,6 @@ private:
 		bool useSelfTimesForTotal = false,
 		const std::vector<Profiler::TimerResult>* timingResults = nullptr);
 	static bool RenderFeatureTimingGraph(const std::string& featurePrefix, const FeatureTimingData& data, ImGuiUtils::ProfilerGraph& graph, int graphHeight);
-	static bool RenderTimingSection(const std::string& key, const FeatureTimingData& data, bool cpuMode, bool showTable);
+	static bool RenderTimingSection(const std::string& key, const FeatureTimingData& data, bool cpuMode, bool showTable, const FeatureTimingData* statistics = nullptr);
 	static bool RenderFeatureTimingData(const std::string& featurePrefix, FeatureTimingMode featureMode, bool showTable);
 };

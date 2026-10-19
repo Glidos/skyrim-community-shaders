@@ -68,9 +68,10 @@ namespace
 
 		json externalGpuTimings = json::array();
 		for (const auto& timing : a_profiler.GetExternalGpuTimings()) {
+			const auto statistics = timing.history.GetStatistics();
 			externalGpuTimings.push_back({ { "name", timing.name }, { "frameId", timing.frameId },
-				{ "gpuMs", timing.history.lastMs }, { "avgMs", timing.history.GetAverage() },
-				{ "p95Ms", timing.history.GetPercentile(95) }, { "p99Ms", timing.history.GetPercentile(99) },
+				{ "gpuMs", timing.history.lastMs }, { "avgMs", statistics.average },
+				{ "p95Ms", statistics.p95 }, { "p99Ms", statistics.p99 },
 				{ "historyCount", timing.history.count } });
 		}
 		json featureViews = json::array();
