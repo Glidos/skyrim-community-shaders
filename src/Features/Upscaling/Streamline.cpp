@@ -3503,9 +3503,8 @@ bool Streamline::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_r
 		(isVR || upscaling.sharpenerTexture->resource.get() != a_upscalingTexture) &&
 		(!isVR || upscaling.sharpenerTexture->uav);
 
-	// Flat DLSS receives kMAIN as its color input, so writing directly back to it
-	// would alias the Streamline input and output tags. VR first isolates each eye's
-	// input and can retain its direct combined-target path when sharpening is off.
+	// Flat DLSS must keep color input and output distinct. VR isolates its inputs
+	// before writing the combined sharpener target.
 	if (!isVR) {
 		static bool loggedMissingSharpenerOutput = false;
 		if (!sharpenerOutputReady) {
@@ -3599,9 +3598,8 @@ bool Streamline::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_r
 				existingProvider.dlssPreset :
 				Upscaling::kDLSSPresetK;
 
-		// Split the combined stereo inputs up front. The direct left-eye path still
-		// uses the native depth buffer, but isolated-output fallback needs valid
-		// per-eye depth for both eyes.
+		// Both eyes need isolated color inputs; only eye zero can address native
+		// depth without an offset.
 		if (!upscaling.PreparePerEyeInputs(
 				a_upscalingTexture,
 				depthTexture.texture,
@@ -3641,68 +3639,15 @@ bool Streamline::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_r
 			return stretched;
 		};
 
-		const bool canUseDirectEye0 =
-			perEyeResourcesReady;
-
-		if (!canUseDirectEye0) {
-			bool allEvaluated = true;
-			for (uint32_t i = 0; i < 2; ++i) {
-				sl::ViewportHandle vp = (i == 1) ? viewportRight : viewport;
-				const bool eyeEvaluated = EvaluateDLSS(vp, i,
-					upscaling.vrIntermediateColorIn[i]->resource.get(), upscaling.vrIntermediateColorOut[i]->resource.get(),
-					upscaling.vrIntermediateDepth[i]->resource.get(), upscaling.vrIntermediateMotionVectors[i]->resource.get(),
-					upscaling.vrIntermediateReactiveMask[i]->resource.get(), upscaling.vrIntermediateTransparencyMask[i]->resource.get(),
-					extentIn, extentOut, eyeWidthOut,
-					"VR prepared per-eye",
-					DLSSViewportRole::FullEye,
-					useAuthoritativeExistingProfile,
-					authoritativeQualityMode,
-					authoritativeDLSSPreset);
-				upscaling.RecordVRDLSSFullEyeEvaluation(i, eyeEvaluated);
-				allEvaluated &= eyeEvaluated;
-			}
-
-			bool fallbackPresented = false;
-			if (allEvaluated) {
-				upscaling.FinalizePerEyeOutputs(colorOut);
-			} else {
-				upscaling.RequestHistoryReset();
-				fallbackPresented = presentStretchFallback();
-				static bool loggedVREvaluateFailure = false;
-				static bool loggedVRStretchFallbackFailure = false;
-				if (fallbackPresented) {
-					if (!loggedVREvaluateFailure) {
-						logger::warn("[Streamline] VR DLSS/DLAA evaluate did not complete for both eyes; using full-size stretch fallback for this frame.");
-						loggedVREvaluateFailure = true;
-					}
-				} else if (!loggedVRStretchFallbackFailure) {
-					logger::warn("[Streamline] VR DLSS/DLAA evaluate did not complete for both eyes and stretch fallback failed; keeping the current scene texture.");
-					loggedVRStretchFallbackFailure = true;
-				}
-			}
-			upscaling.dlssUpscaleOutputInSharpenerTexture = outputToSharpener && (allEvaluated || fallbackPresented);
-			return allEvaluated;
-		}
-
-		// PreparePerEyeInputs already copied both depth halves into distinct resources
-		// before either evaluation. Eye 0 only writes color, so the prepared right-eye
-		// depth remains stable and does not need a second full-eye copy here.
-		const bool canRestoreDirectEye0Output =
-			!outputToSharpener &&
-			upscaling.vrIntermediateColorOut[0] &&
-			upscaling.vrIntermediateColorOut[0]->resource;
-		if (canRestoreDirectEye0Output) {
-			D3D11_BOX leftOutBackup = { 0, 0, 0, eyeWidthOut, eyeHeightOut, 1 };
-			context->CopySubresourceRegion(upscaling.vrIntermediateColorOut[0]->resource.get(), 0, 0, 0, 0, colorOut, 0, &leftOutBackup);
-		}
-
-		// Eye 0 writes directly to combined output.
+		// The sharpener target is private until the pair succeeds. Scene output must
+		// stay untouched even if one eye's evaluation or fallback fails.
+		ID3D11Resource* leftColorOut = outputToSharpener ? colorOut : upscaling.vrIntermediateColorOut[0]->resource.get();
 		const bool leftEvaluated = EvaluateDLSS(viewport, 0,
-			upscaling.vrIntermediateColorIn[0]->resource.get(), colorOut,
+			upscaling.vrIntermediateColorIn[0]->resource.get(), leftColorOut,
 			depthTexture.texture, upscaling.vrIntermediateMotionVectors[0]->resource.get(),
 			upscaling.vrIntermediateReactiveMask[0]->resource.get(), upscaling.vrIntermediateTransparencyMask[0]->resource.get(),
 			extentIn, extentOut, eyeWidthOut,
-			"VR direct eye0 combined",
+			outputToSharpener ? "VR direct eye0 combined" : "VR eye0 intermediate",
 			DLSSViewportRole::FullEye,
 			useAuthoritativeExistingProfile,
 			authoritativeQualityMode,
@@ -3724,12 +3669,15 @@ bool Streamline::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_r
 
 		if (leftEvaluated && rightEvaluated) {
 			if (depthTexture.depthSRV) {
-				upscaling.ClearVRDirectUpscaledEyeOutput(0, colorOutUAV, depthTexture.depthSRV, eyeWidthIn, eyeHeightIn, eyeWidthOut, eyeHeightOut);
+				auto* leftColorOutUAV = outputToSharpener ? colorOutUAV : upscaling.vrIntermediateColorOut[0]->uav.get();
+				upscaling.ClearVRDirectUpscaledEyeOutput(0, leftColorOutUAV, depthTexture.depthSRV, eyeWidthIn, eyeHeightIn, eyeWidthOut, eyeHeightOut);
 				upscaling.ClearVRDirectUpscaledEyeOutput(1, upscaling.vrIntermediateColorOut[1]->uav.get(), depthTexture.depthSRV, eyeWidthIn, eyeHeightIn, eyeWidthOut, eyeHeightOut);
 			}
 
-			D3D11_BOX rightOut = { 0, 0, 0, eyeWidthOut, eyeHeightOut, 1 };
-			context->CopySubresourceRegion(colorOut, 0, eyeWidthOut, 0, 0, upscaling.vrIntermediateColorOut[1]->resource.get(), 0, &rightOut);
+			D3D11_BOX eyeOut = { 0, 0, 0, eyeWidthOut, eyeHeightOut, 1 };
+			if (!outputToSharpener)
+				context->CopySubresourceRegion(colorOut, 0, 0, 0, 0, leftColorOut, 0, &eyeOut);
+			context->CopySubresourceRegion(colorOut, 0, eyeWidthOut, 0, 0, upscaling.vrIntermediateColorOut[1]->resource.get(), 0, &eyeOut);
 		}
 
 		bool fallbackPresented = false;
@@ -3746,10 +3694,6 @@ bool Streamline::Upscale(ID3D11Resource* a_upscalingTexture, ID3D11Resource* a_r
 			} else if (!loggedVRDirectStretchFallbackFailure) {
 				logger::warn("[Streamline] VR DLSS/DLAA direct-eye evaluate failed and stretch fallback failed; keeping the current scene texture.");
 				loggedVRDirectStretchFallbackFailure = true;
-			}
-			if (!fallbackPresented && canRestoreDirectEye0Output) {
-				D3D11_BOX leftOutBackup = { 0, 0, 0, eyeWidthOut, eyeHeightOut, 1 };
-				context->CopySubresourceRegion(colorOut, 0, 0, 0, 0, upscaling.vrIntermediateColorOut[0]->resource.get(), 0, &leftOutBackup);
 			}
 		}
 
