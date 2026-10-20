@@ -424,7 +424,7 @@ namespace MenuUI
 	void SectionHeading(const char* a_label)
 	{
 		ImGui::Spacing();
-		ImGui::PushFont(ImGui::GetFont(), ImGui::GetFontSize() * cardSummaryScale);
+		ImGui::PushFont(ImGui::GetFont(), ImGui::GetStyle().FontSizeBase * cardSummaryScale);
 		const SKSE::stl::scope_exit restore([] { ImGui::PopFont(); });
 		ImGui::TextUnformatted(a_label, ImGui::FindRenderedTextEnd(a_label));
 		ImGui::Separator();
@@ -433,7 +433,7 @@ namespace MenuUI
 
 	void DetailText(const char* a_text)
 	{
-		ImGui::PushFont(ImGui::GetFont(), ImGui::GetFontSize() * cardSummaryScale);
+		ImGui::PushFont(ImGui::GetFont(), ImGui::GetStyle().FontSizeBase * cardSummaryScale);
 		const SKSE::stl::scope_exit restore([] { ImGui::PopFont(); });
 		ImGui::TextWrapped("%s", a_text);
 	}
@@ -537,7 +537,7 @@ namespace MenuUI
 		                                                                                               "";
 		const float hintWidth = ImGui::CalcTextSize(hint).x;
 		const float guidanceWidth = ImGui::CalcTextSize(guidance).x;
-		ImGui::PushFont(ImGui::GetFont(), ImGui::GetFontSize() * overviewTitleScale);
+		ImGui::PushFont(ImGui::GetFont(), ImGui::GetStyle().FontSizeBase * overviewTitleScale);
 		const float titleWidth = ImGui::CalcTextSize(overviewTitle.c_str()).x;
 		ImGui::TextUnformatted(overviewTitle.c_str());
 		const float headingBottom = std::floor(ImGui::GetItemRectMin().y) + Util::Widgets::VisibleTextEnd(overviewTitle.c_str()).y;

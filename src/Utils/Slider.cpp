@@ -28,7 +28,7 @@ namespace Util::Widgets
 		{
 			explicit ControlStyle(bool scaleText)
 			{
-				ImGui::PushFont(ImGui::GetFont(), ImGui::GetFontSize() * (scaleText ? controlTextScale : 1.0f));
+				ImGui::PushFont(ImGui::GetFont(), ImGui::GetStyle().FontSizeBase * (scaleText ? controlTextScale : 1.0f));
 				const float font = ImGui::GetFontSize();
 				const float grab = std::max(ImGui::GetStyle().GrabMinSize, font * handleRadius * 2);
 				const float padding = std::max({ ImGui::GetStyle().FramePadding.y, font * controlPadding, (grab - font) * .5f });
@@ -193,7 +193,7 @@ namespace Util::Widgets
 				else
 					drafts[draftId] = std::to_string(*value);
 			}
-			ImGui::PushFont(ImGui::GetFont(), ImGui::GetFontSize() * 1.25f);
+			ImGui::PushFont(ImGui::GetFont(), ImGui::GetStyle().FontSizeBase * 1.25f);
 			const SKSE::stl::scope_exit restoreKeypadFont([] { ImGui::PopFont(); });
 			const auto viewportSize = ImGui::GetWindowViewport()->WorkSize;
 			ImGui::SetNextWindowSizeConstraints({ 0, 0 }, { std::max(1.0f, viewportSize.x - ImGui::GetFontSize()), std::max(1.0f, viewportSize.y - ImGui::GetFontSize()) });

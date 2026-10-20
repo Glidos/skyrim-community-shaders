@@ -37,6 +37,18 @@ It scales the completed godray colour after gamma conversion and remains
 separate from profile godray intensity. Legacy `vlIntensity` settings map
 to this control; Adaptive Balance's Enabled switch gates both.
 
+If the CSX menu becomes too small, oversized or inaccessible, press
+**Ctrl+Shift+End** with the game focused. This fixed shortcut reopens the
+menu and resets its position, size, sidebar proportions, zoom and font
+sizing, including headset placement in VR. Graphics settings and shader
+caches are preserved. The same **Reset Menu** button is available under
+**General > Layout** and the VR menu settings. Theme changes remain
+unsaved until saved through the theme controls.
+
+**General > Layout > Global Scale** adjusts zoom; zero means 100%.
+Effective zoom is limited to fit the current display. **General > Fonts**
+controls automatic or fixed font sizing.
+
 ## Requirements
 
 -   Any terminal of your choice (e.g., PowerShell)

@@ -32,6 +32,7 @@
 #include "Menu/Fonts.h"
 #include "Menu/HomePageRenderer.h"
 #include "Menu/IconLoader.h"
+#include "Menu/Layout.h"
 #include "Menu/MenuHeaderRenderer.h"
 #include "Menu/OverlayRenderer.h"
 #include "Menu/PerformanceTuningRenderer.h"
@@ -252,23 +253,14 @@ namespace
 			viewport->WorkSize.x <= 0 || viewport->WorkSize.y <= 0)
 			return false;
 
-		const float padding = GetVRMenuSafePadding();
+		const float padding = MenuUI::Layout::CanvasPadding;
 		const ImVec2 minimum{ viewport->WorkPos.x + padding, viewport->WorkPos.y + padding };
 		const ImVec2 span{ std::max(1.0f, viewport->WorkSize.x - padding * 2), std::max(1.0f, viewport->WorkSize.y - padding * 2) };
-		auto fitAxis = [](float center, float size, float fallbackCenter, float fallbackSize, float minimum, float span, float minSize) {
-			size = std::isfinite(size) && size > 0 ? size : fallbackSize;
-			center = std::isfinite(center) ? center : fallbackCenter;
-			size = std::clamp(size, std::min(minSize, span), span);
-			// Clamp the remaining travel, avoiding reversed bounds when the window fills the canvas.
-			const float offset = std::clamp(center - minimum - size * .5f, 0.0f, span - size);
-			return ImVec2(minimum + offset + size * .5f, size);
-		};
-		const auto x = fitAxis(a_center.x, a_size.x, a_fallback.center.x, a_fallback.size.x, minimum.x, span.x, ImGui::GetStyle().WindowMinSize.x);
-		const auto y = fitAxis(a_center.y, a_size.y, a_fallback.center.y, a_fallback.size.y, minimum.y, span.y, ImGui::GetStyle().WindowMinSize.y);
-		const bool changed = a_center.x != x.x || a_center.y != y.x || a_size.x != x.y || a_size.y != y.y;
-		a_center = { x.x, y.x };
-		a_size = { x.y, y.y };
-		return changed;
+		auto minimumSize = MenuUI::Layout::MinimumSize(ImGui::GetFontSize(), span, ImGui::GetStyle().WindowMinSize);
+		if (a_fallback.constrainedByTopStatusWindow)
+			minimumSize.y = std::min(minimumSize.y, a_fallback.size.y);
+		return MenuUI::Layout::FitWindow(a_center, a_size, minimum, span,
+			a_fallback.center, a_fallback.size, minimumSize);
 	}
 
 	float GetVRSettingsWindowAspect()
@@ -583,6 +575,7 @@ void Menu::Load(json& o_json)
 		settings.Theme = o_json["Theme"];
 		PaletteFromJson(o_json["Theme"], settings.Theme.FullPalette);
 		MenuFonts::NormalizeFontRoles(settings.Theme, hasFontRoles);
+		settings.Theme.GlobalScale = MenuUI::Layout::SanitizeGlobalScale(settings.Theme.GlobalScale);
 
 		auto& bodyRole = settings.Theme.FontRoles[static_cast<size_t>(FontRole::Body)];
 		if (!Util::ValidateFont(bodyRole.File)) {
@@ -761,6 +754,7 @@ void Menu::LoadTheme(json& o_json)
 		settings.Theme = o_json["Theme"];
 		PaletteFromJson(o_json["Theme"], settings.Theme.FullPalette);
 		MenuFonts::NormalizeFontRoles(settings.Theme, hasFontRoles);
+		settings.Theme.GlobalScale = MenuUI::Layout::SanitizeGlobalScale(settings.Theme.GlobalScale);
 
 		auto& bodyRole = settings.Theme.FontRoles[static_cast<size_t>(FontRole::Body)];
 		if (!Util::ValidateFont(bodyRole.File)) {
@@ -841,6 +835,7 @@ bool Menu::LoadThemePreset(const std::string& themeName)
 			PaletteFromJson(themeSettings, settings.Theme.FullPalette);
 
 			MenuFonts::NormalizeFontRoles(settings.Theme, hasFontRoles);
+			settings.Theme.GlobalScale = MenuUI::Layout::SanitizeGlobalScale(settings.Theme.GlobalScale);
 			auto& bodyRole = settings.Theme.FontRoles[static_cast<size_t>(FontRole::Body)];
 			if (!Util::ValidateFont(bodyRole.File)) {
 				const auto& defaults = Menu::GetDefaultFontRole(FontRole::Body);
@@ -1105,8 +1100,17 @@ void Menu::DrawSettings()
 	const bool lockVRMenuToCanvas = VRMenuPositioningPolicy::ShouldLockDesktopCanvas(
 		REL::Module::IsVR(),
 		vrMenuLayoutUnlocked);
-	const bool resetVRWindowLayout = REL::Module::IsVR() && resetLayout;
-	if (resetVRWindowLayout) {
+	const auto* viewport = ImGui::GetMainViewport();
+	const float windowPadding = MenuUI::Layout::CanvasPadding;
+	const ImVec2 maximumWindowSize{ std::max(1.0f, viewport->WorkSize.x - windowPadding * 2),
+		std::max(1.0f, viewport->WorkSize.y - windowPadding * 2) };
+	auto minimumWindowSize = MenuUI::Layout::MinimumSize(ImGui::GetFontSize(), maximumWindowSize, ImGui::GetStyle().WindowMinSize);
+	// Compilation status can temporarily leave less than the normal usable height.
+	if (defaultWindowLayout.constrainedByTopStatusWindow)
+		minimumWindowSize.y = std::min(minimumWindowSize.y, defaultWindowSize.y);
+	const bool unusableDockedWindow = willBeDocked &&
+	                                  (windowSizeForOverlap.x < minimumWindowSize.x || windowSizeForOverlap.y < minimumWindowSize.y);
+	if (resetMenuDocking || (resetLayout && REL::Module::IsVR()) || unusableDockedWindow) {
 		windowPos = defaultWindowPos;
 		windowSizeForOverlap = defaultWindowSize;
 		willBeDocked = false;
@@ -1116,8 +1120,8 @@ void Menu::DrawSettings()
 			ImGui::DockContextProcessUndockWindow(ImGui::GetCurrentContext(), existingWindow);
 		}
 	}
-	const bool repairVRWindowBounds = REL::Module::IsVR() && !willBeDocked &&
-	                                  ClampSettingsWindowToCanvas(windowPos, windowSizeForOverlap, defaultWindowLayout);
+	const bool repairWindowBounds = !willBeDocked &&
+	                                ClampSettingsWindowToCanvas(windowPos, windowSizeForOverlap, defaultWindowLayout);
 	const bool headsetPointer = REL::Module::IsVR() && globals::features::vr.IsMenuPointerInHeadset();
 	if (headsetPointer) {
 		auto* context = ImGui::GetCurrentContext();
@@ -1129,11 +1133,15 @@ void Menu::DrawSettings()
 		}
 	}
 
-	const auto windowPosCond = (repairVRWindowBounds || autoOffsetForTopStatusWindow || restoreAfterTopStatusWindow) ? ImGuiCond_Always : layoutCond;
-	ImGui::SetNextWindowPos(windowPos, windowPosCond, centeredPivot);
-	const auto windowSizeCond = (repairVRWindowBounds || autoOffsetForTopStatusWindow || restoreAfterTopStatusWindow) ? ImGuiCond_Always : layoutCond;
-	ImGui::SetNextWindowSize(windowSizeForOverlap, windowSizeCond);
+	if (!willBeDocked) {
+		const auto windowPosCond = (repairWindowBounds || unusableDockedWindow || autoOffsetForTopStatusWindow || restoreAfterTopStatusWindow) ? ImGuiCond_Always : layoutCond;
+		ImGui::SetNextWindowPos(windowPos, windowPosCond, centeredPivot);
+		const auto windowSizeCond = (repairWindowBounds || unusableDockedWindow || autoOffsetForTopStatusWindow || restoreAfterTopStatusWindow) ? ImGuiCond_Always : layoutCond;
+		ImGui::SetNextWindowSize(windowSizeForOverlap, windowSizeCond);
+		ImGui::SetNextWindowSizeConstraints(minimumWindowSize, maximumWindowSize);
+	}
 	resetLayout = false;
+	resetMenuDocking = false;
 
 	// Determine window flags based on docking state
 	ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
@@ -1153,7 +1161,13 @@ void Menu::DrawSettings()
 		windowFlags |= ImGuiWindowFlags_NoResize;
 	}
 
-	if (ImGui::Begin(title.c_str(), &IsEnabled, windowFlags)) {
+	const bool contentsVisible = [&] {
+		// A saved theme minimum must not override the viewport-bounded constraints.
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, minimumWindowSize);
+		const SKSE::stl::scope_exit restoreMinimum([] { ImGui::PopStyleVar(); });
+		return ImGui::Begin(title.c_str(), &IsEnabled, windowFlags);
+	}();
+	if (contentsVisible) {
 		ImGui::SetScrollX(0.0f);
 		ImGui::SetScrollY(0.0f);
 
@@ -1163,14 +1177,7 @@ void Menu::DrawSettings()
 		wasDocked = actualDocked;
 		const bool showSteamVRWindowControls = useSteamVRWindowControls && vrMenuLayoutUnlocked && !isDocked;
 
-		float globalScale = settings.Theme.GlobalScale;
-
-		// Use default global scale (0.0) for built-in themes when GlobalScale equals the default
-		if (std::abs(globalScale - ThemeManager::Constants::DEFAULT_GLOBAL_SCALE) < 0.001f) {
-			globalScale = ThemeManager::Constants::DEFAULT_GLOBAL_SCALE;  // Ensure built-in themes stay at 0.0
-		}
-
-		const float uiScale = exp2(globalScale);  // User's manual GlobalScale for header icons
+		const float uiScale = ImGui::GetStyle().FontScaleMain;
 		// Check if we can show icons - require setting enabled and at least some icons loaded (for undocked)
 		// For docked mode, always show icons if textures are available
 		bool canShowIcons = settings.Theme.ShowActionIcons &&
@@ -1221,9 +1228,9 @@ void Menu::DrawSettings()
 		Util::DrawClearShaderCacheConfirmation();
 
 		if (showSteamVRWindowControls) {
-			MenuHeaderRenderer::RenderSteamVRResizeHandles(uiScale);
+			MenuHeaderRenderer::RenderSteamVRResizeHandles(uiScale, minimumWindowSize);
 		} else {
-			MenuHeaderRenderer::RenderResizeGrip(uiScale, useOpenCompositeStableHeader && vrMenuLayoutUnlocked && !isDocked);
+			MenuHeaderRenderer::RenderResizeGrip(uiScale, minimumWindowSize, useOpenCompositeStableHeader && vrMenuLayoutUnlocked && !isDocked);
 		}
 	}
 	ImGui::End();
@@ -1356,6 +1363,52 @@ void Menu::DrawFooter()
 	ImGui::BulletText(std::format("GPU: {}", globals::state->adapterDescription.c_str()).c_str());
 }
 
+void Menu::ApplyPendingLayoutReset()
+{
+	if (!ImGui::GetCurrentContext() || ImGui::GetCurrentContext()->WithinFrameScope ||
+		!pendingLayoutReset.exchange(false))
+		return;
+
+	EnsureSettingsDirtyBaseline();
+	const ThemeSettings defaults{};
+	settings.Theme.GlobalScale = ThemeManager::Constants::DEFAULT_GLOBAL_SCALE;
+	settings.Theme.FontSize = defaults.FontSize;
+	settings.Theme.Style = defaults.Style;
+	settings.UseResolutionFont = true;
+	for (size_t role = 0; role < settings.Theme.FontRoles.size(); ++role)
+		settings.Theme.FontRoles[role].SizeScale = defaults.FontRoles[role].SizeScale;
+	pendingFontReload = true;
+	featureSearch.clear();
+	pendingFeatureSelection.clear();
+	FeatureListRenderer::ResetLayout();
+	if (REL::Module::IsVR())
+		globals::features::vr.ResetMenuLayout();
+	resetLayout = true;
+	resetMenuDocking = true;
+
+	settingToggleKey = settingSkipCompilationKey = settingsEffectsToggle = false;
+	settingNeuralRenderingToggleKey = settingOverlayToggleKey = false;
+	settingShaderBlockPrevKey = settingShaderBlockNextKey = false;
+	settingCSEditorToggleKey = settingScreenshotKey = false;
+	ImGui::ClearActiveID();
+	ImGui::GetCurrentContext()->MovingWindow = nullptr;
+	if (!ImGui::GetCurrentContext()->OpenPopupStack.empty())
+		ImGui::ClosePopupToLevel(0, false);
+	ImGui::GetIO().ClearInputKeys();
+	if (auto* window = ImGui::FindWindowByName("###CommunityShaders")) {
+		for (auto* child : ImGui::GetCurrentContext()->Windows) {
+			if (child == window || child->RootWindow == window) {
+				child->FontWindowScale = 1.0f;
+				ImGui::SetScrollX(child, 0.0f);
+				ImGui::SetScrollY(child, 0.0f);
+			}
+		}
+	}
+	OpenMenu(true);
+	RequestSettingsDirtyCheck();
+	logger::info("Menu layout, sidebar and typography reset");
+}
+
 /**
  * @brief Main overlay rendering coordinator
  *
@@ -1368,6 +1421,7 @@ void Menu::DrawFooter()
  */
 void Menu::DrawOverlay()
 {
+	ApplyPendingLayoutReset();
 	// Only process reloads when ImGui is NOT in an active frame
 	ImGuiContext* ctx = ImGui::GetCurrentContext();
 	bool canReload = ctx && !ctx->WithinFrameScope && ctx->WithinEndChildID == 0;
@@ -1554,6 +1608,18 @@ void Menu::ProcessInputEventQueue()
 			logger::trace("Detected key code {} ({})", event.keyCode, key);
 			if (key == event.keyCode)
 				key = MapVirtualKeyEx(event.keyCode, MAPVK_VSC_TO_VK_EX, GetKeyboardLayout(0));
+
+			static const std::vector<InputCombo> resetShortcut{
+				InputCombo::Keyboard(VK_CONTROL), InputCombo::Keyboard(VK_SHIFT), InputCombo::Keyboard(VK_END)
+			};
+			if (key == VK_END && (layoutResetKeyHeld || (event.IsDown() && InputCombo::MatchesKeyboardCombo(resetShortcut, key)))) {
+				if (event.IsDown() && !layoutResetKeyHeld)
+					RequestLayoutReset();
+				layoutResetKeyHeld = event.IsPressed();
+				if (!layoutResetKeyHeld)
+					_comboFiredKeys.erase(key);
+				continue;
+			}
 
 			const bool wasCapturingHotkey = IsCapturingHotkeyInput();
 			const bool allowSetupCloseKey = wasCapturingHotkey && HomePageRenderer::ShouldShowFirstTimeSetup() &&
@@ -1797,6 +1863,9 @@ void Menu::addToEventQueue(KeyEvent e)
 
 void Menu::OnFocusChanged()
 {
+	if (layoutResetKeyHeld)
+		_comboFiredKeys.insert(VK_END);
+	layoutResetKeyHeld = false;
 	// Solves the alt+tab stuck issue, but disables tab after tabbing back in.
 	if (const auto& inputMgr = RE::BSInputDeviceManager::GetSingleton()) {
 		if (const auto& device = inputMgr->GetKeyboard()) {

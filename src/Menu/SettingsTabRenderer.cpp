@@ -14,6 +14,7 @@
 #include "Fonts.h"
 #include "Globals.h"
 #include "IconLoader.h"
+#include "Layout.h"
 #include "Menu.h"
 #include "ShaderCache.h"
 #include "State.h"
@@ -416,6 +417,8 @@ void SettingsTabRenderer::RenderKeybindingsTab(
 
 	ImGui::Separator();
 	ImGui::TextUnformatted("Hardcoded Bindings");
+	DrawReadOnlyKeybinding("Reset Menu:", "Ctrl+Shift+End",
+		"Reopen and restore menu geometry, sidebar, zoom and font sizing, including headset placement. Works while the menu is closed or locked.");
 	ImGui::TextWrapped("RenderDoc captures graphics frames for debugging. Requires loaded RenderDoc capture support.");
 	DrawReadOnlyKeybinding(
 		"RenderDoc Capture:",
@@ -1104,11 +1107,15 @@ void SettingsTabRenderer::RenderStylingTab()
 	RenderSaveInfoText();
 
 	SeparatorTextWithFont("Main", Menu::FontRole::Subheading);
+	if (ImGui::Button("Reset Menu"))
+		globals::menu->RequestLayoutReset();
+	Util::AddTooltip("Restore menu geometry, sidebar, zoom and font sizing. Emergency shortcut: Ctrl+Shift+End.");
 	if (Util::Widgets::SliderFloat("Global Scale", &themeSettings.GlobalScale, -1.f, 1.f, "%.2f")) {
-		float trueScale = exp2(themeSettings.GlobalScale);
-
-		ImGui::GetStyle().FontScaleMain = trueScale;
+		ImGui::GetStyle().FontScaleMain = MenuUI::Layout::EffectiveScale(themeSettings.GlobalScale,
+			ImGui::GetIO().FontDefault->LegacySize, ImGui::GetIO().DisplaySize, ImGui::GetStyle().FontScaleDpi);
 	}
+	ImGui::Text("Effective zoom: %.0f%%", ImGui::GetStyle().FontScaleMain * 100.0f);
+	Util::AddTooltip("Zoom is limited to keep the menu usable on the current display. Zero on the slider means 100%.");
 
 	SeparatorTextWithFont("Layout", Menu::FontRole::Subheading);
 

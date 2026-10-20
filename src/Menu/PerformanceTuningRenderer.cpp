@@ -2001,7 +2001,7 @@ namespace
 		const float textWidth = ImGui::GetFont()->CalcTextSizeA(font * 1.6f, FLT_MAX, 0, text).x;
 		const float textScale = std::min(1.0f, ImGui::GetContentRegionAvail().x / std::max(1.0f, textWidth));
 		{
-			ImGui::PushFont(ImGui::GetFont(), font * 1.6f * textScale);
+			ImGui::PushFont(ImGui::GetFont(), ImGui::GetStyle().FontSizeBase * 1.6f * textScale);
 			const SKSE::stl::scope_exit restoreFont([] { ImGui::PopFont(); });
 			if (valid)
 				ImGui::TextUnformatted(text);

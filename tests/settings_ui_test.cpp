@@ -772,6 +772,20 @@ int main()
 		io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
 		io.Fonts->SetTexID(ImTextureID(1));
 
+		for (float zoom : { .5f, 1.0f, 1.5f, 2.0f }) {
+			ImGui::GetStyle().FontScaleMain = zoom;
+			frame([&] {
+				const float base = ImGui::GetFontSize();
+				{
+					Util::Widgets::ControlStyle controls(true);
+					require(std::abs(ImGui::GetFontSize() - base * (14.0f / 12.0f)) < 1.1f,
+						"slider labels apply global zoom exactly once");
+				}
+				require(ImGui::GetFontSize() == base, "slider typography restores font state");
+			});
+		}
+		ImGui::GetStyle().FontScaleMain = 1;
+
 		using Viewport = MenuUI::DevBenchViewport;
 		bool allowScroll = true;
 		auto drawScrollable = [&](const char* tab = "content", const char* window = "ScrollContent") {

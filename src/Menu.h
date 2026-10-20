@@ -202,6 +202,10 @@ public:
 	// Display size tracking for cross-session resolution change detection
 	float2 lastDisplaySize{};
 	bool resetLayout = false;
+	/** Queue menu-only recovery for the render thread, even while closed or locked. */
+	void RequestLayoutReset() { pendingLayoutReset.store(true); }
+	/** Whether recovery is waiting for the next overlay frame. */
+	bool IsLayoutResetPending() const { return pendingLayoutReset.load(); }
 
 	// Used for resetting input keys to solve alt-tab stuck issue
 	std::atomic<bool> focusChanged = false;
@@ -517,6 +521,10 @@ public:
 	void ProcessVROverlayInput();
 
 private:
+	std::atomic<bool> pendingLayoutReset = false;
+	bool layoutResetKeyHeld = false;
+	bool resetMenuDocking = false;
+	void ApplyPendingLayoutReset();
 	Settings settings;
 	json settingsDirtyBaseline = json::object();
 	json savedThemeSnapshot;

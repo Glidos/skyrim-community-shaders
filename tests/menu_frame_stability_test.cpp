@@ -1,4 +1,5 @@
 #include "Menu/HomePageRenderer.h"
+#include "Menu/Layout.h"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -45,6 +46,7 @@ struct ThemeManager
 	struct Constants
 	{
 		static constexpr float DEFAULT_GLOBAL_SCALE = 0;
+		static constexpr float DEFAULT_FONT_SIZE = 27;
 		static constexpr float MIN_SCROLLBAR_SIZE = 28;
 		static constexpr float DEFAULT_SCREEN_HEIGHT = 1080;
 		static constexpr float DEFAULT_FONT_RATIO = 0.025f;
@@ -167,11 +169,11 @@ static bool CheckTraceMenuPosition()
 	passed = passed && !HomePageRenderer::ShouldShowFirstTimeSetup();
 	ImGui::GetStyle().FontScaleDpi = 1.5f;
 	ImGui::GetStyle()._NextFrameFontSizeBase = 33.0f;
+	const float vrFontBase = ImGui::GetStyle().FontSizeBase;
 	ThemeManager::SetupImGuiStyle(vrMenu);
 	const auto& vrStyle = ImGui::GetStyle();
-	passed = passed && vrStyle.FontSizeBase == vrMenu.theme.Style.FontSizeBase &&
-	         vrStyle.FontScaleDpi == vrMenu.theme.Style.FontScaleDpi &&
-	         vrStyle._NextFrameFontSizeBase == vrMenu.theme.Style._NextFrameFontSizeBase;
+	passed = passed && vrStyle.FontSizeBase == vrFontBase &&
+	         vrStyle.FontScaleDpi == 1.5f && vrStyle._NextFrameFontSizeBase == 33.0f;
 	const auto lockedVR = ApplyStatusLayout(original, size, false, { true });
 	const auto restoredVR = ApplyStatusLayout(lockedVR, size);
 	if (lockedVR.x != 200 || lockedVR.y != 250 || restoredVR.x != original.x || restoredVR.y != original.y) {

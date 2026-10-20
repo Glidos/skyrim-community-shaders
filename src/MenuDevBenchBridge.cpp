@@ -705,6 +705,7 @@ namespace
 			{ "wand", WandSettingsStatus() },
 			{ "menuSessionOpen", menu && menu->IsMenuSessionOpen() },
 			{ "menuLayoutUnlocked", vr.settings.UnlockMenuPositionAndSize },
+			{ "menuLayoutResetPending", globals::menu && globals::menu->IsLayoutResetPending() },
 			{ "desktopMenuCanvasLocked", globals::game::isVR && !vr.settings.UnlockMenuPositionAndSize },
 			{ "controllerGripDragEnabled", vr.settings.UnlockMenuPositionAndSize && vr.settings.EnableDragToReposition },
 			{ "performanceOverlayVisible", menu && menu->overlayVisible },
@@ -1122,9 +1123,7 @@ namespace
 				vr.InvalidatePresentedMenuSurfaces();
 				vr.ResetMenuInputRuntimeState();
 			} else if (action == "reset_menu_layout") {
-				if (!REL::Module::IsVR())
-					return { { "error", "Menu placement reset requires Skyrim VR" }, { "action", action } };
-				globals::features::vr.ResetMenuLayout();
+				menu->RequestLayoutReset();
 			} else if (action == "set_layout_unlocked") {
 				globals::features::vr.SetMenuLayoutUnlocked(enabled);
 			} else if (action == "set_menu_placement") {
@@ -1313,8 +1312,11 @@ namespace MenuDevBenchBridge
 		static const std::string descriptor = [] {
 			auto document = json::parse(baseDescriptor);
 			document["inputSchema"]["properties"]["action"]["enum"].push_back("reset_menu_layout");
+			document["outputSchema"]["properties"]["status"]["properties"]["menuLayoutResetPending"] = {
+				{ "type", "boolean" }, { "description", "Recovery is queued until the next overlay frame." }
+			};
 			document["description"] = document["description"].get<std::string>() +
-			                          " reset_menu_layout restores VR menu size, distance, placement and desktop window geometry without saving or changing rendering settings.";
+			                          " reset_menu_layout queues render-thread recovery on SE, AE and VR: reopen the menu, restore window geometry, sidebar proportions, zoom and font sizing, and reset headset placement in VR. menuLayoutResetPending reports whether the next overlay frame has consumed it. Rendering settings and shader caches are unchanged; theme changes remain unsaved.";
 			document["inputSchema"]["properties"]["action"]["enum"].push_back("grass_telemetry");
 			document["inputSchema"]["properties"]["requestTelemetry"] = {
 				{ "type", "boolean" }, { "default", true },

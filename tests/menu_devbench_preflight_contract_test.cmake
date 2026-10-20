@@ -695,7 +695,9 @@ endif()
 foreach(reset_contract IN ITEMS
     "action != \"reset_menu_layout\""
     "} else if (action == \"reset_menu_layout\")"
-    "globals::features::vr.ResetMenuLayout();"
+    "menu->RequestLayoutReset();"
+    "menuLayoutResetPending"
+    "document[\"outputSchema\"][\"properties\"][\"status\"][\"properties\"][\"menuLayoutResetPending\"]"
     "document[\"inputSchema\"][\"properties\"][\"action\"][\"enum\"].push_back(\"reset_menu_layout\")"
 )
     string(FIND "${_bridge}" "${reset_contract}" reset_contract_position)

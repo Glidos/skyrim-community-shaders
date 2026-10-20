@@ -1851,8 +1851,8 @@ namespace
 		if (!CanConfigureMenuLayout())
 			return;
 		if (ImGui::Button("Reset Menu"))
-			globals::features::vr.ResetMenuLayout();
-		Util::AddTooltip("Restore menu size, distance and placement, and centre the desktop window.");
+			globals::menu->RequestLayoutReset();
+		Util::AddTooltip("Restore menu size, sidebar, zoom, fonts and headset placement. Emergency shortcut: Ctrl+Shift+End.");
 		ImGui::Spacing();
 		DrawHeadsetMenuSettings();
 		MenuUI::SectionHeading("Desktop");
