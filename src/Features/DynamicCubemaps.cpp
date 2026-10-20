@@ -985,7 +985,7 @@ bool DynamicCubemaps::SetupCompressionResources(const D3D11_TEXTURE2D_DESC& a_de
 {
 	if ((a_desc.Width != kPerformanceCubemapResolution && a_desc.Width != kQualityCubemapResolution) ||
 		a_desc.Height != a_desc.Width || a_desc.ArraySize != 6 || a_desc.SampleDesc.Count != 1 ||
-		a_desc.MipLevels != std::bit_width(a_desc.Width) || a_desc.MipLevels > bc6hScratchUAVs.size()) {
+		a_desc.MipLevels != static_cast<UINT>(std::bit_width(a_desc.Width)) || a_desc.MipLevels > bc6hScratchUAVs.size()) {
 		logger::error("Dynamic cubemap compression dimensions or mip count are unsupported; capture disabled");
 		return false;
 	}
