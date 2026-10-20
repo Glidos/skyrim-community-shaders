@@ -5588,9 +5588,11 @@ namespace SIE
 					newShader->shader->Release();
 				}
 			} else {
-				return vertexShaders[static_cast<size_t>(shader.shaderType.get())]
-				    .insert_or_assign(descriptor, std::move(newShader))
-				    .first->second.get();
+				auto& entry = vertexShaders[static_cast<size_t>(shader.shaderType.get())][descriptor];
+				if (entry && entry->shader)
+					entry->shader->Release();
+				entry = std::move(newShader);
+				return entry.get();
 			}
 		}
 		return nullptr;
@@ -5630,9 +5632,11 @@ namespace SIE
 					newShader->shader->Release();
 				}
 			} else {
-				return pixelShaders[static_cast<size_t>(shader.shaderType.get())]
-				    .insert_or_assign(descriptor, std::move(newShader))
-				    .first->second.get();
+				auto& entry = pixelShaders[static_cast<size_t>(shader.shaderType.get())][descriptor];
+				if (entry && entry->shader)
+					entry->shader->Release();
+				entry = std::move(newShader);
+				return entry.get();
 			}
 		}
 		return nullptr;
@@ -5672,9 +5676,11 @@ namespace SIE
 					newShader->shader->Release();
 				}
 			} else {
-				return computeShaders[static_cast<size_t>(shader.shaderType.get())]
-				    .insert_or_assign(descriptor, std::move(newShader))
-				    .first->second.get();
+				auto& entry = computeShaders[static_cast<size_t>(shader.shaderType.get())][descriptor];
+				if (entry && entry->shader)
+					entry->shader->Release();
+				entry = std::move(newShader);
+				return entry.get();
 			}
 		}
 		return nullptr;

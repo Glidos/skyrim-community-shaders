@@ -1642,6 +1642,10 @@ bool TruePBR::TESObjectLAND_SetupMaterial(RE::TESObjectLAND* land)
 	if (land->loadedData != nullptr && land->loadedData->mesh[0] != nullptr) {
 		land->data.flags.set(static_cast<RE::OBJ_LAND::Flag>(8));
 		for (uint32_t quadIndex = 0; quadIndex < 4; ++quadIndex) {
+			auto* quadMesh = land->loadedData->mesh[quadIndex];
+			if (quadMesh == nullptr || quadMesh->GetChildren().empty() || quadMesh->GetChildren()[0] == nullptr)
+				continue;
+
 			auto shaderProperty = static_cast<RE::BSLightingShaderProperty*>(memoryManager->Allocate(GetBSLightingShaderPropertyAllocationSize(), 0, false));
 			shaderProperty->Ctor();
 
@@ -1697,12 +1701,9 @@ bool TruePBR::TESObjectLAND_SetupMaterial(RE::TESObjectLAND* land)
 
 			shaderProperty->SetFlags(RE::BSShaderProperty::EShaderPropertyFlag8::kVertexLighting, true);
 
-			const auto& children = land->loadedData->mesh[quadIndex]->GetChildren();
-			auto geometry = children.empty() ? nullptr : static_cast<RE::BSGeometry*>(children[0].get());
+			auto geometry = static_cast<RE::BSGeometry*>(quadMesh->GetChildren()[0].get());
 			shaderProperty->SetupGeometry(geometry);
-			if (geometry != nullptr) {
-				geometry->GetGeometryRuntimeData().shaderProperty = RE::NiPointer(shaderProperty);
-			}
+			geometry->GetGeometryRuntimeData().shaderProperty = RE::NiPointer(shaderProperty);
 
 			globals::game::smState->shadowSceneNode[0]->AttachObject(geometry);
 		}
@@ -1873,16 +1874,17 @@ struct TESBoundObject_Clone3D
 								}
 
 								if (wouldContaminate) {
-									// Create and CopyMembers register metadata themselves;
-									// engine calls must stay outside the registry lock.
-									auto* freshMat = static_cast<BSLightingShaderMaterialPBR*>(material->Create());
-									if (freshMat) {
-										freshMat->CopyMembers(material);
-										BSLightingShaderMaterialPBR::All.Update(freshMat, [&](auto& extensions) {
-											applyData(freshMat, extensions);
+									// Publish a fully configured unique copy through the engine's
+									// ownership path, with engine calls outside the registry lock.
+									{
+										BSLightingShaderMaterialPBR replacement;
+										replacement.CopyMembers(material);
+										BSLightingShaderMaterialPBR::All.Update(&replacement, [&](auto& extensions) {
+											applyData(&replacement, extensions);
 										});
-										shaderProperty->material = freshMat;
-									} else {
+										shaderProperty->SetMaterial(&replacement, true);
+									}
+									if (!shaderProperty->material) {
 										logger::warn("[TruePBR] failed to clone PBR material for ref {:08X}; skipping to avoid contamination", ref->GetFormID());
 										return RE::BSVisit::BSVisitControl::kContinue;
 									}

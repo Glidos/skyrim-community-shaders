@@ -132,24 +132,27 @@ void InteriorSun::EarlyPrepass()
 {
 	const auto* tes = globals::game::tes;
 	isInteriorWithSun.store(IsEnabled() && IsInteriorWithSun(tes ? tes->interiorCell : nullptr), std::memory_order_release);
-	if (!runtimeSettingsDirty.load(std::memory_order_acquire) || Util::IsRuntimeToggleBlocked(globals::state))
+	const bool applySettings = runtimeSettingsDirty.load(std::memory_order_acquire) && !Util::IsRuntimeToggleBlocked(globals::state);
+	if (!applySettings && (IsActiveInteriorSun() || arraysCleared))
 		return;
 	Util::RendererOwnership ownership(Util::GetRendererContextLock(globals::game::renderer, globals::d3d::context));
 	if (!ownership)
 		return;
-	const auto* player = RE::PlayerCharacter::GetSingleton();
-	const auto* cell = player ? player->GetParentCell() : nullptr;
-	if (!LocationContext::HasAttachedCell(tes, cell))
-		return;
-	if (runtimeSettingsDirty.exchange(false, std::memory_order_acq_rel)) {
-		const bool changed = runtimeEnabled.exchange(settings.Enabled, std::memory_order_acq_rel) != settings.Enabled;
-		const float distance = settings.Enabled ? settings.InteriorShadowDistance : vanillaInteriorShadowDistance;
-		if (gInteriorShadowDistance && (changed || *gInteriorShadowDistance != distance)) {
-			*gInteriorShadowDistance = distance;
-			SetShadowDistance(cell->IsInteriorCell());
+	if (applySettings) {
+		const auto* player = RE::PlayerCharacter::GetSingleton();
+		const auto* cell = player ? player->GetParentCell() : nullptr;
+		if (LocationContext::HasAttachedCell(tes, cell) && runtimeSettingsDirty.exchange(false, std::memory_order_acq_rel)) {
+			const bool changed = runtimeEnabled.exchange(settings.Enabled, std::memory_order_acq_rel) != settings.Enabled;
+			const float distance = settings.Enabled ? settings.InteriorShadowDistance : vanillaInteriorShadowDistance;
+			if (gInteriorShadowDistance && (changed || *gInteriorShadowDistance != distance)) {
+				*gInteriorShadowDistance = distance;
+				SetShadowDistance(cell->IsInteriorCell());
+			}
 		}
+		isInteriorWithSun.store(IsEnabled() && IsInteriorWithSun(tes ? tes->interiorCell : nullptr), std::memory_order_release);
 	}
-	isInteriorWithSun.store(IsEnabled() && IsInteriorWithSun(tes->interiorCell), std::memory_order_release);
+	if (!IsActiveInteriorSun() && !arraysCleared)
+		ClearArrays();
 }
 
 inline bool InteriorSun::IsInteriorWithSun(const RE::TESObjectCELL* cell)

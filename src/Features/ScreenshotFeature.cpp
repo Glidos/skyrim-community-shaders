@@ -2345,6 +2345,17 @@ void ScreenshotFeature::EnsurePreviewCache(ID3D11Texture2D* sourceTexture)
 	Util::SetResourceName(previewCacheSRV.get(), "Screenshot::PreviewCache SRV");
 }
 
+void ScreenshotFeature::Reset()
+{
+	if ((!previewCacheTexture && !previewCacheSRV) || (globals::menu && globals::menu->IsEnabled))
+		return;
+	const Util::RendererOwnership ownership(Util::GetRendererContextLock(globals::game::renderer, globals::d3d::context));
+	if (!ownership)
+		return;
+	previewCacheSRV = nullptr;
+	previewCacheTexture = nullptr;
+}
+
 ScreenshotFeature::CaptureOptions ScreenshotFeature::SnapshotCaptureOptions() const
 {
 	return {
