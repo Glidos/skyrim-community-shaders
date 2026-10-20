@@ -94,7 +94,7 @@ namespace SunShadowReceiver
 		if (!input.available)
 			return input;
 		input.flags = property->flags.underlying();
-		input.activeMask = lightData->activeLightMask;
+		input.activeMask = Policy::ReadMask(lightData->activeLightMask);
 		input.shadowsEnabled = !globals::game::smState->interior && runtime->nativeShadowSuppressed && !*runtime->nativeShadowSuppressed &&
 		                       (!runtime->vrDrawShadows || *runtime->vrDrawShadows);
 		if (!(input.flags & Policy::ReceiveShadows) || (input.flags & Policy::ExcludedLod) || !input.shadowsEnabled)
