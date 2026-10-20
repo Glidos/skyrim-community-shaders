@@ -404,6 +404,7 @@ void OverlayRenderer::RenderOverlay(
 	auto* editorWindow = EditorWindow::GetSingleton();
 	editorWindow->AdvanceLightEditorDeferredWork();
 	editorWindow->UpdateOpenState();
+	editorWindow->ReleasePendingPreviewResources();
 
 	auto drawableOverlays = CollectDrawableFeatureOverlays(menu);
 	auto& io = ImGui::GetIO();

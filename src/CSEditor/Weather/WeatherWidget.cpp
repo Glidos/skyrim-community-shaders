@@ -102,16 +102,6 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WeatherWidget::Settings,
 	clouds,
 	featureSettings)
 
-WeatherWidget::~WeatherWidget()
-{
-	for (auto& [layerIndex, srv] : cloudTextureCache) {
-		if (srv) {
-			srv->Release();
-		}
-	}
-	cloudTextureCache.clear();
-}
-
 void WeatherWidget::DrawWidget()
 {
 	WeatherUtils::SetCurrentWidget(this);
@@ -2173,8 +2163,8 @@ std::vector<Widget::SearchResult> WeatherWidget::CollectSearchableSettings() con
 
 ID3D11ShaderResourceView* WeatherWidget::GetCloudTexture(int layerIndex)
 {
-	if (cloudTextureCache.contains(layerIndex)) {
-		return cloudTextureCache[layerIndex];
+	if (auto it = cloudTextureCache.find(layerIndex); it != cloudTextureCache.end()) {
+		return it->second.get();
 	}
 
 	const auto& texturePath = settings.clouds[layerIndex].texturePath;
@@ -2186,12 +2176,11 @@ ID3D11ShaderResourceView* WeatherWidget::GetCloudTexture(int layerIndex)
 	if (resourcePath.empty())
 		return nullptr;
 
-	ID3D11ShaderResourceView* srv = nullptr;
+	winrt::com_ptr<ID3D11ShaderResourceView> srv;
 	ImVec2 textureSize;
 
-	if (Util::LoadDDSTextureFromFile(globals::d3d::device, resourcePath.c_str(), &srv, textureSize)) {
-		cloudTextureCache[layerIndex] = srv;
-		return srv;
+	if (Util::LoadDDSTextureFromFile(globals::d3d::device, resourcePath.c_str(), srv.put(), textureSize)) {
+		return cloudTextureCache.emplace(layerIndex, std::move(srv)).first->second.get();
 	}
 
 	return nullptr;

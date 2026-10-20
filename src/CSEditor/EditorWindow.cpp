@@ -1539,9 +1539,24 @@ void EditorWindow::UpdateOpenState()
 		viewportImageRect = {};
 		RestoreVanityCamera();
 		lastFocusedWidget = nullptr;
+		previewResourceReleasePending.store(true, std::memory_order_release);
 	}
 
 	wasOpen = open;
+}
+
+void EditorWindow::ReleasePendingPreviewResources()
+{
+	if (!previewResourceReleasePending.load(std::memory_order_relaxed) ||
+		!previewResourceReleasePending.exchange(false, std::memory_order_acq_rel))
+		return;
+
+	// Close requests may originate outside rendering or while draw lists still use these SRVs.
+	delete tempTexture;
+	tempTexture = nullptr;
+	for (auto& widget : weatherWidgets)
+		if (auto* weatherWidget = dynamic_cast<WeatherWidget*>(widget.get()))
+			weatherWidget->cloudTextureCache.clear();
 }
 
 void EditorWindow::AdvanceLightEditorDeferredWork()
@@ -1594,7 +1609,7 @@ void EditorWindow::Draw()
 						D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc{};
 						framebuffer.SRV->GetDesc(&srvDesc);
 
-						tempTexture = new Texture2D(texDesc);
+						tempTexture = new Texture2D(texDesc, "CSEditor::ViewportCopy");
 						tempTexture->CreateSRV(srvDesc);
 					}
 
