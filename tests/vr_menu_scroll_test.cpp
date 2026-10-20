@@ -25,7 +25,12 @@ namespace RE
 	struct VRControllerState
 	{
 		std::array<ImVec2, 2> thumbsticks{};
-		bool buttonHeld = false;
+		struct Button
+		{
+			bool isPressed = false;
+		};
+		std::array<Button, 2> buttons{};
+		const Button& operator[](size_t key) const { return buttons.at(key); }
 	};
 }
 
@@ -74,6 +79,16 @@ namespace
 	bool gHasLastMenuNavigationMode = false;
 	bool gLastMenuNavigationUsesWand = false;
 	std::array<bool, 2> gBlockRawTriggerUntilRelease{};
+	bool gPrevPrimaryVRInputStates[2]{};
+	bool gPrevSecondaryVRInputStates[2]{};
+	struct Mapping
+	{
+		size_t keyCode;
+	};
+	std::array<Mapping, 2> GetVRInputMappings(bool secondary)
+	{
+		return secondary ? std::array{ Mapping{ 1 }, Mapping{ 0 } } : std::array{ Mapping{ 0 }, Mapping{ 1 } };
+	}
 	void CancelWandMouseInput(VR&) {}
 	void ResetCursorOwnershipState() {}
 	void Require(bool condition, const char* message)
@@ -146,10 +161,17 @@ static void CheckScrolling(bool mouseNavigation, size_t hand)
 
 	// A menu transition can occur after the last gameplay stick event.
 	setStick(1, -1);
-	controller.buttonHeld = true;
+	controller.buttons[0].isPressed = true;
 	vr.ReleaseMenuImGuiInputState();
 	requireIdle();
-	Require(controller.buttonHeld, "menu resets must preserve held shortcut buttons");
+	Require(controller.buttons[0].isPressed, "menu resets must preserve held shortcut buttons");
+	for (bool secondary : { false, true }) {
+		const auto mappings = GetVRInputMappings(secondary);
+		const auto& physical = secondary ? vr.secondaryControllerState : vr.primaryControllerState;
+		const auto* previous = secondary ? gPrevSecondaryVRInputStates : gPrevPrimaryVRInputStates;
+		for (size_t index = 0; index < mappings.size(); ++index)
+			Require(previous[index] == physical[mappings[index].keyCode].isPressed, "reset must latch physical held buttons in mapping order");
+	}
 	ImVec2 cursor{ 200, 200 };
 	Require(!ApplyThumbstickCursorDelta(controller, hand, .15f, 10, cursor, io.DisplaySize),
 		"reset must not replay stale cursor movement");
