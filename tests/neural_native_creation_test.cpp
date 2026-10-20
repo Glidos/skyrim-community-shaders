@@ -390,9 +390,17 @@ namespace
 		unsupported.networkSelectionSupported_ = false;
 		const auto created = creates.size();
 		Require(!unsupported.PrepareFeature(&commands, 2, layout, nullptr, nullptr, false, nullptr, kNetworkNewer) &&
-					creates.size() == created,
+					creates.size() == created && !unsupported.featureHandles_[2] &&
+					unsupported.status_ == RuntimeStatus::FeatureCreateFailed &&
+					unsupported.failureStage_ == RuntimeFailureStage::FeatureConfiguration,
 			"unsupported native networks must fail before calling the provider");
-		Require(unsupported.PrepareFeature(&commands, 2, layout), "unsupported families must retain default creation");
+		Require(!unsupported.PrepareFeature(&commands, 2, layout) && creates.size() == created,
+			"failed creation must require runtime recovery before another attempt");
+		Runtime defaultNetwork;
+		defaultNetwork.networkSelectionSupported_ = false;
+		Require(defaultNetwork.PrepareFeature(&commands, 2, layout) &&
+					creates.back().at("DLSSNR.Hint.Render.Preset") == kNetworkDefault,
+			"initialized unsupported families must retain default creation");
 	}
 
 	void InvalidationAndLease()
