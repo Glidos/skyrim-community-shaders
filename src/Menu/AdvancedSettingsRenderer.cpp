@@ -86,19 +86,31 @@ void AdvancedSettingsRenderer::RenderShaderCompileFlags()
 
 	Util::DrawSectionHeader("Compile Flags");
 
-	// Shader Defines input
-	auto shaderDefines = globals::state->GetShaderDefinesSnapshot()->canonicalText;
-	if (Util::Widgets::InputText("Shader Defines", &shaderDefines)) {
-		globals::state->SetDefines(shaderDefines);
+	// Keep drafts private until application; a hidden field abandons its draft.
+	static std::string shaderDefines;
+	static std::string appliedDefines;
+	static bool editingDefines = false;
+	static uint32_t lastDefinesFrame = 0;
+	const auto frame = globals::state->frameCount;
+	if (!editingDefines || (frame != lastDefinesFrame && frame != lastDefinesFrame + 1u)) {
+		shaderDefines = globals::state->GetShaderDefinesSnapshot()->canonicalText;
+		appliedDefines = shaderDefines;
 	}
-	if (ImGui::IsItemDeactivatedAfterEdit() || (ImGui::IsItemActive() &&
-												   (ImGui::IsKeyPressed(ImGuiKey_Enter) ||
-													   ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)))) {
-		globals::state->SetDefines(shaderDefines);
-		shaderCache->Clear();
+	lastDefinesFrame = frame;
+	const bool applyDefines = Util::Widgets::InputText("Shader Defines", &shaderDefines, ImGuiInputTextFlags_EnterReturnsTrue);
+	editingDefines = ImGui::IsItemActive();
+	if ((applyDefines || ImGui::IsItemDeactivatedAfterEdit()) &&
+		!ImGui::IsKeyPressed(ImGuiKey_Escape, false) && shaderDefines != appliedDefines) {
+		const auto previousDefines = globals::state->GetShaderDefinesSnapshot();
+		if (shaderDefines != previousDefines->canonicalText) {
+			globals::state->SetDefines(shaderDefines);
+			if (globals::state->GetShaderDefinesSnapshot()->canonicalText != previousDefines->canonicalText)
+				shaderCache->Clear();
+		}
+		appliedDefines = shaderDefines;
 	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("Semicolon-separated shader defines; enter a space to clear. Rebuild shaders after editing. Compute shaders need a restart to recompile.");
+		ImGui::Text("Semicolon-separated shader defines; leave empty to clear. Press Enter or leave the field to apply. Closing this page discards unapplied edits. Compute shaders need a restart to recompile.");
 	}
 
 	// Half-precision (partial precision) shader compile flag
