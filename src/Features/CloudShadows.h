@@ -2,12 +2,6 @@
 
 struct CloudShadows : Feature
 {
-private:
-	static constexpr std::string_view MOD_ID = "139185";
-	bool occlusionClearedWithoutClouds = false;
-	bool ClearOcclusionWithoutClouds();
-
-public:
 	struct alignas(16) Settings
 	{
 		float Opacity = 0.8f;
@@ -17,6 +11,12 @@ public:
 
 	Settings settings;
 
+private:
+	static constexpr std::string_view MOD_ID = "139185";
+	bool occlusionClearedWithoutClouds = false;
+	bool ClearOcclusionWithoutClouds();
+
+public:
 	/** Composes the active Adaptive Balance layer without changing authored settings. */
 	Settings GetCommonBufferData() const;
 
