@@ -809,7 +809,8 @@ namespace SIE
 			// CSX start
 			TruePbr = 1 << 3,
 			Deferred = 1 << 4,
-			LandscapeSeams = 1 << 5,
+			// Bit 5 belongs to the character-category output layout.
+			LandscapeSeams = 1 << 6,
 			// CSX end
 			Specular = 1 << 9,
 			SoftLighting = 1 << 10,
