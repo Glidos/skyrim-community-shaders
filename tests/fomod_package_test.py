@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -149,6 +150,35 @@ class FomodPackageTests(unittest.TestCase):
     @staticmethod
     def _write_json(path: Path, value: dict) -> None:
         path.write_text(json.dumps(value), encoding="utf-8")
+
+    def test_installer_xml_survives_vortex_validation_transcoding(self) -> None:
+        def vortex_stream(xml_text: str) -> bytes:
+            # Match XmlScriptType.StringStream in Nexus-Mods/fomod-installer.
+            normalized = re.sub(r'^([^>]*)encoding="[^"]+"', r"\1", xml_text)
+            return b"\xfe\xff" + normalized.encode("utf-16-be")
+
+        original = "<?xml version='1.0' encoding='utf-8'?>\n<config />"
+        with self.assertRaises(ET.ParseError):
+            ET.fromstring(vortex_stream(original))
+
+        for include_se_ae in (True, False):
+            with self.subTest(include_se_ae=include_se_ae), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                core, se_cache, vr_cache = self._inputs(root)
+                output = root / "staged"
+                version = "v3.20.1-é & validation"
+                BUILDER.stage_package(
+                    core, se_cache if include_se_ae else None, vr_cache,
+                    output, version, include_se_ae=include_se_ae,
+                )
+                for name in (BUILDER.MODULE_CONFIG_FILE, BUILDER.INFO_FILE):
+                    with self.subTest(file=name):
+                        content = (output / BUILDER.FOMOD_DIRECTORY / name).read_bytes()
+                        direct = ET.fromstring(content)
+                        transcoded = ET.fromstring(vortex_stream(content.decode("utf-8")))
+                        self.assertEqual(ET.tostring(direct), ET.tostring(transcoded))
+                        if name == BUILDER.INFO_FILE:
+                            self.assertEqual(transcoded.findtext("Version"), version)
 
     def test_rejects_missing_empty_or_directory_plugin_before_and_after_staging(self) -> None:
         for include_se_ae in (True, False):

@@ -262,6 +262,14 @@ def build_info(version: str) -> ET.ElementTree:
     return ET.ElementTree(root)
 
 
+def write_installer_xml(tree: ET.ElementTree, path: Path) -> None:
+    """Write UTF-8 XML with a declaration compatible with Vortex validation."""
+    with path.open("wb") as output:
+        # Vortex strips only double-quoted encodings before transcoding to UTF-16.
+        output.write(b'<?xml version="1.0" encoding="utf-8"?>\n')
+        tree.write(output, encoding="utf-8", xml_declaration=False)
+
+
 def validate_core_plugin(core: Path) -> None:
     """Require the shipped plugin before staging and after copying the core."""
     plugin = core / PLUGIN_DLL
@@ -636,15 +644,13 @@ def stage_package(
 
         fomod_directory = output / FOMOD_DIRECTORY
         fomod_directory.mkdir()
-        build_module_config(include_se_ae).write(
+        write_installer_xml(
+            build_module_config(include_se_ae),
             fomod_directory / MODULE_CONFIG_FILE,
-            encoding="utf-8",
-            xml_declaration=True,
         )
-        build_info(version).write(
+        write_installer_xml(
+            build_info(version),
             fomod_directory / INFO_FILE,
-            encoding="utf-8",
-            xml_declaration=True,
         )
         validate_staged_package(output, version, include_se_ae)
     except (OSError, SystemExit):
