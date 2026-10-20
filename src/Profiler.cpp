@@ -150,33 +150,37 @@ void Profiler::Initialize(ID3D11Device* device, ID3D11DeviceContext* a_context, 
 	QueryPerformanceFrequency(&freq);
 	cpuTicksToMs = 1000.0 / static_cast<double>(freq.QuadPart);
 
+	const auto createQuery = [device](D3D11_QUERY type, winrt::com_ptr<ID3D11Query>& query, const char* name) {
+		D3D11_QUERY_DESC desc{ type, 0 };
+		const HRESULT result = device->CreateQuery(&desc, query.put());
+		if (FAILED(result)) {
+			logger::warn("Profiler disabled: failed to create {} (HRESULT 0x{:08X})", name, static_cast<uint32_t>(result));
+			return false;
+		}
+		Util::SetResourceName(query.get(), name);
+		return true;
+	};
+
 	for (auto& frame : frames) {
-		D3D11_QUERY_DESC disjointDesc{};
-		disjointDesc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
-		device->CreateQuery(&disjointDesc, frame.disjoint.put());
-		if (frame.disjoint)
-			Util::SetResourceName(frame.disjoint.get(), "Profiler::Disjoint");
-		if (flatTiming) {
-			D3D11_QUERY_DESC desc{ D3D11_QUERY_TIMESTAMP, 0 };
-			device->CreateQuery(&desc, frame.wholeFrameBegin.put());
-			device->CreateQuery(&desc, frame.wholeFrameEnd.put());
-			if (frame.wholeFrameBegin)
-				Util::SetResourceName(frame.wholeFrameBegin.get(), "Profiler::WholeFrame Begin");
-			if (frame.wholeFrameEnd)
-				Util::SetResourceName(frame.wholeFrameEnd.get(), "Profiler::WholeFrame End");
+		if (!createQuery(D3D11_QUERY_TIMESTAMP_DISJOINT, frame.disjoint, "Profiler::Disjoint")) {
+			Release();
+			return;
+		}
+		if (flatTiming &&
+			(!createQuery(D3D11_QUERY_TIMESTAMP, frame.wholeFrameBegin, "Profiler::WholeFrame Begin") ||
+				!createQuery(D3D11_QUERY_TIMESTAMP, frame.wholeFrameEnd, "Profiler::WholeFrame End"))) {
+			Release();
+			return;
 		}
 
 		frame.timers.resize(kMaxTimers);
 		frame.activeTimerStack.reserve(kMaxTimers);
 		for (auto& timer : frame.timers) {
-			D3D11_QUERY_DESC tsDesc{};
-			tsDesc.Query = D3D11_QUERY_TIMESTAMP;
-			device->CreateQuery(&tsDesc, timer.begin.put());
-			device->CreateQuery(&tsDesc, timer.end.put());
-			if (timer.begin)
-				Util::SetResourceName(timer.begin.get(), "Profiler::Pass Begin");
-			if (timer.end)
-				Util::SetResourceName(timer.end.get(), "Profiler::Pass End");
+			if (!createQuery(D3D11_QUERY_TIMESTAMP, timer.begin, "Profiler::Pass Begin") ||
+				!createQuery(D3D11_QUERY_TIMESTAMP, timer.end, "Profiler::Pass End")) {
+				Release();
+				return;
+			}
 		}
 		frame.cpuTimers.reserve(kMaxTimers);
 		ResetFrameState(frame);
