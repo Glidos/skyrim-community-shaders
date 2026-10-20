@@ -18971,7 +18971,7 @@ void Upscaling::DrawNeuralRenderingSettings(UpscaleMethod a_upscaleMethod, const
 					settings.neuralRenderingNetwork = static_cast<uint>(network);
 					runtime.GetTuningLimits(settings.neuralRenderingNetwork).Sanitize(settings);
 				}
-				Util::AddTooltip("Choose a network inside the same 310.9 DLL. Runtime default preserves the provider's choice. Legacy uses the older, slower network and can give a stronger, more detailed NR effect, with the 310.8 slider ranges. Newer favours performance with a lighter enhancement and the 310.9 ranges. Switching clamps values to the selected network's limits and recreates both eye models.");
+				Util::AddTooltip("Choose a network inside the same 310.9 DLL. Runtime default preserves the provider's choice; on 310.9 it is assumed to use Newer and uses the Newer slider ranges. Legacy uses the older, slower network and can give a stronger, more detailed NR effect, with the 310.8 slider ranges. Newer favours performance with a lighter enhancement and the 310.9 ranges. Switching clamps values to the selected network's limits and recreates both eye models.");
 			}
 			if (!runtime.SupportsNetworkSelection())
 				ImGui::TextDisabled("This runtime uses its default network; explicit choices require 310.9.");

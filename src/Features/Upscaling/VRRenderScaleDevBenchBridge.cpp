@@ -1536,7 +1536,7 @@ namespace
       "localStructureStrength":{"type":"number","minimum":0,"maximum":2,"description":"Maximum 1 for 310.9 Runtime default/Newer; maximum 2 for Legacy and 310.8. Other DLL families retain 2. See nr_status.tuningLimits."},
       "skinStructureStrength":{"type":"number","minimum":0,"maximum":2,"description":"Maximum 1 for 310.9 Runtime default/Newer; maximum 2 for Legacy and 310.8. Other DLL families retain 2. See nr_status.tuningLimits."},
       "style":{"type":"integer","minimum":0,"maximum":3},
-      "network":{"type":"integer","minimum":0,"maximum":2,"description":"Native network: 0 preserves runtime default, 1 Legacy (310.8-like), 2 Newer. Explicit networks require 310.9 and use the same DLL. Legacy uses 310.8 tuning ranges; default and Newer retain the installed-DLL ranges. Switching clamps values without rescaling."},
+      "network":{"type":"integer","minimum":0,"maximum":2,"description":"Native network: 0 preserves runtime default, assumed Newer on 310.9 for tuning ranges; 1 Legacy (310.8-like), 2 Newer. Explicit networks require 310.9 and use the same DLL. Legacy uses 310.8 tuning ranges; default and Newer retain the installed-DLL ranges. Switching clamps values without rescaling."},
       "batchedStereo":{"type":"boolean"},
       "directCommit":{"type":"boolean"},
       "optimizedStereoPath":{"type":"boolean"},
@@ -11311,7 +11311,7 @@ namespace VRRenderScaleDevBenchBridge
 			                        "Explicit networks require 310.9; unsupported explicit requests reject without mutation. Saved choices on "
 			                        "other runtime families use native 0. Changing the effective preset retires incompatible eye features "
 			                        "after GPU completion and invalidates their histories. Legacy uses 310.8 tuning ranges; default and Newer "
-			                        "retain the installed-DLL ranges. Switching clamps values without rescaling. "
+			                        "retain the installed-DLL ranges. On 310.9, native default 0 is assumed Newer for tuning ranges without claiming model verification. Switching clamps values without rescaling. "
 			                        "nr_status networkSelection reports requested/effective native presets and resident slot creation presets "
 			                        "(null without a valid configured feature); it does not identify the provider's internal model for native default 0.";
 			result["description"] = result["description"].get<std::string>() +

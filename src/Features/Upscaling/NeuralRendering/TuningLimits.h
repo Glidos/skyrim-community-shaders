@@ -26,7 +26,7 @@ namespace NeuralRendering
 		}
 	};
 
-	/** Match reported provider ranges for 310.8/310.9 without restricting unknown versions. */
+	/** Default 310.9 uses newer-network ranges; 310.8 retains legacy ranges, with unknown versions unrestricted. */
 	[[nodiscard]] constexpr TuningLimits GetTuningLimitsForVersion(std::uint32_t major, std::uint32_t minor) noexcept
 	{
 		if (major == 310 && minor == 9)
