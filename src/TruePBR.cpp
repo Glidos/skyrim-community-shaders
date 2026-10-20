@@ -6,6 +6,7 @@
 
 #include "Features/GrassLighting.h"
 #include "Features/InteriorSun.h"
+#include "Features/TerrainBlending.h"
 #include "Features/TerrainSeams.h"
 #include "Features/Upscaling.h"
 #include "Hooks.h"
@@ -680,7 +681,7 @@ namespace Permutations
 		}
 	}
 
-	std::unordered_set<uint32_t> GeneratePBRLightingPixelPermutations()
+	std::unordered_set<uint32_t> GeneratePBRLightingPixelPermutations(bool landscapeSeams)
 	{
 		using enum SIE::ShaderCache::LightingShaderFlags;
 
@@ -697,7 +698,11 @@ namespace Permutations
 		const std::unordered_set<uint32_t> projectedUvFlagValues = GenerateFlagPermutations(projectedUvFlags, projectedUvConstantFlags);
 		const std::unordered_set<uint32_t> lodObjectsFlagValues = GenerateFlagPermutations(lodObjectsFlags, defaultConstantFlags);
 		const std::unordered_set<uint32_t> treeFlagValues = GenerateFlagPermutations(treeFlags, defaultConstantFlags);
-		const std::unordered_set<uint32_t> landFlagValues = GenerateFlagPermutations(landFlags, defaultConstantFlags);
+		std::unordered_set<uint32_t> landFlagValues = GenerateFlagPermutations(landFlags, defaultConstantFlags);
+		if (landscapeSeams) {
+			const auto seamFlagValues = GenerateFlagPermutations(landFlags, defaultConstantFlags | static_cast<uint32_t>(LandscapeSeams));
+			landFlagValues.insert(seamFlagValues.begin(), seamFlagValues.end());
+		}
 
 		std::unordered_set<uint32_t> result;
 		AddLightingShaderDescriptors(SIE::ShaderCache::LightingShaderTechniques::None, defaultFlagValues, result);
@@ -727,7 +732,22 @@ void TruePBR::GenerateShaderPermutations(RE::BSShader* shader)
 	auto shaderCache = globals::shaderCache;
 	if (shader->shaderType == RE::BSShader::Type::Lighting) {
 		const bool categories = globals::features::upscaling.NeedsCharacterCategoryShaders();
-		const auto pixelPermutations = Permutations::GeneratePBRLightingPixelPermutations();
+		const auto& terrain = globals::features::terrainBlending;
+		// Seam runtime activation happens after startup prewarming, so use the configured state here.
+		const bool landscapeSeams = loaded && settings.Enabled && terrain.loaded && terrain.settings.Enabled && terrain.settings.LandscapeSeams;
+		auto pixelPermutations = Permutations::GeneratePBRLightingPixelPermutations(landscapeSeams);
+		if (landscapeSeams) {
+			constexpr auto seamsFlag = static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::LandscapeSeams);
+			constexpr auto deferredFlag = static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Deferred);
+			for (const auto& entry : shader->pixelShaders) {
+				const auto type = static_cast<SIE::ShaderCache::LightingShaderTechniques>((entry->id >> 24) & 0x3F);
+				if (type != SIE::ShaderCache::LightingShaderTechniques::MTLand && type != SIE::ShaderCache::LightingShaderTechniques::MTLandLODBlend)
+					continue;
+
+				pixelPermutations.insert(entry->id | seamsFlag);
+				pixelPermutations.insert(entry->id | seamsFlag | deferredFlag);
+			}
+		}
 		for (auto descriptor : pixelPermutations) {
 			auto vertexShaderDesriptor = descriptor;
 			auto pixelShaderDescriptor = descriptor;
