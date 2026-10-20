@@ -1,4 +1,5 @@
 #include "Features/Upscaling/NeuralRendering/NativeEvaluationLayout.h"
+#include "Features/Upscaling/NeuralRendering/NetworkSelection.h"
 #include "Features/Upscaling/NeuralRendering/PrewarmPolicy.h"
 #include "Features/Upscaling/NeuralRendering/ShaderInvalidation.h"
 #include "Features/Upscaling/NeuralRendering/TuningLimits.h"
@@ -115,6 +116,7 @@ namespace NeuralRendering
 	};
 	struct Tuning
 	{
+		std::uint32_t networkPreset = kNetworkDefault;
 		float intensity = .8f, localToneStrength = .75f, localStructureStrength = .9f, skinStructureStrength = .9f;
 		std::uint32_t style = 3;
 		bool useAutoMask = true, uiCorrection = false;
@@ -144,13 +146,17 @@ namespace NeuralRendering
 		static constexpr unsigned kFeatureSlotCount = 4;
 		struct FeatureConfiguration
 		{
+			std::uint32_t networkPreset = kNetworkDefault;
 			UpscalingDLSS::Extent colorBacking{};
 			NativeCreationExtents creation{};
 			bool featureUpscaling = false, providerBlending = false, valid = false;
 			bool Matches(const NativeEvaluationLayout&) const;
 		};
 		std::optional<TuningLimits> tuningLimits_ = TuningLimits{};
-		TuningLimits GetTuningLimits() const;
+		std::optional<bool> networkSelectionSupported_ = true;
+		TuningLimits GetTuningLimits(std::uint32_t = kNetworkDefault) const;
+		bool SupportsNetworkSelection() const;
+		std::uint32_t GetNetworkPreset(std::uint32_t) const;
 		mutable std::recursive_mutex mutex_;
 		std::atomic<bool> abandonRequested_ = false;
 		bool abandoned_ = false;
@@ -180,8 +186,8 @@ namespace NeuralRendering
 			ngxResult_ = result;
 		}
 		void LogOnceLocked(bool& emitted, const char*, bool) { emitted = true; }
-		bool PrepareFeature(ID3D12GraphicsCommandList*, unsigned, const NativeEvaluationLayout&, ID3D12Resource* = nullptr, ID3D12Resource* = nullptr, bool = false, RuntimeExecutionEvidence* = nullptr);
-		bool PrepareFeatureLocked(ID3D12GraphicsCommandList*, unsigned, const NativeEvaluationLayout&, ID3D12Resource*, ID3D12Resource*, bool, RuntimeExecutionEvidence*);
+		bool PrepareFeature(ID3D12GraphicsCommandList*, unsigned, const NativeEvaluationLayout&, ID3D12Resource* = nullptr, ID3D12Resource* = nullptr, bool = false, RuntimeExecutionEvidence* = nullptr, std::uint32_t = kNetworkDefault);
+		bool PrepareFeatureLocked(ID3D12GraphicsCommandList*, unsigned, const NativeEvaluationLayout&, ID3D12Resource*, ID3D12Resource*, bool, RuntimeExecutionEvidence*, std::uint32_t);
 		void AcknowledgePresentedFeatures(unsigned);
 		bool Execute(ID3D12GraphicsCommandList*, unsigned, ID3D12Resource*, ID3D12Resource*, ID3D12Resource*, ID3D12Resource*, ID3D12Resource*, const NativeEvaluationLayout&, const Tuning&, bool, bool* = nullptr, RuntimeExecutionEvidence* = nullptr, D3D12Interop* = nullptr, unsigned = 0, bool = false);
 	};
@@ -222,6 +228,8 @@ namespace
 				 std::array{ 310u, 90u, 2u, 2u }, std::array{ 311u, 9u, 2u, 2u } }) {
 			Util::installedVersion = Util::TestRuntimeVersion{ major, minor };
 			const auto metadata = DiscoverInstalledRuntimeMetadata();
+			Require(metadata.networkSelectionSupported == (major == 310 && minor == 9),
+				"explicit networks must be restricted to the known runtime family");
 			Require(metadata.installed && metadata.tuningLimits.intensity == intensity &&
 						metadata.tuningLimits.localToneStrength == 2 && metadata.tuningLimits.localStructureStrength == structure &&
 						metadata.tuningLimits.skinStructureStrength == structure,
@@ -245,6 +253,11 @@ namespace
 		runtime.tuningLimits_.reset();
 		Require(runtime.GetTuningLimits().localStructureStrength == 1 && Util::versionReads == reads,
 			"retirement must restore cached installation limits without another filesystem query");
+		runtime.networkSelectionSupported_.reset();
+		Require(runtime.SupportsNetworkSelection(), "unprobed network support must use cached installed metadata");
+		runtime.networkSelectionSupported_ = false;
+		Require(!runtime.SupportsNetworkSelection() && runtime.GetNetworkPreset(kNetworkLegacy) == kNetworkDefault,
+			"probed unsupported networks must resolve to default even with supported installed metadata");
 	}
 	void NativeCreation()
 	{
@@ -341,6 +354,47 @@ namespace
 		Require(!run(failedPair, 3, layout) && (failedPair.firstEvaluationResetMask_.load() & 12u) == 12u, "right failure consumed pair reset");
 		providerEvaluateResult = 0;
 	}
+	void NetworkCreation()
+	{
+		using namespace NeuralRendering;
+		const UpscalingDLSS::Extent extent{ 320, 192 };
+		const auto layout = BuildNativeEvaluationLayout(extent, extent, extent, {}, { 0, 0, 320, 192 }, { true, 320.f, 192.f }, false);
+		ID3D12GraphicsCommandList commands;
+		ID3D12Resource resource;
+		for (const auto network : { kNetworkDefault, kNetworkLegacy, kNetworkNewer }) {
+			Runtime warm, lazy;
+			warm.tuningLimits_ = lazy.tuningLimits_ = GetTuningLimitsForVersion(310, 9);
+			Tuning tuning;
+			tuning.networkPreset = network;
+			tuning.localStructureStrength = 1.75f;
+			Require(warm.PrepareFeature(&commands, 2, layout, nullptr, nullptr, false, nullptr, network), "network prewarm failed");
+			const auto parameters = creates.back();
+			Require(parameters.at("DLSSNR.Hint.Render.Preset") == network &&
+						warm.featureConfigurations_[2].networkPreset == network,
+				"provider hint and resident identity must match the selected network");
+			const auto run = [&](Runtime& runtime) {
+				return runtime.Execute(&commands, 2, &resource, &resource, &resource, &resource, nullptr, layout, tuning, false);
+			};
+			const auto created = creates.size();
+			Require(run(warm) && creates.size() == created, "matching prewarm must retain the selected network");
+			Require(run(lazy) && creates.back() == parameters, "lazy and prewarmed networks must use identical creation parameters");
+			Require(evaluations.back().at("DLSSNR.LocalStructureStrength") == std::bit_cast<std::uint32_t>(network == kNetworkLegacy ? 1.75f : 1.0f),
+				"native dispatch must obey the selected network's tuning limits");
+			tuning.networkPreset = (network + 1) % 3;
+			const auto evaluated = evaluations.size();
+			Require(!run(warm) && evaluations.size() == evaluated && warm.featureHandles_[2] &&
+						warm.status_ == RuntimeStatus::FeatureConfigurationChanged,
+				"a live network change must require renderer retirement before any evaluation");
+		}
+		Runtime unsupported;
+		unsupported.networkSelectionSupported_ = false;
+		const auto created = creates.size();
+		Require(!unsupported.PrepareFeature(&commands, 2, layout, nullptr, nullptr, false, nullptr, kNetworkNewer) &&
+					creates.size() == created,
+			"unsupported native networks must fail before calling the provider");
+		Require(unsupported.PrepareFeature(&commands, 2, layout), "unsupported families must retain default creation");
+	}
+
 	void InvalidationAndLease()
 	{
 		using namespace NeuralRendering;
@@ -362,6 +416,9 @@ namespace
 		PrewarmKey key;
 		key.slotMask = 12;
 		policy.Capture(key, 100);
+		auto changedNetwork = key;
+		changedNetwork.networkPreset = kNetworkNewer;
+		Require(changedNetwork != policy.key, "a new network must invalidate the captured prewarm identity");
 		Require(policy.BeginOpportunity(8) && !policy.BeginOpportunity(8) && policy.BeginOpportunity(9), "duplicate compositor work was admitted");
 		Require(!policy.Expired(30099) && policy.Expired(30100), "unused lease did not expire independently of world frames");
 		policy.backendOwned = true;
@@ -389,6 +446,7 @@ int main()
 	try {
 		RuntimeTuningMetadata();
 		NativeCreation();
+		NetworkCreation();
 		InvalidationAndLease();
 	} catch (const std::exception& error) {
 		std::cerr << error.what() << '\n';

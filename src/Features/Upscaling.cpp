@@ -383,6 +383,7 @@ namespace FSRTemporalTuningPolicy
 	OP(neuralRenderingLocalStructure)            \
 	OP(neuralRenderingSkinStructure)             \
 	OP(neuralRenderingStyle)                     \
+	OP(neuralRenderingNetwork)                   \
 	OP(neuralRenderingAutoMask)                  \
 	OP(neuralRenderingUICorrection)              \
 	OP(neuralRenderingSingleSubrectScale)        \
@@ -5100,8 +5101,9 @@ Optional: select FOV + TAA for further performance savings (not compatible with 
 		settings.neuralRenderingPreset = std::min(settings.neuralRenderingPreset, 4u);
 		settings.neuralRenderingModelResolutionPercent = std::clamp(settings.neuralRenderingModelResolutionPercent,
 			NeuralRendering::kMinimumModelResolutionPercent, NeuralRendering::kMaximumModelResolutionPercent);
-		NeuralRendering::Runtime::Instance().GetTuningLimits().Sanitize(settings);
+		NeuralRendering::Runtime::Instance().GetTuningLimits(settings.neuralRenderingNetwork).Sanitize(settings);
 		settings.neuralRenderingStyle = std::min(settings.neuralRenderingStyle, 3u);
+		settings.neuralRenderingNetwork = NeuralRendering::SanitizeNetworkSelection(settings.neuralRenderingNetwork);
 		settings.neuralRenderingSingleSubrectScale = std::clamp(
 			std::isfinite(settings.neuralRenderingSingleSubrectScale) ?
 				settings.neuralRenderingSingleSubrectScale :
@@ -5138,6 +5140,7 @@ Optional: select FOV + TAA for further performance savings (not compatible with 
 	NeuralRendering::Tuning BuildNeuralRenderingTuning(const Upscaling::Settings& settings) noexcept
 	{
 		return {
+			.networkPreset = NeuralRendering::Runtime::Instance().GetNetworkPreset(settings.neuralRenderingNetwork),
 			.intensity = settings.neuralRenderingIntensity,
 			.localToneStrength = settings.neuralRenderingLocalTone,
 			.localStructureStrength = settings.neuralRenderingLocalStructure,
@@ -5472,6 +5475,7 @@ Optional: select FOV + TAA for further performance savings (not compatible with 
 		settings.neuralRenderingLocalStructure = 0.9f;
 		settings.neuralRenderingSkinStructure = 0.9f;
 		settings.neuralRenderingStyle = 3;
+		settings.neuralRenderingNetwork = NeuralRendering::kNetworkDefault;
 		settings.neuralRenderingAutoMask = true;
 		settings.neuralRenderingUICorrection = false;
 		settings.neuralRenderingCentralAreaPercent = NeuralRendering::kMaximumCentralAreaPercent;
@@ -5572,6 +5576,7 @@ Optional: select FOV + TAA for further performance savings (not compatible with 
 		o_json.erase("neuralRenderingLocalStructure");
 		o_json.erase("neuralRenderingSkinStructure");
 		o_json.erase("neuralRenderingStyle");
+		o_json.erase("neuralRenderingNetwork");
 		o_json.erase("neuralRenderingAutoMask");
 		o_json.erase("neuralRenderingUICorrection");
 		o_json.erase("neuralRenderingSingleSubrectScale");
@@ -6765,6 +6770,7 @@ Optional: select FOV + TAA for further performance savings (not compatible with 
 		addFloat(a_settings.neuralRenderingLocalStructure);
 		addFloat(a_settings.neuralRenderingSkinStructure);
 		add(a_settings.neuralRenderingStyle);
+		add(a_settings.neuralRenderingNetwork);
 		add(a_settings.neuralRenderingAutoMask);
 		add(a_settings.neuralRenderingUICorrection);
 		addFloat(a_settings.neuralRenderingSingleSubrectScale);
@@ -18350,7 +18356,7 @@ bool Upscaling::ApplyNeuralRenderingPreset(
 	default:
 		break;
 	}
-	NeuralRendering::Runtime::Instance().GetTuningLimits().Sanitize(a_settings);
+	NeuralRendering::Runtime::Instance().GetTuningLimits(a_settings.neuralRenderingNetwork).Sanitize(a_settings);
 	return true;
 }
 
@@ -18394,7 +18400,7 @@ bool Upscaling::ApplyNeuralRenderingConfiguration(const json& a_configuration, s
 			throw std::invalid_argument("Neural Rendering mode is unsupported for this runtime");
 		SanitizeUpscalingSettings(candidate);
 		const json sanitized = candidate;
-		NeuralRendering::ValidateRenderingSettingsNormalization(a_configuration, sanitized, NeuralRendering::Runtime::Instance().GetTuningLimits());
+		NeuralRendering::ValidateRenderingSettingsNormalization(a_configuration, sanitized, NeuralRendering::Runtime::Instance().GetTuningLimits(candidate.neuralRenderingNetwork));
 		const auto previous = settings;
 		settings = std::move(candidate);
 		if (!HandleNeuralRenderingSettingsTransition(previous, "Neural Rendering feature configuration")) {
@@ -18863,7 +18869,7 @@ namespace
 		if (auto tooltip = Util::HoverTooltipWrapper())
 			ImGui::TextUnformatted("Set Intensity, Local Tone, Local Structure and Skin Structure together. Natural is gentle; Fabric Detail boosts texture; Strong boosts the effect. Custom keeps your values.");
 
-		const auto limits = NeuralRendering::Runtime::Instance().GetTuningLimits();
+		const auto limits = NeuralRendering::Runtime::Instance().GetTuningLimits(settings.neuralRenderingNetwork);
 		limits.Sanitize(settings);
 		bool customTuningChanged = false;
 		customTuningChanged |= Util::Widgets::SliderFloat(
@@ -18956,6 +18962,20 @@ void Upscaling::DrawNeuralRenderingSettings(UpscaleMethod a_upscaleMethod, const
 													 },
 			"Your NR setup", "Choose a mode, then refine the picture.");
 		if (page.Is("mode")) {
+			auto& runtime = NeuralRendering::Runtime::Instance();
+			{
+				auto networkGuard = Util::DisableGuard(!runtime.SupportsNetworkSelection());
+				static constexpr const char* networks[]{ "Runtime default", "Legacy (310.8-like)", "Newer" };
+				int network = static_cast<int>(NeuralRendering::SanitizeNetworkSelection(settings.neuralRenderingNetwork));
+				if (Util::Widgets::Combo("NR network", &network, networks, IM_ARRAYSIZE(networks))) {
+					settings.neuralRenderingNetwork = static_cast<uint>(network);
+					runtime.GetTuningLimits(settings.neuralRenderingNetwork).Sanitize(settings);
+				}
+				Util::AddTooltip("Choose a network inside the same 310.9 DLL. Runtime default preserves the provider's choice. Legacy uses the older, slower network and can give a stronger, more detailed NR effect, with the 310.8 slider ranges. Newer favours performance with a lighter enhancement and the 310.9 ranges. Switching clamps values to the selected network's limits and recreates both eye models.");
+			}
+			if (!runtime.SupportsNetworkSelection())
+				ImGui::TextDisabled("This runtime uses its default network; explicit choices require 310.9.");
+			ImGui::Spacing();
 			std::array<MenuUI::Choice, 2> renderingModes{ { { "full", "After upscaling", "A · Output resolution", "Enhance the finished scene after upscaling. Available with or without Render Scale. In VR, coverage follows VR > FOV." },
 				{ "scaled", "Before DLSS", "C · Render resolution", "Enhance the smaller image before DLSS. Requires scaled DLSS and, in VR, Render Scale. In VR, coverage follows VR > FOV." } } };
 			for (uint index = 0; index < renderingModes.size(); ++index) {
@@ -51606,7 +51626,8 @@ void Upscaling::ServiceNeuralRenderingPrewarm()
 		.device = reinterpret_cast<std::uintptr_t>(globals::d3d::device),
 		.context = reinterpret_cast<std::uintptr_t>(globals::d3d::context),
 		.generation = vrRenderScaleNextContractGeneration.load(std::memory_order_acquire),
-		.slotMask = 0xcu
+		.slotMask = 0xcu,
+		.networkPreset = NeuralRendering::Runtime::Instance().GetNetworkPreset(settings.neuralRenderingNetwork),
 	};
 	service(&request, "none");
 }

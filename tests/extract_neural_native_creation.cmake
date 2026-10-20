@@ -10,5 +10,5 @@ extract_between("${source}" "bool Runtime::PrepareFeature("
     "bool Runtime::ResetFeatureLocked(" "neural_native_creation_under_test.h")
 extract_between("${source}" "struct InstalledRuntimeMetadata"
     "bool QueryFileIdentity(" "neural_installed_metadata_under_test.h")
-extract_between("${source}" "TuningLimits Runtime::GetTuningLimits() const"
+extract_between("${source}" "TuningLimits Runtime::GetTuningLimits(std::uint32_t selection) const"
     "std::string Runtime::Version() const" "neural_runtime_tuning_under_test.h")

@@ -25,7 +25,8 @@ namespace NeuralRendering
 		return instance;
 	}
 	Runtime::~Runtime() = default;
-	TuningLimits Runtime::GetTuningLimits() const { return {}; }
+	TuningLimits Runtime::GetTuningLimits(std::uint32_t) const { return {}; }
+	bool Runtime::SupportsNetworkSelection() const { return false; }
 }
 
 using json = nlohmann::json;
@@ -63,6 +64,36 @@ int main()
 		}
 	}
 	const auto descriptor = json::parse(kNeuralRenderingDescriptor);
+	for (const auto& value : { json(0), json(1u), json(2), json(-1), json(3), json(1.5), json(true), json("2"), json(nullptr), json(UINT64_MAX) }) {
+		NeuralRenderingConfigurationRequest request;
+		json error;
+		const bool accepted = TryParseNeuralRenderingConfiguration({ { "action", "nr_configure" }, { "network", value } }, request, error);
+		const bool valid = value.is_number_integer() && value >= 0 && value <= 2;
+		require(accepted == valid);
+		if (accepted)
+			require(request.network == value.get<std::uint32_t>() && request.HasAnyControl() && !request.HasImageTuningOverrides());
+		else
+			require(error.at("errorCode") == "nr_network_invalid");
+	}
+	require(descriptor.at("inputSchema").at("properties").at("network").at("maximum") == 2);
+	require(descriptor.at("outputSchema").at("properties").at("neuralRendering").at("properties").at("networkSelection").at("properties").contains("featurePresets"));
+	for (const auto network : { 0u, 1u, 2u }) {
+		for (bool explicitSelection : { false, true }) {
+			NeuralRenderingConfigurationRequest request;
+			json error;
+			json args{ { "action", "nr_configure" }, { "localStructureStrength", 1.6 } };
+			if (explicitSelection)
+				args["network"] = network;
+			require(TryParseNeuralRenderingConfiguration(args, request, error,
+						NeuralRendering::GetTuningLimitsForVersion(310, 9), network, true) == (network == 1u));
+		}
+	}
+	{
+		NeuralRenderingConfigurationRequest request;
+		json error;
+		require(!TryParseNeuralRenderingConfiguration({ { "action", "nr_configure" }, { "network", 2u }, { "localStructureStrength", 1.6 } },
+			request, error, NeuralRendering::GetTuningLimitsForVersion(310, 9), 1u, true));
+	}
 	const auto& limitsSchema = descriptor.at("outputSchema").at("properties").at("neuralRendering").at("properties").at("tuningLimits").at("properties");
 	require(limitsSchema.at("localToneStrength").at("const") == 2);
 	for (const auto* field : { "intensity", "localStructureStrength", "skinStructureStrength" }) {

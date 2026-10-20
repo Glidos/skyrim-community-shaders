@@ -106,7 +106,7 @@ namespace globals
 				bool neuralRenderingAutoMask = true, neuralRenderingUICorrection = false;
 				bool neuralRenderingParallelEyes = true;
 				unsigned neuralRenderingCentralAreaPercent = 100, neuralRenderingCentralFeatherPixels = 64;
-				unsigned neuralRenderingPreset = 1, neuralRenderingStyle = 0;
+				unsigned neuralRenderingPreset = 1, neuralRenderingStyle = 0, neuralRenderingNetwork = 0;
 				float neuralRenderingIntensity = 1.0f, neuralRenderingLocalTone = 1.0f;
 				float neuralRenderingLocalStructure = 1.0f, neuralRenderingSkinStructure = 1.0f;
 				unsigned neuralCharacterCropMode = 1;
@@ -527,6 +527,7 @@ namespace MenuUI
 namespace NeuralRendering
 {
 	bool runtimeInstalled = true;
+	bool networkSelectionSupported = true;
 	TuningLimits runtimeTuningLimits;
 	Runtime& Runtime::Instance()
 	{
@@ -534,7 +535,8 @@ namespace NeuralRendering
 		return instance;
 	}
 	Runtime::~Runtime() = default;
-	TuningLimits Runtime::GetTuningLimits() const { return runtimeTuningLimits; }
+	TuningLimits Runtime::GetTuningLimits(std::uint32_t selection) const { return GetTuningLimitsForNetwork(runtimeTuningLimits, ResolveNetworkPreset(selection, networkSelectionSupported)); }
+	bool Runtime::SupportsNetworkSelection() const { return networkSelectionSupported; }
 	bool Runtime::IsInstalled() noexcept { return runtimeInstalled; }
 	struct Renderer
 	{
@@ -849,7 +851,7 @@ int main()
 			upscaling.settings.neuralCharacterArmorEnabled = true;
 			ImGui::Clear();
 			upscaling.DrawSelectionControls();
-			for (const char* label : { "After upscaling", "Before DLSS", "Preset",
+			for (const char* label : { "NR network", "After upscaling", "Before DLSS", "Preset",
 					 "Preset", "Intensity", "Local Tone", "Local Structure", "Skin Structure", "Style" })
 				require(ImGui::Seen(label), "The full interface exposes modes, shared image settings and actor selection");
 			require(ImGui::Seen("NR Model Resolution") && !ImGui::Seen("Limit NR to central area") &&
@@ -881,6 +883,33 @@ int main()
 				"Shared slider edits must select Custom");
 		}
 	}
+	for (bool supported : { false, true }) {
+		NeuralRendering::networkSelectionSupported = supported;
+		for (unsigned network = 0; network <= 2; ++network) {
+			auto& upscaling = globals::features::upscaling;
+			upscaling.settings = {};
+			upscaling.settings.neuralRenderingEnabled = true;
+			upscaling.settings.neuralRenderingPreset = 3;
+			ImGui::comboEditValue = static_cast<int>(network);
+			ImGui::Clear("NR network");
+			upscaling.DrawSelectionControls();
+			require(ImGui::Disabled("NR network") == !supported &&
+						upscaling.settings.neuralRenderingNetwork == (supported ? network : 0u),
+				"Only supported DLLs may change the network through the UI");
+			require(upscaling.settings.neuralRenderingPreset == 3, "Network selection must not change the appearance preset");
+			require(std::find(ImGui::items.begin(), ImGui::items.end(), "NR network") <
+						std::find(ImGui::items.begin(), ImGui::items.end(), "After upscaling"),
+				"Network selection must precede the NR rendering-mode choices");
+			NeuralRendering::runtimeTuningLimits = NeuralRendering::GetTuningLimitsForVersion(310, supported ? 9 : 8);
+			upscaling.settings.neuralRenderingLocalStructure = 3.0f;
+			ImGui::Clear();
+			DrawNeuralRenderingSharedImageSettings(upscaling.settings);
+			require(upscaling.settings.neuralRenderingLocalStructure == (supported && network != NeuralRendering::kNetworkLegacy ? 1.0f : 2.0f),
+				"Legacy must recover the 310.8 structure range while default and newer retain the DLL range");
+		}
+	}
+	NeuralRendering::networkSelectionSupported = true;
+	NeuralRendering::runtimeTuningLimits = {};
 	for (bool vr : { false, true }) {
 		globals::game::isVR = vr;
 		for (unsigned minor : { 8u, 9u, 10u }) {

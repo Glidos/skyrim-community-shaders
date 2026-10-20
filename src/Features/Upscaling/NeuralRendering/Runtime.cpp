@@ -400,6 +400,7 @@ namespace NeuralRendering
 		struct InstalledRuntimeMetadata
 		{
 			bool installed = false;
+			bool networkSelectionSupported = false;
 			TuningLimits tuningLimits;
 		};
 
@@ -410,8 +411,10 @@ namespace NeuralRendering
 				const auto path = ResolveRuntimePath({});
 				metadata.installed = !path.empty();
 				if (metadata.installed) {
-					if (const auto version = Util::GetDllVersion(path.wstring()))
+					if (const auto version = Util::GetDllVersion(path.wstring())) {
 						metadata.tuningLimits = GetTuningLimitsForVersion(version->major(), version->minor());
+						metadata.networkSelectionSupported = NeuralRendering::SupportsNetworkSelection(version->major(), version->minor());
+					}
 				}
 			} catch (const std::exception& error) {
 				logger::warn("[DLSSNR] optional runtime discovery failed: {}", error.what());
@@ -1175,6 +1178,7 @@ namespace NeuralRendering
 		}
 		version_ = Util::GetFormattedVersion(*version);
 		tuningLimits_ = GetTuningLimitsForVersion(version->major(), version->minor());
+		networkSelectionSupported_ = NeuralRendering::SupportsNetworkSelection(version->major(), version->minor());
 		if (*version < kMinimumRuntimeVersion) {
 			SetFailureLocked(
 				RuntimeStatus::VersionRejected, RuntimeFailureStage::Version,
@@ -1405,6 +1409,7 @@ namespace NeuralRendering
 			const std::string runtimeHash = hash_;
 			const std::string runtimeVersion = version_;
 			const auto runtimeTuningLimits = tuningLimits_;
+			const auto runtimeNetworkSupport = networkSelectionSupported_;
 			const RuntimeTrust runtimeTrust = trust_;
 			const auto corePath = corePath_;
 			const std::string coreHash = coreHash_;
@@ -1417,6 +1422,7 @@ namespace NeuralRendering
 				hash_ = runtimeHash;
 				version_ = runtimeVersion;
 				tuningLimits_ = runtimeTuningLimits;
+				networkSelectionSupported_ = runtimeNetworkSupport;
 				trust_ = runtimeTrust;
 				corePath_ = corePath;
 				coreHash_ = coreHash;
@@ -1499,7 +1505,7 @@ namespace NeuralRendering
 		ID3D12GraphicsCommandList* a_commandList, std::uint32_t a_slot,
 		const NativeEvaluationLayout& a_layout, ID3D12Resource* a_color,
 		ID3D12Resource* a_controlMask, bool a_providerBlending,
-		RuntimeExecutionEvidence* a_evidence)
+		RuntimeExecutionEvidence* a_evidence, std::uint32_t a_networkPreset)
 	{
 		if (a_evidence)
 			*a_evidence = {};
@@ -1513,16 +1519,22 @@ namespace NeuralRendering
 				"Feature 18 creation prerequisites are invalid", static_cast<std::uint32_t>(E_INVALIDARG));
 			return false;
 		}
-		return PrepareFeatureLocked(a_commandList, a_slot, a_layout, a_color, a_controlMask, a_providerBlending, a_evidence);
+		return PrepareFeatureLocked(a_commandList, a_slot, a_layout, a_color, a_controlMask, a_providerBlending, a_evidence, a_networkPreset);
 	}
 
 	bool Runtime::PrepareFeatureLocked(
 		ID3D12GraphicsCommandList* a_commandList, std::uint32_t a_slot,
 		const NativeEvaluationLayout& a_layout, ID3D12Resource* a_color,
 		ID3D12Resource* a_controlMask, bool a_providerBlending,
-		RuntimeExecutionEvidence* a_evidence)
+		RuntimeExecutionEvidence* a_evidence, std::uint32_t a_networkPreset)
 	{
+		if (a_networkPreset != GetNetworkPreset(a_networkPreset)) {
+			SetFailureLocked(RuntimeStatus::FeatureCreateFailed, RuntimeFailureStage::FeatureConfiguration,
+				"Feature 18 network preset is unsupported by the installed runtime", static_cast<std::uint32_t>(E_INVALIDARG));
+			return false;
+		}
 		const bool configurationChanged = !featureConfigurations_[a_slot].Matches(a_layout) ||
+		                                  featureConfigurations_[a_slot].networkPreset != a_networkPreset ||
 		                                  featureConfigurations_[a_slot].providerBlending != a_providerBlending;
 		if (featureHandles_[a_slot] && configurationChanged) {
 			if (a_evidence)
@@ -1566,7 +1578,7 @@ namespace NeuralRendering
 			parameters->Set(
 				"DLSSNR.ScalingRatio",
 				static_cast<float>(a_layout.creation.output.width) / a_layout.creation.input.width);
-			parameters->Set("DLSSNR.Hint.Render.Preset", 0u);
+			parameters->Set("DLSSNR.Hint.Render.Preset", a_networkPreset);
 
 			if (a_providerBlending) {
 				parameters->Set("DLSSNR.ControlMask", static_cast<ID3D12Resource*>(nullptr));
@@ -1613,6 +1625,7 @@ namespace NeuralRendering
 
 			featureHandles_[a_slot] = handle;
 			featureConfigurations_[a_slot] = {
+				.networkPreset = a_networkPreset,
 				.colorBacking = a_layout.color.backing,
 				.creation = a_layout.creation,
 				.featureUpscaling = a_layout.featureUpscaling,
@@ -1680,7 +1693,7 @@ namespace NeuralRendering
 			return false;
 		}
 
-		if (!PrepareFeatureLocked(a_commandList, a_slot, a_layout, a_color, a_controlMask, a_providerBlending, a_evidence))
+		if (!PrepareFeatureLocked(a_commandList, a_slot, a_layout, a_color, a_controlMask, a_providerBlending, a_evidence, a_tuning.networkPreset))
 			return false;
 		a_reset = a_reset || (firstEvaluationResetMask_.load(std::memory_order_relaxed) & (1u << a_slot)) != 0;
 
@@ -1757,7 +1770,7 @@ namespace NeuralRendering
 		parameters->Set("DLSSNR.DepthInverted", 0u);
 		parameters->Set("DLSSNR.Enabled", 1u);
 		parameters->Set("DLSSNR.Reset", a_reset ? 1u : 0u);
-		const auto limits = GetTuningLimits();
+		const auto limits = GetTuningLimits(a_tuning.networkPreset);
 		parameters->Set("DLSSNR.Intensity", std::clamp(a_tuning.intensity, 0.0f, limits.intensity));
 		parameters->Set("DLSSNR.LocalToneStrength", std::clamp(a_tuning.localToneStrength, 0.0f, limits.localToneStrength));
 		parameters->Set(
@@ -1879,15 +1892,26 @@ namespace NeuralRendering
 		return true;
 	}
 
-	bool Runtime::HasCompatibleFeature(std::uint32_t slot, const NativeEvaluationLayout& layout, bool providerBlending) const
+	bool Runtime::HasCompatibleFeature(std::uint32_t slot, const NativeEvaluationLayout& layout, bool providerBlending,
+		std::uint32_t networkPreset) const
 	{
 		std::scoped_lock lock(mutex_);
 		return slot < kFeatureSlotCount && featureHandles_[slot] &&
+		       featureConfigurations_[slot].networkPreset == networkPreset &&
 		       featureConfigurations_[slot].Matches(layout) &&
 		       featureConfigurations_[slot].providerBlending == providerBlending;
 	}
 
 #ifdef DEVBENCH_BRIDGE_ENABLED
+	std::array<std::uint32_t, Runtime::kFeatureSlotCount> Runtime::GetFeatureNetworkPresets() const
+	{
+		std::scoped_lock lock(mutex_);
+		std::array<std::uint32_t, kFeatureSlotCount> result;
+		for (std::size_t slot = 0; slot < result.size(); ++slot)
+			result[slot] = featureHandles_[slot] && featureConfigurations_[slot].valid ? featureConfigurations_[slot].networkPreset : UINT32_MAX;
+		return result;
+	}
+
 	Runtime::LifecycleCounts Runtime::GetLifecycleCounts() const
 	{
 		std::scoped_lock lock(mutex_);
@@ -2062,6 +2086,7 @@ namespace NeuralRendering
 		hash_.clear();
 		version_.clear();
 		tuningLimits_.reset();
+		networkSelectionSupported_.reset();
 		corePath_.clear();
 		coreHash_.clear();
 		coreTrust_ = ParameterCoreTrust::Unknown;
@@ -2170,12 +2195,24 @@ namespace NeuralRendering
 		return hash_;
 	}
 
-	TuningLimits Runtime::GetTuningLimits() const
+	TuningLimits Runtime::GetTuningLimits(std::uint32_t selection) const
 	{
 		std::scoped_lock lock(mutex_);
-		if (tuningLimits_)
-			return *tuningLimits_;
-		return GetInstalledRuntimeMetadata().tuningLimits;
+		const auto defaults = tuningLimits_ ? *tuningLimits_ : GetInstalledRuntimeMetadata().tuningLimits;
+		return GetTuningLimitsForNetwork(defaults, GetNetworkPreset(selection));
+	}
+
+	bool Runtime::SupportsNetworkSelection() const
+	{
+		std::scoped_lock lock(mutex_);
+		if (networkSelectionSupported_)
+			return *networkSelectionSupported_;
+		return GetInstalledRuntimeMetadata().networkSelectionSupported;
+	}
+
+	std::uint32_t Runtime::GetNetworkPreset(std::uint32_t selection) const
+	{
+		return ResolveNetworkPreset(selection, SupportsNetworkSelection());
 	}
 
 	std::string Runtime::Version() const

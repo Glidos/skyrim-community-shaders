@@ -1,6 +1,7 @@
 #include "Features/Upscaling/NeuralRendering/CapacityFallback.h"
 #include "Features/Upscaling/NeuralRendering/MemoryRecoveryPolicy.h"
 #include "Features/Upscaling/NeuralRendering/MemoryRetirementPolicy.h"
+#include "Features/Upscaling/NeuralRendering/NetworkSelection.h"
 #include "Features/Upscaling/NeuralRendering/RegionCapacity.h"
 #include "Features/Upscaling/NeuralRendering/StallRecoveryPolicy.h"
 #include "Features/Upscaling/NeuralRendering/SubmissionFenceSnapshot.h"
