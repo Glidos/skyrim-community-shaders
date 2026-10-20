@@ -16,10 +16,12 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <shared_mutex>
 #include <spdlog/sinks/ostream_sink.h>
 #include <spdlog/spdlog.h>
 #include <sstream>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <winrt/base.h>
@@ -165,9 +167,11 @@ namespace SIE
 namespace
 {
 	bool injectSizedError = false;
+	unsigned compilerCalls = 0;
 	HRESULT CompileForTest(LPCWSTR path, const D3D_SHADER_MACRO* macros, ID3DInclude* include,
 		LPCSTR entry, LPCSTR target, UINT flags, UINT flags2, ID3DBlob** blob, ID3DBlob** errors)
 	{
+		++compilerCalls;
 		if (!injectSizedError)
 			return D3DCompileFromFile(path, macros, include, entry, target, flags, flags2, blob, errors);
 		constexpr std::string_view message = "unterminated-error";
@@ -178,6 +182,7 @@ namespace
 }
 namespace Util
 {
+#include "standalone_failures_under_test.h"
 #define D3DCompileFromFile CompileForTest
 #include "standalone_d3d_under_test.h"
 #undef D3DCompileFromFile
@@ -430,6 +435,13 @@ int main()
 	const auto ending = capturedLog.str().substr(expectedError.size());
 	assert(ending == "\n" || ending == "\r\n");
 	injectSizedError = false;
+	const auto failedCompileCalls = compilerCalls;
+	assert(!Util::CompileShader(L"Data/Shaders/test.hlsl", defines, "ps_5_0"));
+	assert(compilerCalls == failedCompileCalls);
+	Util::ClearShaderCompileFailures();
+	winrt::com_ptr<ID3D11DeviceChild> recovered;
+	recovered.attach(Util::CompileShader(L"Data/Shaders/test.hlsl", defines, "ps_5_0"));
+	assert(recovered && compilerCalls == failedCompileCalls + 1);
 	spdlog::set_default_logger(previousLogger);
 	cache.enabled = true;
 	assert(!Util::CompileShader(nullptr, defines, "ps_5_0"));
