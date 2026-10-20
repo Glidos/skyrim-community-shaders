@@ -92,6 +92,29 @@ float GetFrameEdgeMask(float2 uv)
 	return smoothstep(0.015, 0.14, min(edgeDistance.x, edgeDistance.y));
 }
 
+/** Requires a geometry-only depth footprint inside the selected eye's active image. */
+bool IsCaptureDepthFootprintValid(float2 sampleUV, uint eyeIndex)
+{
+	uint width, height;
+	DepthTexture.GetDimensions(width, height);
+	float2 dimensions = float2(width, height);
+	float2 minUV = Stereo::ConvertToStereoUV(float2(0.0, 0.0), eyeIndex);
+	float2 maxUV = Stereo::ConvertToStereoUV(FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(float2(1.0, 1.0), 0), eyeIndex);
+	if (any(dimensions == 0.0) || !all(isfinite(sampleUV)) || !all(isfinite(maxUV)))
+		return false;
+
+	maxUV = min(maxUV, Stereo::ConvertToStereoUV(float2(1.0, 1.0), eyeIndex));
+	float2 minPixel = ceil(minUV * dimensions);
+	float2 maxPixel = floor(maxUV * dimensions) - 1.0;
+	float2 samplePixel = sampleUV * dimensions;
+	// A full-texel inset keeps the gather inside the active eye even with sampler coordinate rounding.
+	if (any(samplePixel < minPixel + 1.0) || any(samplePixel > maxPixel))
+		return false;
+
+	float4 depths = DepthTexture.GatherRed(LinearSampler, sampleUV);
+	return all(isfinite(depths)) && all(depths >= 0.0) && all(depths < 1.0);
+}
+
 bool SampleCaptureEye(float3 direction, uint eyeIndex, out float3 position, out float3 color, out float2 uv, out float weight)
 {
 	position = 0.0;
@@ -112,6 +135,16 @@ bool SampleCaptureEye(float3 direction, uint eyeIndex, out float3 position, out 
 		return false;
 
 	float2 sampleUV = Stereo::ConvertToStereoUV(FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(uv, 0), eyeIndex);
+#if defined(REFLECTIONS)
+	bool excludeSky = suppressSkyAndFrameEdge;
+#else
+	bool excludeSky = true;
+#endif
+	[branch] if (excludeSky)
+	{
+		if (!IsCaptureDepthFootprintValid(sampleUV, eyeIndex))
+			return false;
+	}
 	float depth = DepthTexture.SampleLevel(LinearSampler, sampleUV, 0);
 	float nearValidity = smoothstep(0.75, 2.75, SharedData::GetScreenDepth(depth));
 	if (!isfinite(depth) || nearValidity <= 1e-3)
