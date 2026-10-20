@@ -54,6 +54,8 @@ namespace
 	struct InteriorSun
 	{
 		bool enabled = true;
+		bool arraysCleared = true;
+		unsigned arrayClears = 0;
 		struct Settings
 		{
 			bool Enabled = true;
@@ -67,6 +69,8 @@ namespace
 		void SetRuntimeEnabled(bool enabled);
 		static void SetShadowDistance(bool interior);
 		bool IsEnabled() const { return enabled && runtimeEnabled.load(); }
+		bool IsActiveInteriorSun() const { return IsEnabled() && isInteriorWithSun.load(std::memory_order_acquire); }
+		void ClearArrays();
 		static bool IsInteriorWithSun(RE::Cell* testCell) { return testCell && testCell->interior && testCell->sun; }
 	};
 	CRITICAL_SECTION rendererLock;
@@ -136,6 +140,12 @@ namespace
 	{
 		RequireRenderer();
 		++shadowDistanceUpdates;
+	}
+	void InteriorSun::ClearArrays()
+	{
+		RequireRenderer();
+		arraysCleared = true;
+		++arrayClears;
 	}
 	void InverseSquareLighting::ApplyRuntimeStateToActiveLights()
 	{
@@ -492,6 +502,24 @@ namespace
 		Require(!enableFlag && !f.vl.IsPerformanceCostMeasurementEnabled(), "Interior without sunlight was measured as enabled");
 	}
 
+	void TestInactiveSunArrayCleanup()
+	{
+		Fixture f;
+		InteriorSun sun;
+		sun.runtimeSettingsDirty = false;
+		sun.arraysCleared = false;
+		testState.menu = true;
+		sun.EarlyPrepass();
+		Require(sun.arraysCleared && sun.arrayClears == 1, "inactive sun arrays must clear even while settings updates are deferred");
+		sun.EarlyPrepass();
+		Require(sun.arrayClears == 1, "inactive sun arrays must not clear repeatedly");
+		testCell.interior = true;
+		testTes.interiorCell = &testCell;
+		sun.arraysCleared = false;
+		sun.EarlyPrepass();
+		Require(!sun.arraysCleared && sun.arrayClears == 1, "active interior sun must retain its arrays");
+	}
+
 	void TestConcurrentRequests()
 	{
 		Fixture f;
@@ -527,6 +555,7 @@ int main()
 			 std::pair{ "Readiness during deferral", &TestReadinessDuringDeferral },
 			 std::pair{ "Requests during application", &TestRequestsDuringApplication },
 			 std::pair{ "Quality, rain and runtime compatibility", &TestQualityRainAndRuntimeCompatibility },
+			 std::pair{ "Inactive sun array cleanup", &TestInactiveSunArrayCleanup },
 			 std::pair{ "Concurrent requests", &TestConcurrentRequests } }) {
 		try {
 			test();
