@@ -594,7 +594,7 @@ void TerrainSeams::CaptureLand(RE::TESObjectLAND* a_land, uint64_t captureEpoch)
 			coordinates->cellY * 2 + static_cast<int32_t>(quadIndex >> 1)
 		};
 		ReadQuad(a_land, quadIndex, entry.quad);
-		entry.quad.geometry = geometry;
+		entry.quad.geometry.reset(geometry);
 		entry.quad.pbr = globals::features::truePBR.IsPBRLandscapeGeometry(geometry);
 	}
 
