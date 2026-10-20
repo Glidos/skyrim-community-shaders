@@ -1484,7 +1484,7 @@ RE::BSShaderProperty::RenderPassArray* Skylighting::BSLightingShaderProperty_Get
 		// Only complete, finite bounds can establish that no probe sees this occluder.
 		if (skylighting.occlusionCullBelowZ &&
 			std::isfinite(bounds.center.x) && std::isfinite(bounds.center.y) &&
-			std::isfinite(bounds.center.z) && std::isfinite(bounds.radius) &&
+			std::isfinite(bounds.center.z) && std::isfinite(bounds.radius) && bounds.radius > 0.0f &&
 			static_cast<double>(bounds.center.z) + bounds.radius < *skylighting.occlusionCullBelowZ)
 			return precipitationOcclusionMapRenderPassList;
 
