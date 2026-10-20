@@ -7,6 +7,7 @@
 #include <cmath>
 #include <limits>
 #include <span>
+#include <spdlog/spdlog.h>
 #include <unordered_map>
 
 namespace
@@ -150,41 +151,38 @@ void Profiler::Initialize(ID3D11Device* device, ID3D11DeviceContext* a_context, 
 	QueryPerformanceFrequency(&freq);
 	cpuTicksToMs = 1000.0 / static_cast<double>(freq.QuadPart);
 
-	const auto createQuery = [device](D3D11_QUERY type, winrt::com_ptr<ID3D11Query>& query, const char* name) {
+	uint32_t failedQueries = 0;
+	HRESULT firstFailure = S_OK;
+	const auto createQuery = [&](D3D11_QUERY type, winrt::com_ptr<ID3D11Query>& query, const char* name) {
 		D3D11_QUERY_DESC desc{ type, 0 };
 		const HRESULT result = device->CreateQuery(&desc, query.put());
 		if (FAILED(result)) {
-			logger::warn("Profiler disabled: failed to create {} (HRESULT 0x{:08X})", name, static_cast<uint32_t>(result));
-			return false;
+			if (failedQueries++ == 0)
+				firstFailure = result;
+			return;
 		}
 		Util::SetResourceName(query.get(), name);
-		return true;
 	};
 
 	for (auto& frame : frames) {
-		if (!createQuery(D3D11_QUERY_TIMESTAMP_DISJOINT, frame.disjoint, "Profiler::Disjoint")) {
-			Release();
-			return;
-		}
-		if (flatTiming &&
-			(!createQuery(D3D11_QUERY_TIMESTAMP, frame.wholeFrameBegin, "Profiler::WholeFrame Begin") ||
-				!createQuery(D3D11_QUERY_TIMESTAMP, frame.wholeFrameEnd, "Profiler::WholeFrame End"))) {
-			Release();
-			return;
+		createQuery(D3D11_QUERY_TIMESTAMP_DISJOINT, frame.disjoint, "Profiler::Disjoint");
+		if (flatTiming) {
+			createQuery(D3D11_QUERY_TIMESTAMP, frame.wholeFrameBegin, "Profiler::WholeFrame Begin");
+			createQuery(D3D11_QUERY_TIMESTAMP, frame.wholeFrameEnd, "Profiler::WholeFrame End");
 		}
 
 		frame.timers.resize(kMaxTimers);
 		frame.activeTimerStack.reserve(kMaxTimers);
 		for (auto& timer : frame.timers) {
-			if (!createQuery(D3D11_QUERY_TIMESTAMP, timer.begin, "Profiler::Pass Begin") ||
-				!createQuery(D3D11_QUERY_TIMESTAMP, timer.end, "Profiler::Pass End")) {
-				Release();
-				return;
-			}
+			createQuery(D3D11_QUERY_TIMESTAMP, timer.begin, "Profiler::Pass Begin");
+			createQuery(D3D11_QUERY_TIMESTAMP, timer.end, "Profiler::Pass End");
 		}
 		frame.cpuTimers.reserve(kMaxTimers);
 		ResetFrameState(frame);
 	}
+	if (failedQueries)
+		spdlog::warn("Profiler could not create {} GPU queries (first HRESULT 0x{:08X}); available queries and CPU timing remain enabled",
+			failedQueries, static_cast<uint32_t>(firstFailure));
 
 	writeFrame = 0;
 	readFrame = 0;

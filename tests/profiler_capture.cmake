@@ -4,6 +4,7 @@ add_controller_test(
     tests/profiler_capture_test.cpp
 )
 target_sources(profiler_capture_test PRIVATE src/Profiler.cpp src/RenderTargetStats.cpp)
+target_link_libraries(profiler_capture_test PRIVATE spdlog::spdlog)
 target_include_directories(
     profiler_capture_test
     BEFORE
@@ -12,6 +13,7 @@ target_include_directories(
 
 add_controller_test(flat_frame_timing_test FlatFrameTiming tests/flat_frame_timing_test.cpp)
 target_sources(flat_frame_timing_test PRIVATE src/Profiler.cpp src/RenderTargetStats.cpp)
+target_link_libraries(flat_frame_timing_test PRIVATE spdlog::spdlog)
 target_include_directories(
     flat_frame_timing_test
     BEFORE

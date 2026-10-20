@@ -125,7 +125,7 @@ namespace
 			f.Present(40);
 		}
 		const int flatQueryStart = Profiler::kFrameLatency * (1 + 2 * Profiler::kMaxTimers);
-		for (const int failedQuery : { 0, flatQueryStart, flatQueryStart + 1 }) {
+		for (const int failedQuery : { 0, 1, 2, flatQueryStart, flatQueryStart + 1 }) {
 			Fixture f(true, failedQuery);
 			for (uint32_t frame = 0; frame < 20; ++frame)
 				f.Present(frame);

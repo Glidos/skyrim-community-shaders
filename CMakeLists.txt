@@ -4855,7 +4855,7 @@ if(BUILD_CONTROLLER_TESTS)
     )
     target_link_libraries(
         profiler_timing_test
-        PRIVATE d3d11.lib runtimeobject.lib
+        PRIVATE d3d11.lib runtimeobject.lib spdlog::spdlog
     )
 
     set(_profiling_ui_dir
