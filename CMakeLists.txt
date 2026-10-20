@@ -3671,6 +3671,52 @@ if(BUILD_CONTROLLER_TESTS)
         tests/reflex_policy_test.cpp
     )
     add_controller_test(
+        reflex_backend_test
+        ReflexBackend
+        tests/reflex_backend_test.cpp
+    )
+    set(_reflex_test_dir "${CMAKE_CURRENT_BINARY_DIR}/generated/reflex")
+    set(_reflex_logging_header
+        "${_reflex_test_dir}/reflex_logging_under_test.h"
+    )
+    add_custom_command(
+        OUTPUT "${_reflex_logging_header}"
+        COMMAND
+            "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}"
+            "-DOUTPUT_DIRECTORY=${_reflex_test_dir}" -P
+            "${PROJECT_SOURCE_DIR}/tests/extract_reflex_logging.cmake"
+        DEPENDS
+            src/Features/Upscaling/Streamline.cpp
+            tests/extract_reflex_logging.cmake
+            tests/extract_source_region.cmake
+        VERBATIM
+    )
+    target_sources(
+        reflex_backend_test
+        PRIVATE
+            src/Features/Upscaling/ReflexBackend.cpp
+            "${_reflex_logging_header}"
+    )
+    target_include_directories(
+        reflex_backend_test
+        PRIVATE "${PROJECT_SOURCE_DIR}/extern/nvapi" "${_reflex_test_dir}"
+    )
+    target_compile_definitions(
+        reflex_backend_test
+        PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN
+    )
+    target_link_libraries(reflex_backend_test PRIVATE d3d11 dxguid)
+    add_test(
+        NAME ReflexBackendContract
+        COMMAND
+            "${CMAKE_COMMAND}" "-DPROJECT_ROOT=${PROJECT_SOURCE_DIR}" -P
+            "${PROJECT_SOURCE_DIR}/tests/reflex_backend_contract_test.cmake"
+    )
+    set_tests_properties(
+        ReflexBackendContract
+        PROPERTIES LABELS "ControllerTests"
+    )
+    add_controller_test(
         light_limit_fix_vr_hook_policy_test
         LightLimitFixVRHookPolicy
         tests/light_limit_fix_vr_hook_policy_test.cpp

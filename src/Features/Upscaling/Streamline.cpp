@@ -37,6 +37,30 @@ namespace
 	constexpr int32_t kDLSSDiagnosticTextResultCode = std::numeric_limits<int32_t>::min();
 	void* s_streamlineDllDirectoryCookie = nullptr;
 
+	void LogReflexOutcome(const Reflex::Outcome& a_outcome)
+	{
+		if (a_outcome.notice == Reflex::Notice::None)
+			return;
+		const bool failure = a_outcome.notice == Reflex::Notice::Failure || a_outcome.notice == Reflex::Notice::Exhausted;
+		if (!spdlog::should_log(failure ? spdlog::level::warn : spdlog::level::info))
+			return;
+		const auto& state = a_outcome.status;
+		if (failure) {
+			logger::warn(
+				"[Reflex] Native {} failed: NVAPI={} deviceHRESULT={} health={} failures={} retryAtMs={} pending={} requestedMode={} capUs={} markers={}",
+				magic_enum::enum_name(state.failureOperation), static_cast<int>(state.failureStatus),
+				static_cast<int32_t>(state.deviceStatus), magic_enum::enum_name(state.health),
+				state.failures, state.retryAtMs, state.pending, magic_enum::enum_name(state.desired.mode),
+				state.desired.frameLimitUs, state.desired.useMarkersToOptimize);
+		} else {
+			logger::info(
+				"[Reflex] Native {}: health={} acceptedMode={} capUs={} markers={} NVAPI={}",
+				magic_enum::enum_name(a_outcome.notice), magic_enum::enum_name(state.health),
+				magic_enum::enum_name(state.accepted.mode), state.accepted.frameLimitUs,
+				state.accepted.useMarkersToOptimize, static_cast<int>(state.nativeStatus));
+		}
+	}
+
 	struct StreamlineCoreBindings
 	{
 		PFun_slInit* init = nullptr;
@@ -1472,8 +1496,6 @@ bool Streamline::LoadInterposer()
 	slSetD3DDevice = bindings.setD3DDevice;
 	initialized = true;
 	InvalidateDLSSOptionsCache();
-	reflexOptionsCache = {};
-	lastReflexSleepFrame = UINT32_MAX;
 	dlssBudgetWarningThrottle.Reset();
 	lifecycleState.store(LifecycleState::Initialized, std::memory_order_release);
 	logger::info("[Streamline] Successfully initialized Streamline");
@@ -1490,6 +1512,9 @@ void Streamline::Shutdown()
 		return;
 
 	lifecycleState.store(LifecycleState::ShuttingDown, std::memory_order_release);
+	const auto reflexShutdown = reflexBackend.Shutdown();
+	if (reflexShutdown != NVAPI_OK)
+		logger::warn("[Reflex] Native shutdown failed: NVAPI={}; retaining the NVAPI module", static_cast<int>(reflexShutdown));
 	ResetDLSSIdleFences();
 	const bool shutdownWasRequired = initialized;
 	bool shutdownConfirmed = !shutdownWasRequired;
@@ -1528,10 +1553,8 @@ void Streamline::Shutdown()
 	slDLSSGetOptimalSettings = nullptr;
 	slDLSSGetState = nullptr;
 	slDLSSSetOptions = nullptr;
-	slReflexGetState = nullptr;
-	slReflexSleep = nullptr;
-	slReflexSetOptions = nullptr;
 	slPCLSetMarker = nullptr;
+	slPCLSetOptions = nullptr;
 	slInit = nullptr;
 	slShutdown = nullptr;
 	slIsFeatureSupported = nullptr;
@@ -1587,6 +1610,7 @@ bool Streamline::TrySetD3DDevice(ID3D11Device* a_device)
 		return true;
 
 	InvalidateDLSSRelatchDrain();
+	(void)reflexBackend.BindDevice(nullptr, false);
 	const sl::Result result = slSetD3DDevice(a_device);
 	if (result != sl::Result::eOk) {
 		logger::error("[Streamline] D3D device binding failed: {}", magic_enum::enum_name(result));
@@ -1604,6 +1628,26 @@ bool Streamline::TrySetD3DDevice(ID3D11Device* a_device)
 	return true;
 }
 
+void Streamline::BindNativeReflex(ID3D11Device* a_device)
+{
+	// Streamline returns an owned reference to the unwrapped interface.
+	Microsoft::WRL::ComPtr<IUnknown> nativeInterface;
+	const auto unwrapResult = slGetNativeInterface ?
+	                              slGetNativeInterface(a_device, reinterpret_cast<void**>(nativeInterface.GetAddressOf())) :
+	                              sl::Result::eErrorNotInitialized;
+	Microsoft::WRL::ComPtr<ID3D11Device> nativeDevice;
+	const HRESULT queryResult = nativeInterface ? nativeInterface.As(&nativeDevice) : E_NOINTERFACE;
+	if (unwrapResult != sl::Result::eOk || FAILED(queryResult) || !nativeDevice) {
+		(void)reflexBackend.BindDevice(nullptr, false);
+		logger::error("[Reflex] Native device unavailable: Streamline={} HRESULT={}",
+			magic_enum::enum_name(unwrapResult), static_cast<int32_t>(queryResult));
+		return;
+	}
+	const auto result = reflexBackend.BindDevice(nativeDevice.Get(), adapterSupportsReflex);
+	if (result != NVAPI_OK)
+		logger::warn("[Reflex] Native binding unavailable: NVAPI={}", static_cast<int>(result));
+}
+
 void Streamline::MarkAdapterUnavailable(const char* a_reason)
 {
 	adapterSupportsDLSS = false;
@@ -1613,6 +1657,8 @@ void Streamline::MarkAdapterUnavailable(const char* a_reason)
 	featureReflex = false;
 	featurePCL = false;
 	reflexSupportedOnCurrentAdapter = false;
+	boundDeviceIdentity = nullptr;
+	(void)reflexBackend.BindDevice(nullptr, false);
 	featureCheckComplete = true;
 	if (a_reason && *a_reason)
 		logger::info("[Streamline] NVIDIA features unavailable: {}", a_reason);
@@ -1694,8 +1740,6 @@ bool Streamline::CheckFeatures(IDXGIAdapter* a_adapter)
 		logger::info("[Streamline] Reflex/PCL disabled on non-NVIDIA adapter");
 	}
 	InvalidateDLSSOptionsCache();
-	reflexOptionsCache = {};
-	lastReflexSleepFrame = UINT32_MAX;
 	return true;
 }
 
@@ -1704,10 +1748,8 @@ bool Streamline::PostDevice()
 	slDLSSGetOptimalSettings = nullptr;
 	slDLSSGetState = nullptr;
 	slDLSSSetOptions = nullptr;
-	slReflexGetState = nullptr;
-	slReflexSleep = nullptr;
-	slReflexSetOptions = nullptr;
 	slPCLSetMarker = nullptr;
+	slPCLSetOptions = nullptr;
 	featureDLSS = false;
 	featureReflex = false;
 	featurePCL = false;
@@ -1752,23 +1794,27 @@ bool Streamline::PostDevice()
 		}
 
 		if (adapterSupportsReflex) {
-			bool reflexFunctionsBound = true;
-			reflexFunctionsBound &= bindFeatureFn(sl::kFeatureReflex, "slReflexGetState", (void*&)slReflexGetState);
-			reflexFunctionsBound &= bindFeatureFn(sl::kFeatureReflex, "slReflexSleep", (void*&)slReflexSleep);
-			reflexFunctionsBound &= bindFeatureFn(sl::kFeatureReflex, "slReflexSetOptions", (void*&)slReflexSetOptions);
-			featureReflex = reflexFunctionsBound;
+			bool loaded = false;
+			featureReflex = slIsFeatureLoaded &&
+			                slIsFeatureLoaded(sl::kFeatureReflex, loaded) == sl::Result::eOk && loaded;
 		}
 
 		if (adapterSupportsReflex && !featureReflex) {
-			logger::warn("[Streamline] Reflex functions are missing; Reflex runtime controls will be disabled");
+			logger::warn("[Streamline] Reflex plugin is unavailable; Reflex runtime controls will be disabled");
 		} else if (featureReflex) {
 			logger::info("[Streamline] Reflex runtime controls are available");
 		} else {
 			logger::info("[Streamline] Reflex is not supported by the current adapter");
 		}
 
-		if (adapterSupportsPCL)
+		if (adapterSupportsPCL) {
 			featurePCL = bindFeatureFn(sl::kFeaturePCL, "slPCLSetMarker", (void*&)slPCLSetMarker);
+			if (bindFeatureFn(sl::kFeaturePCL, "slPCLSetOptions", (void*&)slPCLSetOptions)) {
+				// PCL owns ping-message configuration independently of native pacing.
+				if (SL_FAILED(result, slPCLSetOptions(sl::PCLOptions{})))
+					logger::warn("[Streamline] PCL configuration failed: {}", magic_enum::enum_name(result));
+			}
+		}
 		if (adapterSupportsPCL && !featurePCL) {
 			logger::warn("[Streamline] PCL marker function is unavailable; marker optimization requests will be ignored");
 		} else if (featurePCL) {
@@ -1781,8 +1827,7 @@ bool Streamline::PostDevice()
 	}
 
 	InvalidateDLSSOptionsCache();
-	reflexOptionsCache = {};
-	lastReflexSleepFrame = UINT32_MAX;
+	BindNativeReflex(boundDeviceIdentity);
 	featureCheckComplete = true;
 	return true;
 }
@@ -3221,11 +3266,17 @@ bool Streamline::EvaluateDLSS(sl::ViewportHandle vp, uint32_t eyeIndex,
 	// These markers currently surround only a DLSS evaluation, not Skyrim's
 	// complete render submission. Keep marker-driven scheduling disabled on every
 	// runtime until CSX can publish an authoritative full-frame marker sequence.
+	bool nativeMarkersAccepted = false;
+	if constexpr (ReflexPolicy::kHasAuthoritativeFullFrameMarkerCoverage) {
+		const auto reflexState = reflexBackend.GetStatus();
+		nativeMarkersAccepted = reflexState.acceptedValid && !reflexState.pending &&
+		                        reflexState.accepted.useMarkersToOptimize;
+	}
 	const bool emitPCLMarkers = ReflexPolicy::ResolveCSXMarkerOptimization(
 		featureReflex,
 		featurePCL,
 		upscaling.settings.reflexUseMarkersToOptimize &&
-			reflexOptionsCache.useMarkersToOptimize)
+			nativeMarkersAccepted)
 	                                .enabled;
 	const auto emitPCLMarker = [&](sl::PCLMarker marker, const char* stageName, uint32_t stageIndex) {
 		if (!emitPCLMarkers || !slPCLSetMarker || !frameToken)
@@ -3876,57 +3927,36 @@ Streamline::DLSSResourceTeardownResult Streamline::DestroyDLSSResources(uint64_t
 
 bool Streamline::EnsureReflexDisabledForFrameGeneration()
 {
-	if (!initialized || !reflexSupportedOnCurrentAdapter || !featureReflex || !slReflexSetOptions)
-		return true;
-	if (frameGenerationQuarantinedByReflex.load(std::memory_order_acquire))
-		return false;
-
-	const bool reflexAlreadyOff = reflexOptionsCache.valid &&
-	                              reflexOptionsCache.mode == sl::ReflexMode::eOff &&
-	                              reflexOptionsCache.frameLimitUs == 0 &&
-	                              !reflexOptionsCache.useMarkersToOptimize;
-	if (reflexAlreadyOff)
-		return true;
-
-	sl::ReflexOptions disableOptions{};
-	disableOptions.mode = sl::ReflexMode::eOff;
-	disableOptions.frameLimitUs = 0;
-	disableOptions.useMarkersToOptimize = false;
-	if (SL_FAILED(result, slReflexSetOptions(disableOptions))) {
+	const auto outcome = reflexBackend.Disable(GetTickCount64());
+	LogReflexOutcome(outcome);
+	if (!outcome.disabled && !frameGenerationQuarantinedByReflex.load(std::memory_order_acquire)) {
 		frameGenerationQuarantinedByReflex.store(true, std::memory_order_release);
 		logger::error(
-			"[Streamline] Failed to disable Reflex before Frame Generation: {}. Frame Generation is quarantined until restart.",
-			magic_enum::enum_name(result));
-		return false;
+			"[Streamline] Native Reflex disable is unconfirmed (NVAPI={}, health={}). Frame Generation is quarantined until restart.",
+			static_cast<int>(outcome.status.nativeStatus), magic_enum::enum_name(outcome.status.health));
 	}
-
-	reflexOptionsCache.valid = true;
-	reflexOptionsCache.mode = disableOptions.mode;
-	reflexOptionsCache.frameLimitUs = disableOptions.frameLimitUs;
-	reflexOptionsCache.useMarkersToOptimize = disableOptions.useMarkersToOptimize;
-	return true;
+	return outcome.disabled && !frameGenerationQuarantinedByReflex.load(std::memory_order_acquire);
 }
 
 void Streamline::UpdateReflex()
 {
-	if (!initialized || !reflexSupportedOnCurrentAdapter || !featureReflex || !slReflexSetOptions)
+	if (!initialized || !reflexSupportedOnCurrentAdapter || !featureReflex)
 		return;
 
 	const auto& upscaling = globals::features::upscaling;
 	const bool reflexBlockedByFrameGeneration = upscaling.IsFrameGenerationDx12PathActive();
 	if (reflexBlockedByFrameGeneration) {
 		(void)EnsureReflexDisabledForFrameGeneration();
-		lastReflexSleepFrame = UINT32_MAX;
 		return;
 	}
 
 	auto& settings = globals::features::upscaling.settings;
 
-	sl::ReflexOptions options{};
+	Reflex::Options options{};
 	if (!settings.reflexLowLatencyMode) {
-		options.mode = sl::ReflexMode::eOff;
+		options.mode = Reflex::Mode::Off;
 	} else {
-		options.mode = settings.reflexLowLatencyBoost ? sl::ReflexMode::eLowLatencyWithBoost : sl::ReflexMode::eLowLatency;
+		options.mode = settings.reflexLowLatencyBoost ? Reflex::Mode::Boost : Reflex::Mode::On;
 	}
 
 	const float originalReflexFPSLimit = settings.reflexFPSLimit;
@@ -3944,43 +3974,6 @@ void Streamline::UpdateReflex()
 		settings.reflexUseMarkersToOptimize);
 	options.useMarkersToOptimize = markerOptimization.enabled;
 
-	if (!reflexOptionsCache.valid ||
-		reflexOptionsCache.mode != options.mode ||
-		reflexOptionsCache.frameLimitUs != options.frameLimitUs ||
-		reflexOptionsCache.useMarkersToOptimize != options.useMarkersToOptimize) {
-		if (SL_FAILED(result, slReflexSetOptions(options))) {
-			logger::error("[Streamline] Failed to apply Reflex options: {}", magic_enum::enum_name(result));
-		} else {
-			reflexOptionsCache.valid = true;
-			reflexOptionsCache.mode = options.mode;
-			reflexOptionsCache.frameLimitUs = options.frameLimitUs;
-			reflexOptionsCache.useMarkersToOptimize = options.useMarkersToOptimize;
-			logger::info(
-				"[Streamline] Applied Reflex options: mode={} frameLimitUs={} markersRequested={} markersAvailable={} markersEffective={}",
-				magic_enum::enum_name(options.mode),
-				options.frameLimitUs,
-				settings.reflexUseMarkersToOptimize,
-				markerOptimization.available,
-				options.useMarkersToOptimize);
-		}
-	}
-
-	if (!slReflexSleep)
-		return;
-
-	if (options.mode == sl::ReflexMode::eOff && options.frameLimitUs == 0)
-		return;
-
 	const uint32_t currentFrame = globals::state ? globals::state->frameCount : 0;
-	if (lastReflexSleepFrame == currentFrame)
-		return;
-
-	const auto frameTokenSnapshot = AcquireFrameToken(currentFrame, "reflex");
-	if (!frameTokenSnapshot)
-		return;
-
-	lastReflexSleepFrame = currentFrame;
-	if (SL_FAILED(result, slReflexSleep(*frameTokenSnapshot->token))) {
-		logger::warn("[Streamline] Reflex sleep call failed: {}", magic_enum::enum_name(result));
-	}
+	LogReflexOutcome(reflexBackend.Update(options, currentFrame, GetTickCount64()));
 }

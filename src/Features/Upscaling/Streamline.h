@@ -9,6 +9,7 @@
 #include "DLSSResultPolicy.h"
 #include "DLSSViewportCrop.h"
 #include "FrameTelemetryRing.h"
+#include "ReflexBackend.h"
 #include "StreamlineFrameTokenPublication.h"
 #include "VRRelatchDrainFence.h"
 #include "VRRelatchDrainPolicy.h"
@@ -30,7 +31,7 @@
 #include <sl_consts.h>
 #include <sl_dlss.h>
 #include <sl_matrix_helpers.h>
-#include <sl_reflex.h>
+#include <sl_pcl.h>
 #include <sl_version.h>
 #pragma warning(pop)
 
@@ -155,11 +156,9 @@ public:
 	PFun_slDLSSGetState* slDLSSGetState{};
 	PFun_slDLSSSetOptions* slDLSSSetOptions{};
 
-	// Reflex specific functions
-	PFun_slReflexGetState* slReflexGetState{};
-	PFun_slReflexSleep* slReflexSleep{};
-	PFun_slReflexSetOptions* slReflexSetOptions{};
+	// PCL marker delivery remains owned by Streamline.
 	PFun_slPCLSetMarker* slPCLSetMarker{};
+	PFun_slPCLSetOptions* slPCLSetOptions{};
 
 	using FrameTokenCoordinator =
 		StreamlineFrameTokenPublication::Coordinator<sl::FrameToken*>;
@@ -248,15 +247,7 @@ public:
 	};
 	std::array<VRDLSSSlotRecycleFence, kVRDLSSViewportRoleCount> pendingVRDLSSSlotRecycleIdleFences{};
 
-	struct ReflexOptionsCache
-	{
-		bool valid = false;
-		sl::ReflexMode mode = sl::ReflexMode::eOff;
-		uint32_t frameLimitUs = 0;
-		bool useMarkersToOptimize = false;
-	};
-	ReflexOptionsCache reflexOptionsCache{};
-	uint32_t lastReflexSleepFrame = UINT32_MAX;
+	Reflex::Backend reflexBackend;
 	DLSSResultPolicy::BudgetWarningThrottle dlssBudgetWarningThrottle;
 	bool lastDLSSFailureDuplicatedConstants = false;
 
@@ -547,6 +538,8 @@ public:
 	void Shutdown();
 	bool TryUpgradeInterface(void** a_interface);
 	bool TrySetD3DDevice(ID3D11Device* a_device);
+	/// Bind native Reflex to the unwrapped D3D11 rendering device.
+	void BindNativeReflex(ID3D11Device* a_device);
 	void MarkAdapterUnavailable(const char* a_reason);
 
 	bool CheckFeatures(IDXGIAdapter* a_adapter);
