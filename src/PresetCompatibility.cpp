@@ -75,7 +75,7 @@ namespace
 			return false;
 		return (a_evaluation.settingsContractRevision == 8 &&
 				   a_evaluation.minimumVersion == "3.19" && a_evaluation.maximumVersionExclusive == "3.20") ||
-		       ((a_evaluation.settingsContractRevision == 8 || a_evaluation.settingsContractRevision == 9 || a_evaluation.settingsContractRevision == 10 || a_evaluation.settingsContractRevision == 11 || a_evaluation.settingsContractRevision == 12 || a_evaluation.settingsContractRevision == 13) &&
+		       ((a_evaluation.settingsContractRevision >= 8 && a_evaluation.settingsContractRevision <= 14) &&
 				   a_evaluation.minimumVersion == "3.20" && a_evaluation.maximumVersionExclusive == "3.21");
 	}
 
