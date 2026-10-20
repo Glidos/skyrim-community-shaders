@@ -626,6 +626,8 @@ void TerrainSeams::CaptureLand(RE::TESObjectLAND* a_land, uint64_t captureEpoch)
 			}
 			loadedQuads[entry.quad.geometry.get()] = entry.key;
 
+			// Invalidate in-flight rebuilds before publishing replacement source data.
+			quad.generation = ++nextGeneration;
 			quad.slots = entry.quad.slots;
 			quad.border = entry.quad.border;
 			quad.grid = std::move(entry.quad.grid);
