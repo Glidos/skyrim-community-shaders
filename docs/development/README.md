@@ -53,6 +53,12 @@ pwsh ./tools/pre-commit.ps1 run
 pwsh ./tools/validate-local.ps1
 ```
 
+If submodule initialization fails, the worktree helper fetches missing
+top-level dependency pins from their absolute `.gitmodules` URLs and retries
+recursive initialization once. It preserves branch/tag refs and dependency
+pins. Unresolved failures leave the new worktree in place, report an error
+and skip preset copying. `-NoSubmodules` bypasses initialization and recovery.
+
 Validation saves complete evidence locally. Public results state checks,
 outcomes, limitations, and source/build identities without machine-specific
 paths, usernames, or local evidence locations.
