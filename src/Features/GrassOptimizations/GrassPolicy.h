@@ -11,7 +11,10 @@
 namespace GrassPolicy
 {
 	inline constexpr uint32_t kRecordBytes = 32;
+	inline constexpr uint32_t kSurvivorIndexBytes = sizeof(float);
+	inline constexpr uint32_t kSurvivorBytes = kSurvivorIndexBytes + 6 * sizeof(float);
 	inline constexpr uint32_t kMaxBatchInstances = 262144;
+	static_assert(kMaxBatchInstances <= (1u << 24));
 	inline constexpr uint32_t kMaxBatchSlices = 8192;
 	inline constexpr uint32_t kMaxFrameSources = 4096;
 	inline constexpr uint64_t kMaxResidentRecordBytes = 128ull * 1024 * 1024;
@@ -39,6 +42,8 @@ namespace GrassPolicy
 	}
 	/** @brief The native descriptor stores mesh stride in four-byte units in its low nibble. */
 	constexpr uint32_t MeshStride(uint64_t descriptor) { return uint32_t(descriptor & 0xF) * 4; }
+	/** @brief Density and distance costs follow the drawable mesh selected for each LOD slot. */
+	inline float MeshWeight(uint32_t indexCount) { return std::sqrt(std::max(1.0f, indexCount / 24.0f)); }
 	/** @brief Unsupported batch sizes retain native rendering before scratch allocation. */
 	constexpr bool BatchCapacityValid(uint64_t instances, uint64_t slices)
 	{
@@ -57,6 +62,11 @@ namespace GrassPolicy
 			return std::nullopt;
 		return CullCapacity{ std::max(current.instances, std::bit_ceil(static_cast<uint32_t>(instances))),
 			std::max(current.slots, static_cast<uint32_t>(slots)) };
+	}
+	/** @brief Replacement allocations coexist with retained buffers until the new bundle is complete. */
+	constexpr bool ReplacementFitsBudget(uint64_t resident, uint64_t replacement, uint64_t budget)
+	{
+		return resident <= budget && replacement <= budget - resident;
 	}
 	/** @brief Float offset of the native wind vector in flat or stereo geometry constants. */
 	constexpr uint32_t WindVectorOffset(bool vr) { return (vr ? 33u : 17u) * 4; }

@@ -18,12 +18,13 @@ cbuffer Parameters : register(b0)
 	uint DepthWidth, DepthHeight, DepthMips, CollisionEnabled;
 	float4 DepthUVScale;
 	float MeshCostBias, CostBiasStartDistance, InvisibleFadeCull, RenderDistance;
-	float EdgeFadeStart, SimpleShadingPixelSize, QualityRadius, MeshWeight;
+	float EdgeFadeStart, SimpleShadingPixelSize, QualityRadius, Padding;
 	uint OverrideDistance;
 	float CollisionDistance;
 	uint SliceOffset;
 	float CollisionStrength;
 	uint4 IndexCounts;
+	float4 MeshWeights;
 };
 
 cbuffer FrustumParameters : register(b3)
@@ -86,7 +87,6 @@ void CountN(uint index, uint amount)
 	Counters.InterlockedAdd(index * 4, amount, unused);
 #endif
 }
-float2 Unpack(uint value) { return float2(f16tof32(value), f16tof32(value >> 16)); }
 uint Hash(uint x)
 {
 	x ^= x >> 16;
@@ -175,30 +175,37 @@ bool Hidden(float2 lo, float2 hi, float nearest, uint eye, out uint reason, out 
 		reason = 17;
 	return nearest > farthest + DepthBias;
 }
-[numthreads(64, 1, 1)] void main(uint3 id : SV_DispatchThreadID) {
-	// Initialize every eye/LOD slot even when its instances are absent or culled.
-	if (id.x < 3 * EyeCount)
-		Arguments.Store(id.x * 32 + 12, IndexCounts[id.x / EyeCount]);
-	if (id.x >= InstanceCount)
-		return;
+uint FindSlice(uint index)
+{
 	uint left = 0, right = SliceCount;
 	[loop] while (left < right)
 	{
 		uint middle = (left + right) / 2;
-		if (id.x < Slices[SliceOffset + middle].end)
+		if (index < Slices[SliceOffset + middle].end)
 			right = middle;
 		else
 			left = middle + 1;
 	}
+	return left;
+}
+
+uint CullInstance(uint index, uint commonSlice, out uint sourceRecord, out uint tier, out GrassInstanceExtra extras[EYES])
+{
+	sourceRecord = 0;
+	tier = 0;
+	[unroll] for (uint initialEye = 0; initialEye < EYES; ++initialEye)
+		extras[initialEye] = (GrassInstanceExtra)0;
+	uint left = commonSlice < SliceCount ? commonSlice : FindSlice(index);
 	if (left >= SliceCount)
-		return;
+		return 0;
 	Slice slice = Slices[SliceOffset + left];
-	uint record = slice.first + id.x - (slice.end - slice.count);
-	uint4 a = Records.Load4(record * 32), b = Records.Load4(record * 32 + 16);
-	float4 instance1 = float4(Unpack(a.x), Unpack(a.y));
-	float4 instance2 = float4(Unpack(a.z), Unpack(a.w));
-	float4 instance3 = float4(Unpack(b.x), Unpack(b.y));
-	float4 instance4 = float4(Unpack(b.z), Unpack(b.w));
+	sourceRecord = slice.first + index - (slice.end - slice.count);
+	uint4 a = Records.Load4(sourceRecord * 32);
+	uint4 b = Records.Load4(sourceRecord * 32 + 16);
+	float4 instance1 = float4(UnpackGrassInstance(a.x), UnpackGrassInstance(a.y));
+	float4 instance2 = float4(UnpackGrassInstance(a.z), UnpackGrassInstance(a.w));
+	float4 instance3 = float4(UnpackGrassInstance(b.x), UnpackGrassInstance(b.y));
+	float4 instance4 = float4(UnpackGrassInstance(b.z), UnpackGrassInstance(b.w));
 	float3 scale = instance4.y * ScaleMask + 1;
 	float3x3 rotation = float3x3(instance2.xyz, instance3.xyz, float3(instance4.x, instance2.w, instance3.w));
 	float3 center = instance1.xyz + mul(rotation, ModelBound.xyz * scale) + slice.originFade.xyz - RepresentativeOrigin.xyz;
@@ -228,17 +235,18 @@ bool Hidden(float2 lo, float2 hi, float nearest, uint eye, out uint reason, out 
 	uint seed = Hash(asuint(instance1.x + slice.originFade.x) ^ Hash(asuint(instance1.y + slice.originFade.y)) ^ a.y);
 	float densityHash = (seed & 0xffffff) / 16777216.0;
 	float lodHash = (Hash(seed ^ 0x9e3779b9) & 0xffffff) / 16777216.0;
-	float costBias = MeshCostBias * saturate((distance - CostBiasStartDistance) / max(CostBiasStartDistance, 1e-4));
-	float pixelScale = lerp(1, MeshWeight, costBias);
-	float maximumDistance = RenderDistance * lerp(1, 1 / max(MeshWeight, 1), costBias);
-	float keep = lerp(MinDensity, 1, saturate((pixels - MinPixels * pixelScale) / max((FullPixels - MinPixels) * pixelScale, .01)));
-	float densityFade = DensityEnabled && pixels < FullPixels * pixelScale ? saturate((keep + .15 - densityHash) / .15) : 1;
-	bool densityReject = valid && DensityEnabled && (pixels < MinPixels * pixelScale || densityFade <= 0);
-	uint tier = 0;
 	if (valid && MidEnabled && pixels < MidPixels + (lodHash - .5) * BandPixels)
 		tier = 1;
 	if (valid && FarEnabled && pixels < FarPixels + (lodHash - .5) * BandPixels)
 		tier = 2;
+	float meshWeight = MeshWeights[tier];
+	float costBias = MeshCostBias * saturate((distance - CostBiasStartDistance) / max(CostBiasStartDistance, 1e-4));
+	float pixelScale = lerp(1, meshWeight, costBias);
+	float maximumDistance = RenderDistance * lerp(1, 1 / max(meshWeight, 1), costBias);
+	float keep = lerp(MinDensity, 1, saturate((pixels - MinPixels * pixelScale) / max((FullPixels - MinPixels) * pixelScale, .01)));
+	float densityFade = DensityEnabled && pixels < FullPixels * pixelScale ? saturate((keep + .15 - densityHash) / .15) : 1;
+	bool densityReject = valid && DensityEnabled && (pixels < MinPixels * pixelScale || densityFade <= 0);
+	uint eyeMask = 0;
 	bool windComputed = false;
 	float2 wind = 0;
 	[unroll] for (uint eye = 0; eye < EYES; ++eye)
@@ -299,11 +307,6 @@ bool Hidden(float2 lo, float2 hi, float nearest, uint eye, out uint reason, out 
 		}
 		if (!valid)
 			Count(7);
-		uint slot;
-		Arguments.InterlockedAdd((tier * EyeCount + eye) * 32 + 16, 1, slot);
-		uint output = (tier * EyeCount + eye) * Capacity + slot;
-		Compacted.Store4(output * 32, a);
-		Compacted.Store4(output * 32 + 16, b);
 		bool simple = valid && SimpleShadingPixelSize > 0 && pixels < SimpleShadingPixelSize;
 		[branch] if (!windComputed)
 		{
@@ -313,7 +316,49 @@ bool Hidden(float2 lo, float2 hi, float nearest, uint eye, out uint reason, out 
 		GrassInstanceExtra extra;
 		extra.originFade = float4(slice.originFade.xyz, simple ? -fade : fade);
 		extra.wind = wind;
-		Extras[output] = extra;
+		extras[eye] = extra;
+		eyeMask |= 1u << eye;
 		Count(4 + tier);
+	}
+	return eyeMask;
+}
+
+groupshared uint CommonSlice;
+groupshared uint BinCounts[3 * EYES];
+groupshared uint BinOffsets[3 * EYES];
+
+[numthreads(64, 1, 1)] void main(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex) {
+	if (lane == 0) {
+		CommonSlice = FindSlice(id.x);
+		if (CommonSlice < SliceCount && Slices[SliceOffset + CommonSlice].end < min(id.x + 64, InstanceCount))
+			CommonSlice = SliceCount;
+	}
+	if (lane < 3 * EYES)
+		BinCounts[lane] = 0;
+	if (id.x < 3 * EyeCount)
+		Arguments.Store(id.x * 32 + 12, IndexCounts[id.x / EyeCount]);
+	GroupMemoryBarrierWithGroupSync();
+
+	uint sourceRecord = 0;
+	uint tier = 0, eyeMask = 0;
+	GrassInstanceExtra extras[EYES];
+	if (id.x < InstanceCount)
+		eyeMask = CullInstance(id.x, CommonSlice, sourceRecord, tier, extras);
+	uint localSlots[EYES];
+	[unroll] for (uint reserveEye = 0; reserveEye < EYES; ++reserveEye) if (eyeMask & (1u << reserveEye))
+		InterlockedAdd(BinCounts[tier * EyeCount + reserveEye], 1, localSlots[reserveEye]);
+	GroupMemoryBarrierWithGroupSync();
+
+	if (lane < 3 * EYES && BinCounts[lane])
+		Arguments.InterlockedAdd(lane * 32 + 16, BinCounts[lane], BinOffsets[lane]);
+	GroupMemoryBarrierWithGroupSync();
+
+	[unroll] for (uint eye = 0; eye < EYES; ++eye) if (eyeMask & (1u << eye))
+	{
+		uint bin = tier * EyeCount + eye;
+		uint output = bin * Capacity + BinOffsets[bin] + localSlots[eye];
+		// Source indices fit exactly in the float input-assembler stream.
+		Compacted.Store(output * 4, asuint(float(sourceRecord)));
+		Extras[output] = extras[eye];
 	}
 }
