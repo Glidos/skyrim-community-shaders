@@ -215,6 +215,28 @@ class ShaderCachePackagingTests(unittest.TestCase):
                 )
 
     @unittest.skipUnless(shutil.which("cmake"), "CMake is required to inspect cache archives")
+    def test_standard_only_archive_option_preserves_default_rejection(self) -> None:
+        self.assertEqual(BUILDER.compile_variants_for(BUILDER.SHIPPED_CACHE_PROFILE, False),
+                         (BUILDER.STANDARD_CACHE_VARIANT,))
+        self.assertEqual(BUILDER.compile_variants_for(BUILDER.SHIPPED_CACHE_PROFILE), BUILDER.CACHE_VARIANTS)
+        for horizon in (False, True):
+            with self.subTest(horizon=horizon), tempfile.TemporaryDirectory() as temporary:
+                workspace = Path(temporary)
+                root = workspace / "runtime"
+                self._managed_cache(root, "VR", horizon=horizon)
+                if horizon:
+                    with self.assertRaisesRegex(SystemExit, "excluded Horizon Fix"):
+                        BUILDER.prepare_cache_archive(root, workspace, "VR", "standard", "CSX 3.18-VR",
+                                                      shutil.which("cmake"), include_horizon_fix=False)
+                else:
+                    archive = BUILDER.prepare_cache_archive(root, workspace, "VR", "standard", "CSX 3.18-VR",
+                                                            shutil.which("cmake"), include_horizon_fix=False)
+                    self.assertTrue(archive.is_file())
+                    with self.assertRaisesRegex(SystemExit, "missing required compatibility variants"):
+                        BUILDER.validate_cache_archive(archive, shutil.which("cmake"), "VR", "CSX 3.18-VR",
+                                                       horizon_variants=True)
+
+    @unittest.skipUnless(shutil.which("cmake"), "CMake is required to inspect cache archives")
     def test_archive_rejects_horizon_declaration_without_records(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "runtime"
