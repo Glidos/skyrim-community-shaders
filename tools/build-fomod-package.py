@@ -104,6 +104,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=True,
         help="Include the SE/AE cache and installer choice (default: included).",
     )
+    parser.add_argument(
+        "--include-horizon-fix",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include Horizon Fix compatibility cache records (default: included).",
+    )
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--version", required=True)
     args = parser.parse_args(argv)
@@ -160,7 +166,9 @@ def add_selection_page(
     return step, plugins
 
 
-def build_module_config(include_se_ae: bool = True) -> ET.ElementTree:
+def build_module_config(
+    include_se_ae: bool = True, include_horizon_fix: bool = True
+) -> ET.ElementTree:
     root = ET.Element(
         "config",
         {
@@ -185,13 +193,18 @@ def build_module_config(include_se_ae: bool = True) -> ET.ElementTree:
         name="Choose the Skyrim runtime",
         group_name="Prebuilt shader cache",
     )
+    compatibility_description = (
+        "Includes Water shaders with and without Horizon Fix support; "
+        "the game selects the matching variant automatically."
+        if include_horizon_fix
+        else "Includes standard Water shaders only; Horizon Fix compatibility is not bundled."
+    )
     add_option(
         runtime_plugins,
         name="Skyrim VR",
         description=(
             "Install the prebuilt shader cache compiled for Skyrim VR. "
-            "Includes Water shaders with and without Horizon Fix support; "
-            "the game selects the matching variant automatically."
+            + compatibility_description
         ),
         flag=RUNTIME_FLAG,
         value=RUNTIME_VR,
@@ -202,8 +215,7 @@ def build_module_config(include_se_ae: bool = True) -> ET.ElementTree:
             name="Skyrim SE/AE",
             description=(
                 "Install the prebuilt shader cache compiled for Skyrim SE/AE. "
-                "Includes Water shaders with and without Horizon Fix support; "
-                "the game selects the matching variant automatically."
+                + compatibility_description
             ),
             flag=RUNTIME_FLAG,
             value=RUNTIME_SE_AE,
@@ -303,6 +315,7 @@ def validate_cache_source(
     cache_directory: Path,
     expected_runtime: str,
     expected_shader_cache_abi: str,
+    include_horizon_fix: bool = True,
 ) -> None:
     pack_manifest_path = cache_directory / PACK_MANIFEST_FILE
     info_path = cache_directory / CACHE_INFO_FILE
@@ -401,7 +414,9 @@ def validate_cache_source(
             pack_manifest,
             contract_runtime,
             pack_stats,
-            required_compatibility_variants=("default", "legacy-horizon-fix"),
+            required_compatibility_variants=(
+                ("default", "legacy-horizon-fix") if include_horizon_fix else ("default",)
+            ),
         )
     except SystemExit as exc:
         raise SystemExit(
@@ -409,6 +424,8 @@ def validate_cache_source(
             f"{pack_manifest_path}: {exc}"
         ) from exc
     inventory.validate(pack_stats)
+    if not include_horizon_fix and "legacy-horizon-fix" in pack_manifest["compatibilityVariants"]:
+        raise SystemExit("managed cache contains excluded Horizon Fix records")
 
 
 def flag_pairs(element: ET.Element) -> tuple[tuple[str, str], ...]:
@@ -559,7 +576,8 @@ def validate_module_config(config_path: Path, include_se_ae: bool = True) -> Non
 
 
 def validate_staged_package(
-    output: Path, version: str, include_se_ae: bool = True
+    output: Path, version: str, include_se_ae: bool = True,
+    include_horizon_fix: bool = True,
 ) -> None:
     core = output / CORE_DIRECTORY
     if not core.is_dir():
@@ -575,7 +593,7 @@ def validate_staged_package(
                 )
             continue
         cache_directory = output / variant.staging_directory / CACHE_DIRECTORY
-        validate_cache_source(cache_directory, variant.runtime, shader_cache_abi)
+        validate_cache_source(cache_directory, variant.runtime, shader_cache_abi, include_horizon_fix)
 
     fomod_directory = output / FOMOD_DIRECTORY
     validate_module_config(fomod_directory / MODULE_CONFIG_FILE, include_se_ae)
@@ -601,6 +619,7 @@ def stage_package(
     version: str,
     *,
     include_se_ae: bool = True,
+    include_horizon_fix: bool = True,
 ) -> None:
     if include_se_ae and se_cache is None:
         raise SystemExit("--se-cache is required unless --no-include-se-ae is set")
@@ -628,7 +647,7 @@ def stage_package(
         runtime_root = runtime_roots[variant.runtime]
         assert runtime_root is not None
         source = runtime_root / CACHE_DIRECTORY
-        validate_cache_source(source, variant.runtime, shader_cache_abi)
+        validate_cache_source(source, variant.runtime, shader_cache_abi, include_horizon_fix)
         sources[variant] = source
 
     output_owned = False
@@ -645,14 +664,14 @@ def stage_package(
         fomod_directory = output / FOMOD_DIRECTORY
         fomod_directory.mkdir()
         write_installer_xml(
-            build_module_config(include_se_ae),
+            build_module_config(include_se_ae, include_horizon_fix),
             fomod_directory / MODULE_CONFIG_FILE,
         )
         write_installer_xml(
             build_info(version),
             fomod_directory / INFO_FILE,
         )
-        validate_staged_package(output, version, include_se_ae)
+        validate_staged_package(output, version, include_se_ae, include_horizon_fix)
     except (OSError, SystemExit):
         if output_owned:
             shutil.rmtree(output, ignore_errors=True)
@@ -668,6 +687,7 @@ def main() -> int:
         args.output.resolve(),
         args.version,
         include_se_ae=args.include_se_ae,
+        include_horizon_fix=args.include_horizon_fix,
     )
     print(f"staged managed-cache FOMOD at {args.output.resolve()}")
     return 0

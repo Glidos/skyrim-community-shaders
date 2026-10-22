@@ -4,6 +4,7 @@
 #include "Utils/WinApi.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <format>
 #include <imgui.h>
 #include <imgui_stdlib.h>
@@ -85,19 +86,31 @@ void AdvancedSettingsRenderer::RenderShaderCompileFlags()
 
 	Util::DrawSectionHeader("Compile Flags");
 
-	// Shader Defines input
-	auto shaderDefines = globals::state->GetShaderDefinesSnapshot()->canonicalText;
-	if (Util::Widgets::InputText("Shader Defines", &shaderDefines)) {
-		globals::state->SetDefines(shaderDefines);
+	// Keep drafts private until application; a hidden field abandons its draft.
+	static std::string shaderDefines;
+	static std::string appliedDefines;
+	static bool editingDefines = false;
+	static uint32_t lastDefinesFrame = 0;
+	const auto frame = globals::state->frameCount;
+	if (!editingDefines || (frame != lastDefinesFrame && frame != lastDefinesFrame + 1u)) {
+		shaderDefines = globals::state->GetShaderDefinesSnapshot()->canonicalText;
+		appliedDefines = shaderDefines;
 	}
-	if (ImGui::IsItemDeactivatedAfterEdit() || (ImGui::IsItemActive() &&
-												   (ImGui::IsKeyPressed(ImGuiKey_Enter) ||
-													   ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)))) {
-		globals::state->SetDefines(shaderDefines);
-		shaderCache->Clear();
+	lastDefinesFrame = frame;
+	const bool applyDefines = Util::Widgets::InputText("Shader Defines", &shaderDefines, ImGuiInputTextFlags_EnterReturnsTrue);
+	editingDefines = ImGui::IsItemActive();
+	if ((applyDefines || ImGui::IsItemDeactivatedAfterEdit()) &&
+		!ImGui::IsKeyPressed(ImGuiKey_Escape, false) && shaderDefines != appliedDefines) {
+		const auto previousDefines = globals::state->GetShaderDefinesSnapshot();
+		if (shaderDefines != previousDefines->canonicalText) {
+			globals::state->SetDefines(shaderDefines);
+			if (globals::state->GetShaderDefinesSnapshot()->canonicalText != previousDefines->canonicalText)
+				shaderCache->Clear();
+		}
+		appliedDefines = shaderDefines;
 	}
 	if (auto _tt = Util::HoverTooltipWrapper()) {
-		ImGui::Text("Semicolon-separated shader defines; enter a space to clear. Rebuild shaders after editing. Compute shaders need a restart to recompile.");
+		ImGui::Text("Semicolon-separated shader defines; leave empty to clear. Press Enter or leave the field to apply. Closing this page discards unapplied edits. Compute shaders need a restart to recompile.");
 	}
 
 	// Half-precision (partial precision) shader compile flag
@@ -144,12 +157,12 @@ void AdvancedSettingsRenderer::RenderShaderThreading()
 	shaderCache->compilationThreadCount = std::clamp(shaderCache->compilationThreadCount, 1, maxThreads);
 	shaderCache->backgroundCompilationThreadCount = std::clamp(shaderCache->backgroundCompilationThreadCount, 1, maxThreads);
 
-	Util::Widgets::SliderInt("Compiler Threads", &shaderCache->compilationThreadCount, 1, maxThreads);
+	Util::Widgets::SliderInt("Compiler Threads", &shaderCache->compilationThreadCount, 1, maxThreads, "%d", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text(
 			"Startup compile threads. Default: 75%% of logical CPUs, including E-cores, at cooperative OS priority to leave system headroom. Higher compiles faster but may reduce responsiveness.");
 	}
-	Util::Widgets::SliderInt("Background Compiler Threads", &shaderCache->backgroundCompilationThreadCount, 1, maxThreads);
+	Util::Widgets::SliderInt("Background Compiler Threads", &shaderCache->backgroundCompilationThreadCount, 1, maxThreads, "%d", ImGuiSliderFlags_AlwaysClamp);
 	if (auto _tt = Util::HoverTooltipWrapper()) {
 		ImGui::Text(
 			"Gameplay compile threads. Default: half the performance cores to protect render-thread time; workers resume normal game priority after startup. Higher compiles faster but may stutter.");
@@ -616,9 +629,16 @@ void AdvancedSettingsRenderer::RenderShaderBlockingPanel()
 		ImVec4 blockedBgColor = Util::Colors::GetError();
 		blockedBgColor.w = 0.15f;  // Semi-transparent background
 		ImGui::PushStyleColor(ImGuiCol_ChildBg, blockedBgColor);
+		const auto restoreStyle = SKSE::stl::scope_exit([] {
+			ImGui::PopStyleColor();
+			ImGui::PopStyleVar(2);
+		});
 
-		float maxHeight = ImGui::GetContentRegionAvail().y * 0.3f;  // Limit to 30% to keep Active Shaders visible
-		if (ImGui::BeginChild("##BlockedShaderInfo", ImVec2(0, maxHeight), true, ImGuiChildFlags_AutoResizeY)) {
+		const float maxHeight = std::max(1.0f, ImGui::GetContentRegionAvail().y * 0.3f);
+		ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, maxHeight));
+		const bool childVisible = ImGui::BeginChild("##BlockedShaderInfo", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
+		const auto endChild = SKSE::stl::scope_exit([] { ImGui::EndChild(); });
+		if (childVisible) {
 			Util::Text::Error("Shader Blocking Active");
 			ImGui::SameLine();
 			if (ImGui::Button("Stop Blocking##Section")) {
@@ -663,11 +683,6 @@ void AdvancedSettingsRenderer::RenderShaderBlockingPanel()
 				}
 			}
 		}
-		ImGui::EndChild();
-
-		ImGui::PopStyleVar();    // ChildRounding
-		ImGui::PopStyleVar();    // WindowBorderSize
-		ImGui::PopStyleColor();  // ChildBg
 	}
 
 	// Blocking hotkeys + enable toggle

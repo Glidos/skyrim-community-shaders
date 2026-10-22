@@ -2,7 +2,7 @@
     "schemaVersion": 4,
     "status": "provisional-calibration-v2",
     "generatedAtEvidenceDate": "2026-08-30",
-    "packageVersion": "d2026.10.15.1",
+    "packageVersion": "d2026.10.20.1",
     "policy": "one vendor-neutral base with three explicit graphics tiers and capability-selected DLSS or FSR",
     "presetCompatibility": {
         "contractVersion": 1,
@@ -15,11 +15,11 @@
     "tierOrder": ["Performance", "Balanced", "Quality"],
     "baseTemplate": {
         "path": "docs/development/unified-preset-templates/Base.SettingsUser.json",
-        "sha256": "57DCE96561F1AD9AEC882E26AC12121BD3EAFD4DBA6ABFCC86DAD0FC7D77A09E"
+        "sha256": "614815E234316220B105B2F38E9F1AF45100F3FBC39FA0FFFBE75C1AF134FD08"
     },
     "runtimeSettingsContract": {
-        "revision": 14,
-        "sourceTreeSha256": "7BBE68C9857F6261476B514A2610AAC64171D0D8FC208F29516741A38710FC31",
+        "revision": 15,
+        "sourceTreeSha256": "8233C66FA941E1D3AB390EF09AEDDF164FBF8C321C535B37EB06CD04EB6585CF",
         "inventory": {
             "fixedSources": [
                 "src/Api/FeatureDevBenchBridge.cpp",
@@ -771,6 +771,20 @@
             ["Volumetric Lighting", "GodrayShaftIntensity"]
         ],
         "requiredValues": [
+            { "path": ["Terrain Blending", "LandscapeSeams"], "value": 0 },
+            { "path": ["Performance Overlay", "ShowRenderTargets"], "value": false },
+            { "path": ["Neural Rendering", "rendering", "neuralRenderingNetwork"], "value": 0 },
+            {
+                "path": ["Sky Sync", "DisabledWorldspaces"],
+                "value": [
+                    "Blackreach",
+                    "AlftandWorld",
+                    "Sovngarde",
+                    "DLC01SoulCairn",
+                    "DLC01Boneyard",
+                    "DLC2ApocryphaWorld"
+                ]
+            },
             { "path": ["Neural Rendering", "schemaVersion"], "value": 1 },
             { "path": ["Neural Rendering", "rendering", "neuralRenderingEnabled"], "value": false },
             { "path": ["Neural Rendering", "rendering", "neuralRenderingMode"], "value": 2 },

@@ -780,6 +780,14 @@ void VR::ReleaseMenuImGuiInputState()
 	customVRCursorVisible = false;
 	customVRCursorPos = ImVec2(-FLT_MAX, -FLT_MAX);
 	ResetCursorOwnershipState();
+	// Held gameplay buttons must be released before they can become UI presses.
+	for (const bool secondary : { false, true }) {
+		const auto mappings = GetVRInputMappings(secondary);
+		auto* previous = secondary ? gPrevSecondaryVRInputStates : gPrevPrimaryVRInputStates;
+		const auto& physical = secondary ? secondaryControllerState : primaryControllerState;
+		for (size_t index = 0; index < mappings.size(); ++index)
+			previous[index] = physical[mappings[index].keyCode].isPressed;
+	}
 }
 
 void VR::ResetMenuInputRuntimeState()
@@ -791,13 +799,6 @@ void VR::ResetMenuInputRuntimeState()
 	ResetWandPointingRuntimeState();
 	// Physical chord state survives UI resets; only device events release held buttons.
 	ReleaseMenuImGuiInputState();
-	for (const bool secondary : { false, true }) {
-		const auto mappings = GetVRInputMappings(secondary);
-		auto* previous = secondary ? gPrevSecondaryVRInputStates : gPrevPrimaryVRInputStates;
-		const auto& physical = secondary ? secondaryControllerState : primaryControllerState;
-		for (size_t index = 0; index < mappings.size(); ++index)
-			previous[index] = physical[mappings[index].keyCode].isPressed;
-	}
 }
 
 void VR::ProcessControllerInputForWandPointingPath(bool testMode, float mouseDeadzone, ImGuiIO& io)

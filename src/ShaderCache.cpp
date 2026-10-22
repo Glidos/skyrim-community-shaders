@@ -1447,6 +1447,8 @@ namespace SIE
 
 		static void GetLightingShaderDefines(uint32_t descriptor, std::span<D3D_SHADER_MACRO> defines)
 		{
+			static_assert((static_cast<uint32_t>(ShaderCache::LightingShaderFlags::LandscapeSeams) &
+							  ShaderCache::GetCharacterCategoryFlag(RE::BSShader::Type::Lighting)) == 0);
 			static REL::Relocation<void(uint32_t, D3D_SHADER_MACRO*)> VanillaGetLightingShaderDefines(RELOCATION_ID(101631, 108698));
 			VanillaGetLightingShaderDefines(descriptor, defines.data());
 
@@ -1461,6 +1463,9 @@ namespace SIE
 					defines[lastIndex++] = { "GLINT", nullptr };
 				}
 			}
+
+			if ((descriptor & static_cast<uint32_t>(ShaderCache::LightingShaderFlags::LandscapeSeams)) != 0)
+				defines[lastIndex++] = { "LANDSCAPE_SEAMS", nullptr };
 
 			for (auto* feature : Feature::GetFeatureList()) {
 				if (feature->loaded && feature->HasShaderDefine(RE::BSShader::Type::Lighting)) {
@@ -1925,6 +1930,9 @@ namespace SIE
 			}
 			if (descriptor & static_cast<uint32_t>(LocalMapFogOfWar)) {
 				defines[lastIndex++] = { "LOCALMAP_FOGOFWAR", nullptr };
+			}
+			if (descriptor & static_cast<uint32_t>(TruePbr)) {
+				defines[lastIndex++] = { "TRUE_PBR", nullptr };
 			}
 
 			if (descriptor & (static_cast<uint32_t>(RenderShadowmask) |
@@ -2441,7 +2449,7 @@ namespace SIE
 		template <size_t MaxOffsetsSize>
 		static void ReflectConstantBuffers(ID3D11ShaderReflection& reflector,
 			std::array<size_t, 3>& bufferSizes,
-			std::array<int8_t, MaxOffsetsSize>& constantOffsets,
+			std::array<uint8_t, MaxOffsetsSize>& constantOffsets,
 			uint64_t& vertexDesc,
 			ShaderClass shaderClass, uint32_t descriptor, const RE::BSShader& shader)
 		{
@@ -2543,7 +2551,7 @@ namespace SIE
 							GetVariableIndex(shaderClass, shader, varDesc.Name);
 						const bool variableFound = variableIndex != -1;
 						if (variableFound) {
-							constantOffsets[variableIndex] = (int8_t)(varDesc.StartOffset / 4);
+							constantOffsets[variableIndex] = static_cast<uint8_t>(varDesc.StartOffset / 4);
 						} else {
 							logger::trace("Unknown variable name {} in {} shader {}::{:X}",
 								varDesc.Name, magic_enum::enum_name(shaderClass),
@@ -2561,7 +2569,7 @@ namespace SIE
 									const auto variableArrayIndex =
 										GetVariableIndex(shaderClass, shader, arrayName.c_str());
 									if (variableArrayIndex != -1) {
-										constantOffsets[variableArrayIndex] = static_cast<int8_t>(varDesc.StartOffset / 4);
+										constantOffsets[variableArrayIndex] = static_cast<uint8_t>(varDesc.StartOffset / 4);
 									} else {
 										logger::debug("Unknown variable name {} in {} shader {}::{:X}",
 											arrayName, magic_enum::enum_name(shaderClass),
@@ -2577,7 +2585,7 @@ namespace SIE
 											GetVariableIndex(shaderClass, shader, varName.c_str());
 										if (variableArrayElementIndex != -1) {
 											constantOffsets[variableArrayElementIndex] =
-												static_cast<int8_t>((varDesc.StartOffset + elementSize * arrayIndex) / 4);
+												static_cast<uint8_t>((varDesc.StartOffset + elementSize * arrayIndex) / 4);
 										} else {
 											logger::debug(
 												"Unknown variable name {} in {} shader {}::{:X}", varName,
@@ -2767,16 +2775,15 @@ namespace SIE
 			auto& cache = ShaderCache::Instance();
 			const auto key = SShaderCache::GetShaderString(shaderClass, shader, descriptor, true, descriptorDefines);
 
-			// Atomically check the shaderMap and either:
-			//  - return the blob if already Completed (cache hit),
-			//  - wait if another thread is compiling (Pending),
-			//  - claim the slot with Pending if nobody started yet.
+			// Pending requests wait for their owner; completed requests reuse its blob.
+			// Failed requests remain terminal until invalidation.
 			auto [claimResult, cachedBlob] = cache.ClaimCompilation(key, a_taskGeneration);
 			if (claimResult == ShaderCache::ClaimResult::CacheHit) {
 				cache.IncCacheHitTasks(a_taskGeneration);
 				return cachedBlob;
 			}
-			if (claimResult == ShaderCache::ClaimResult::RejectedStale) {
+			if (claimResult == ShaderCache::ClaimResult::Failed ||
+				claimResult == ShaderCache::ClaimResult::RejectedStale) {
 				return nullptr;
 			}
 
@@ -3133,7 +3140,7 @@ namespace SIE
 					descriptor);
 			} else {
 				std::array<size_t, 3> bufferSizes = { 0, 0, 0 };
-				std::ranges::fill(newShader->constantTable, (int8_t)0);
+				std::ranges::fill(newShader->constantTable, uint8_t{ 0 });
 				uint64_t dummy;
 				ReflectConstantBuffers(*reflector.get(), bufferSizes, newShader->constantTable,
 					dummy,
@@ -3577,6 +3584,7 @@ namespace SIE
 	void ShaderCache::Clear()
 	{
 		compilationSet.BumpGeneration();
+		Util::ClearShaderCompileFailures();
 
 		{
 			std::unique_lock diskCacheLock{ g_diskCacheMutationMutex };
@@ -3795,6 +3803,7 @@ namespace SIE
 	void ShaderCache::Clear(RE::BSShader::Type a_type)
 	{
 		compilationSet.BumpGeneration();
+		Util::ClearShaderCompileFailures();
 
 		logger::debug("Clearing cache for {}", magic_enum::enum_name(a_type));
 		std::lock_guard lockGuardV(vertexShadersMutex);
@@ -3840,6 +3849,7 @@ namespace SIE
 		{
 			static bool IsPending(const ShaderCacheResult& a_entry) { return a_entry.status == ShaderCompilationTask::Status::Pending; }
 			static bool IsCompleted(const ShaderCacheResult& a_entry) { return a_entry.status == ShaderCompilationTask::Status::Completed; }
+			static bool IsFailed(const ShaderCacheResult& a_entry) { return a_entry.status == ShaderCompilationTask::Status::Failed; }
 			static bool HasPayload(const ShaderCacheResult& a_entry) { return a_entry.blob != nullptr; }
 			static uint64_t GetGeneration(const ShaderCacheResult& a_entry) { return a_entry.generation; }
 		};
@@ -3995,6 +4005,9 @@ namespace SIE
 				logger::debug("Shader compilation in progress, waiting: {}", key);
 				mapCV.wait(lockM);
 				continue;
+			}
+			if (outcome == ClaimOutcome::Failed) {
+				return { ClaimResult::Failed, nullptr };
 			}
 			if (outcome == ClaimOutcome::RejectedStale) {
 				return { ClaimResult::RejectedStale, nullptr };
@@ -5546,6 +5559,8 @@ namespace SIE
 	RE::BSGraphics::VertexShader* ShaderCache::MakeAndAddVertexShader(const RE::BSShader& shader,
 		uint32_t descriptor, std::optional<uint64_t> a_taskGeneration)
 	{
+		if (!a_taskGeneration)
+			a_taskGeneration = compilationSet.generation.load(std::memory_order_acquire);
 		if (const auto shaderBlob =
 				SShaderCache::CompileShader(ShaderClass::Vertex, shader, descriptor, IsDiskCacheActive(), dependencyTracker.get(), a_taskGeneration)) {
 			if (IsTaskStale(a_taskGeneration)) {
@@ -5575,9 +5590,11 @@ namespace SIE
 					newShader->shader->Release();
 				}
 			} else {
-				return vertexShaders[static_cast<size_t>(shader.shaderType.get())]
-				    .insert_or_assign(descriptor, std::move(newShader))
-				    .first->second.get();
+				auto& entry = vertexShaders[static_cast<size_t>(shader.shaderType.get())][descriptor];
+				if (entry && entry->shader)
+					entry->shader->Release();
+				entry = std::move(newShader);
+				return entry.get();
 			}
 		}
 		return nullptr;
@@ -5586,6 +5603,8 @@ namespace SIE
 	RE::BSGraphics::PixelShader* ShaderCache::MakeAndAddPixelShader(const RE::BSShader& shader,
 		uint32_t descriptor, std::optional<uint64_t> a_taskGeneration)
 	{
+		if (!a_taskGeneration)
+			a_taskGeneration = compilationSet.generation.load(std::memory_order_acquire);
 		if (const auto shaderBlob =
 				SShaderCache::CompileShader(ShaderClass::Pixel, shader, descriptor, IsDiskCacheActive(), dependencyTracker.get(), a_taskGeneration)) {
 			if (IsTaskStale(a_taskGeneration)) {
@@ -5615,9 +5634,11 @@ namespace SIE
 					newShader->shader->Release();
 				}
 			} else {
-				return pixelShaders[static_cast<size_t>(shader.shaderType.get())]
-				    .insert_or_assign(descriptor, std::move(newShader))
-				    .first->second.get();
+				auto& entry = pixelShaders[static_cast<size_t>(shader.shaderType.get())][descriptor];
+				if (entry && entry->shader)
+					entry->shader->Release();
+				entry = std::move(newShader);
+				return entry.get();
 			}
 		}
 		return nullptr;
@@ -5626,6 +5647,8 @@ namespace SIE
 	RE::BSGraphics::ComputeShader* ShaderCache::MakeAndAddComputeShader(const RE::BSShader& shader,
 		uint32_t descriptor, std::optional<uint64_t> a_taskGeneration)
 	{
+		if (!a_taskGeneration)
+			a_taskGeneration = compilationSet.generation.load(std::memory_order_acquire);
 		if (const auto shaderBlob =
 				SShaderCache::CompileShader(ShaderClass::Compute, shader, descriptor, IsDiskCacheActive(), dependencyTracker.get(), a_taskGeneration)) {
 			if (IsTaskStale(a_taskGeneration)) {
@@ -5655,9 +5678,11 @@ namespace SIE
 					newShader->shader->Release();
 				}
 			} else {
-				return computeShaders[static_cast<size_t>(shader.shaderType.get())]
-				    .insert_or_assign(descriptor, std::move(newShader))
-				    .first->second.get();
+				auto& entry = computeShaders[static_cast<size_t>(shader.shaderType.get())][descriptor];
+				if (entry && entry->shader)
+					entry->shader->Release();
+				entry = std::move(newShader);
+				return entry.get();
 			}
 		}
 		return nullptr;
@@ -6996,6 +7021,8 @@ namespace SIE
 		std::string lowerExtension = extension;
 		std::transform(lowerExtension.begin(), lowerExtension.end(), lowerExtension.begin(),
 			[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		if (lowerExtension == ".hlsl" || lowerExtension == ".hlsli")
+			Util::ClearShaderCompileFailures();
 		if (!std::filesystem::is_directory(filePath) && lowerExtension == ".hlsl") {
 			// Update cache with the modified shader
 			cache->InsertModifiedShaderMap(shaderTypeString, modifiedTime);

@@ -146,6 +146,18 @@ option(
     OFF
 )
 option(TRACY_SUPPORT "Enable support for tracy profiler" OFF)
+option(NVPERF_SUPPORT "Build developer-only NVIDIA D3D11 hardware counters" OFF)
+set(NVPERF_SDK_ROOT
+    ""
+    CACHE PATH
+    "Nsight Perf SDK directory containing include/nvperf_host.h"
+)
+if(NVPERF_SUPPORT AND NOT DEVBENCH_BRIDGE)
+    message(
+        FATAL_ERROR
+        "NVPERF_SUPPORT requires DEVBENCH_BRIDGE=ON; hardware counters are developer-only"
+    )
+endif()
 option(
     BUILD_SHADER_TESTS
     "Build shader unit tests (runs automatically before packaging)"
@@ -258,6 +270,7 @@ add_custom_target(
         "DEVBENCH_BRIDGE=${DEVBENCH_BRIDGE}" --build-option
         "CSX_RELEASE_VERSION=${CSX_RELEASE_VERSION}" --build-option
         "TRACY_SUPPORT=${TRACY_SUPPORT}" --build-option
+        "NVPERF_SUPPORT=${NVPERF_SUPPORT}" --build-option
         "ENABLE_SKYRIM_AE=${ENABLE_SKYRIM_AE}" --build-option
         "ENABLE_SKYRIM_SE=${ENABLE_SKYRIM_SE}" --build-option
         "ENABLE_SKYRIM_VR=${ENABLE_SKYRIM_VR}" --build-option
@@ -389,6 +402,9 @@ if(DEVBENCH_BRIDGE)
     target_compile_definitions(${PROJECT_NAME} PRIVATE DEVBENCH_BRIDGE_ENABLED)
 endif()
 
+include(NvPerf)
+csx_configure_nvperf(${PROJECT_NAME})
+
 # https://gitlab.kitware.com/cmake/cmake/-/issues/24922#note_1371990
 if(MSVC_VERSION GREATER_EQUAL 1936 AND MSVC_IDE) # 17.6+
     # When using /std:c++latest, "Build ISO C++23 Standard Library Modules" defaults to "Yes".
@@ -431,15 +447,11 @@ foreach(FEATURE_PATH ${FEATURE_CONFIG_FILES})
     string(STRIP "${CONFIG_VALUE}" CONFIG_VALUE)
     if(CONFIG_VALUE)
         string(
-            REGEX MATCH "[Vv]ersion = ([0-9]+)-([0-9]+)-([0-9]+)"
-            _
+            REGEX MATCH "[Vv]ersion[ \t]*=[ \t]*([0-9]+)-([0-9]+)-([0-9]+)"
+            _VERSION_MATCH
             "${CONFIG_VALUE}"
         )
-        if(
-            DEFINED CMAKE_MATCH_1
-            AND DEFINED CMAKE_MATCH_2
-            AND DEFINED CMAKE_MATCH_3
-        )
+        if(_VERSION_MATCH)
             set(ver_major ${CMAKE_MATCH_1})
             set(ver_minor ${CMAKE_MATCH_2})
             set(ver_patch ${CMAKE_MATCH_3})
@@ -959,6 +971,8 @@ if(AUTO_PLUGIN_DEPLOYMENT OR AIO_ZIP_TO_DIST)
         COMMENT "Copying built DLL and PDB to AIO package"
         VERBATIM
     )
+
+    csx_stage_nvperf(${PROJECT_NAME})
 
     # Copy shader-package content individually so unchanged files keep their
     # timestamps. Track every staged asset (not only HLSL/HLSLI): feature
@@ -4831,14 +4845,17 @@ if(BUILD_CONTROLLER_TESTS)
         ProfilerTiming
         tests/profiler_timing_test.cpp
     )
-    target_sources(profiler_timing_test PRIVATE src/Profiler.cpp)
+    target_sources(
+        profiler_timing_test
+        PRIVATE src/Profiler.cpp src/RenderTargetStats.cpp
+    )
     target_compile_definitions(
         profiler_timing_test
         PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN
     )
     target_link_libraries(
         profiler_timing_test
-        PRIVATE d3d11.lib runtimeobject.lib
+        PRIVATE d3d11.lib runtimeobject.lib spdlog::spdlog
     )
 
     set(_profiling_ui_dir

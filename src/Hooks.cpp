@@ -1,7 +1,11 @@
 #include "Hooks.h"
+#if defined(DEVBENCH_BRIDGE_ENABLED) && defined(NVPERF_ENABLED)
+#	include "Diagnostics/NvPerf.h"
+#endif
 #include "Api/AcceptedDrawService.h"
 #include "Deferred.h"
 #include "EngineFixes/VRShadowBatch.h"
+#include "Features/TerrainSeams.h"
 
 #include "Utils/CharacterCategoryAuthoring.h"
 
@@ -34,6 +38,7 @@
 #include "Features/GrassOptimizations/GrassBucketRenderer.h"
 #include "Features/InteriorSun.h"
 #include "Features/LightLimitFix.h"
+#include "Features/PerformanceOverlay.h"
 #include "Features/ScreenshotFeature.h"
 #include "Features/TerrainBlending.h"
 #include "Features/TerrainHelper.h"
@@ -57,6 +62,7 @@
 #include <shared_mutex>
 #include <string>
 #include <string_view>
+#include <windows.h>
 #include <winrt/base.h>
 
 std::unordered_map<void*, std::pair<std::unique_ptr<uint8_t[]>, size_t>> ShaderBytecodeMap;
@@ -754,6 +760,21 @@ bool Hooks::BSShader_BeginTechnique::thunk(RE::BSShader* shader, uint32_t vertex
 	const uint64_t totalStartTicks = phaseDiagActive ? ReadFrameDiagCounterTicks() : 0;
 	uint64_t phaseStartTicks = totalStartTicks;
 
+	constexpr auto seamsFlag = static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::LandscapeSeams);
+	if (shader->shaderType.get() == RE::BSShader::Type::Lighting && (pixelDescriptor & seamsFlag)) {
+		bool available = TerrainSeams::GetInstance().IsEnabled() && !skipPixelShader;
+		if (available) {
+			auto vertex = vertexDescriptor;
+			auto pixel = pixelDescriptor;
+			state->ModifyShaderLookup(*shader, vertex, pixel);
+			available = shaderCache->GetVertexShader(*shader, vertex) && shaderCache->GetPixelShader(*shader, pixel);
+		}
+		if (!available) {
+			vertexDescriptor &= ~seamsFlag;
+			pixelDescriptor &= ~seamsFlag;
+		}
+	}
+
 	state->updateShader = true;
 	state->currentShader = shader;
 	state->deferredPixelShaderMissing = false;
@@ -869,7 +890,10 @@ namespace LightingExtensions
 	{
 		static void thunk(RE::BSShader* shader, RE::BSRenderPass* pass, uint32_t renderFlags)
 		{
+			TerrainSeams::GetInstance().Restore();
 			globals::state->UpdateLightingShaderPermutation(pass);
+			if (pass && (globals::state->modifiedPixelDescriptor & static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::LandscapeSeams)))
+				TerrainSeams::GetInstance().Bind(pass->geometry);
 			CharacterCategoryAuthoring::Update(pass);
 			globals::features::terrainVariation.UpdateMeshPermutation(pass);
 
@@ -897,9 +921,13 @@ struct AcceptedDrawRestoreGeometry
 {
 	static void thunk(RE::BSShader* a_shader, RE::BSRenderPass* a_pass, uint32_t a_flags)
 	{
-		CSX::Api::SuspendAcceptedDrawGeometry();
+		if constexpr (ShaderKind == 1)
+			TerrainSeams::GetInstance().Restore();
+		if (globals::game::isVR)
+			CSX::Api::SuspendAcceptedDrawGeometry();
 		func(a_shader, a_pass, a_flags);
-		CSX::Api::EndAcceptedDrawGeometry(a_pass);
+		if (globals::game::isVR)
+			CSX::Api::EndAcceptedDrawGeometry(a_pass);
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -928,6 +956,18 @@ namespace GrassExtensions
 
 	struct BSGrassShader_SetupGeometry
 	{
+		static void SetupNativeGeometry(RE::BSShader* shader, RE::BSRenderPass* pass, uint32_t renderFlags)
+		{
+			func(shader, pass, renderFlags);
+			const auto& grass = globals::features::grassOptimizations;
+			if (grass.loaded && grass.IsEnabled()) {
+				// Depth and color need the same sampler, including native fallback and batch re-preparation.
+				auto* shadowState = globals::game::shadowState;
+				shadowState->SetPSTextureAddressMode(0, RE::BSGraphics::TextureAddressMode::kClampSClampT);
+				shadowState->SetPSTextureFilterMode(0, RE::BSGraphics::TextureFilterMode::kAnisotropic);
+			}
+		}
+
 		static void thunk(RE::BSShader* shader, RE::BSRenderPass* pass, uint32_t renderFlags)
 		{
 			// Native setup advances property history before CPU shader constants may be readable.
@@ -937,7 +977,7 @@ namespace GrassExtensions
 				auto* property = static_cast<RE::BSGrassShaderProperty*>(windProperty);
 				nativeWindTimer = GrassRuntime::GetPropertyData(property, globals::game::isVR).windTimer;
 			}
-			func(shader, pass, renderFlags);
+			SetupNativeGeometry(shader, pass, renderFlags);
 			if (pass && pass->shaderProperty != windProperty)
 				nativeWindTimer.reset();
 
@@ -957,7 +997,7 @@ namespace GrassExtensions
 					state->permutationData.ExtraShaderDescriptor |= static_cast<uint32_t>(State::ExtraShaderDescriptors::GrassSphereNormal);
 				}
 			}
-			globals::features::grassOptimizations.PrepareGeometry(pass, shader, renderFlags, func.get(), nativeWindTimer);
+			globals::features::grassOptimizations.PrepareGeometry(pass, shader, renderFlags, SetupNativeGeometry, nativeWindTimer);
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -1066,6 +1106,9 @@ struct IDXGISwapChain_Present
 			return func(This, SyncInterval, Flags);
 
 #ifdef DEVBENCH_BRIDGE_ENABLED
+#	if defined(NVPERF_ENABLED)
+		NvPerf::OnPresentBegin();
+#	endif
 		CSX::Diagnostics::Stutters::Scope stutterPresent("DXGI::PresentHook", CSX::Diagnostics::Stutters::Boundary::Present);
 #endif
 		auto state = globals::state;
@@ -1094,6 +1137,7 @@ struct IDXGISwapChain_Present
 		if (globals::game::isVR)
 			CSX::Api::AdvanceAcceptedDrawFrame(globals::d3d::context);
 		menu->DrawOverlay();
+		globals::features::performanceOverlay.UpdateRenderTargetCapture();
 		globals::features::screenshotFeature.OnBeforePresent(This);
 		globals::features::screenshotFeature.DrawPostCaptureIndicator();
 
@@ -1115,6 +1159,9 @@ struct IDXGISwapChain_Present
 			state->startupMenuBlurSourceReady = true;
 
 		TracyD3D11Collect(state->tracyCtx);
+#if defined(DEVBENCH_BRIDGE_ENABLED) && defined(NVPERF_ENABLED)
+		NvPerf::OnPresentEnd();
+#endif
 		if (frameDiagActive)
 			LogFrameIntervalSpikeIfNeeded(presentBeginTicks, previousTicks, beforePresentTicks, afterPresentTicks, retval);
 
@@ -1275,6 +1322,19 @@ struct ID3D11Device_CreateSamplerState
 		D3D11_SAMPLER_DESC descCopy = *pSamplerDesc;  // make a copy, pSamplerDesc is supposed to be immutable
 		descCopy.MaxAnisotropy = std::min(descCopy.MaxAnisotropy, 8u);
 		return func(This, &descCopy, ppSamplerState);
+	}
+	static inline REL::Relocation<decltype(thunk)> func;
+};
+
+/** @brief Clears failed buffer outputs left untouched by RenderDoc. */
+struct ID3D11Device_CreateBuffer
+{
+	static HRESULT STDMETHODCALLTYPE thunk(ID3D11Device* a_device, const D3D11_BUFFER_DESC* a_desc, const D3D11_SUBRESOURCE_DATA* a_initialData, ID3D11Buffer** a_buffer)
+	{
+		const HRESULT result = func(a_device, a_desc, a_initialData, a_buffer);
+		if (FAILED(result) && a_buffer)
+			*a_buffer = nullptr;
+		return result;
 	}
 	static inline REL::Relocation<decltype(thunk)> func;
 };
@@ -1553,6 +1613,9 @@ namespace Hooks
 
 			stl::detour_vfunc<23, ID3D11Device_CreateSamplerState>(globals::d3d::device);
 
+			if (GetModuleHandleW(L"renderdoc.dll"))
+				stl::detour_vfunc<3, ID3D11Device_CreateBuffer>(globals::d3d::device);
+
 			globals::InstallD3DHooks(globals::d3d::context);
 			CSX::Api::InitializeAcceptedDrawService(globals::d3d::context);
 
@@ -1811,12 +1874,10 @@ namespace Hooks
 
 			// setup material for PBR
 			auto& truePBR = globals::features::truePBR;
-			if (truePBR.loaded && truePBR.TESObjectLAND_SetupMaterial(land)) {
-				// if PBR, we are done
-				return true;
-			}
-
-			return vanillaResult;
+			const bool pbrResult = truePBR.loaded && truePBR.TESObjectLAND_SetupMaterial(land);
+			if (vanillaResult || pbrResult)
+				TerrainSeams::GetInstance().TESObjectLAND_SetupMaterial(land);
+			return vanillaResult || pbrResult;
 		}
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
@@ -2364,9 +2425,9 @@ namespace Hooks
 		logger::info("Installing SetupGeometry hooks");
 		stl::write_vfunc<0x6, EffectExtensions::BSEffectShader_SetupGeometry>(RE::VTABLE_BSEffectShader[0]);
 		stl::write_vfunc<0x6, LightingExtensions::BSLightingShader_SetupGeometry>(RE::VTABLE_BSLightingShader[0]);
+		stl::write_vfunc<0x7, AcceptedDrawRestoreGeometry<1>>(RE::VTABLE_BSLightingShader[0]);
 		if (globals::game::isVR) {
 			stl::write_vfunc<0x7, AcceptedDrawRestoreGeometry<0>>(RE::VTABLE_BSEffectShader[0]);
-			stl::write_vfunc<0x7, AcceptedDrawRestoreGeometry<1>>(RE::VTABLE_BSLightingShader[0]);
 			CSX::Api::AcceptedDrawGeometryHooksInstalled();
 		}
 		stl::write_thunk_call<GrassExtensions::BSGrassShaderProperty_ctor>(REL::RelocationID(15214, 15383).address() + REL::Relocate(0x45B, 0x4F5));

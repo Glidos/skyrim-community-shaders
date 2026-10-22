@@ -52,6 +52,7 @@ namespace
 	constexpr uint kContactShadowClusterBudgetMax = CONTACT_SHADOW_MAX_LIGHTS;
 	constexpr uint kParticleContactShadowBudgetMax = 4;
 	constexpr uint kStrictContactShadowBudgetMax = CONTACT_SHADOW_MAX_LIGHTS;
+	constexpr std::uint32_t kShadowMaskChannelCount = 4;
 
 	constexpr float kParticleLightsSaturationMin = 1.0f;
 	constexpr float kParticleLightsSaturationMax = 2.0f;
@@ -1033,6 +1034,17 @@ namespace
 		       std::max(a_tint.blue, 0.0f);
 	}
 
+	bool TryGetShadowMaskChannel(RE::BSShadowLight* a_light, std::uint32_t& a_channel)
+	{
+		GET_INSTANCE_MEMBER(maskIndex, a_light);
+		const std::uint32_t channel = maskIndex;
+		// Shader indexing is bounded by the float4 texture, not the 32-bit membership mask.
+		if (channel >= kShadowMaskChannelCount)
+			return false;
+		a_channel = channel;
+		return true;
+	}
+
 	void SetEngineLightFlags(LightLimitFix::LightData& a_light, RE::BSLight* a_bsLight)
 	{
 		PointLightFlags::SetPointLightTypeFlags(a_light.lightFlags, a_bsLight);
@@ -1791,11 +1803,9 @@ void LightLimitFix::BSLightingShader_SetupGeometry_GeometrySetupConstantPointLig
 
 			if (i < shadowLightCount && bsLight->IsShadowLight()) {
 				auto* shadowLight = static_cast<RE::BSShadowLight*>(bsLight);
-				GET_INSTANCE_MEMBER(maskIndex, shadowLight);
-				if (maskIndex < 32) {
-					light.shadowMaskIndex = maskIndex;
-					light.lightFlags.set(LightFlags::Shadow);
-				}
+				if (!TryGetShadowMaskChannel(shadowLight, light.shadowMaskIndex))
+					continue;
+				light.lightFlags.set(LightFlags::Shadow);
 			}
 
 			strictLightDataTemp.StrictLights[outIndex++] = light;
@@ -1810,8 +1820,8 @@ void LightLimitFix::BSLightingShader_SetupGeometry_GeometrySetupConstantPointLig
 				continue;
 			}
 			auto* shadowLight = static_cast<RE::BSShadowLight*>(bsLight);
-			GET_INSTANCE_MEMBER(maskIndex, shadowLight);
-			if (maskIndex < 32) {
+			std::uint32_t maskIndex = 0;
+			if (TryGetShadowMaskChannel(shadowLight, maskIndex)) {
 				strictLightDataTemp.ShadowBitMask |= (1u << maskIndex);
 			}
 		}
@@ -3321,19 +3331,16 @@ void LightLimitFix::UpdateLights()
 
 					if (bsLight->IsShadowLight()) {
 						auto* shadowLight = static_cast<RE::BSShadowLight*>(bsLight);
-						GET_INSTANCE_MEMBER(maskIndex, shadowLight);
-						light.shadowMaskIndex = maskIndex;
+						if (!TryGetShadowMaskChannel(shadowLight, light.shadowMaskIndex))
+							return;
 						light.lightFlags.set(LightFlags::Shadow);
 					}
 
-					// Check for inactive shadow light
-					if (light.shadowMaskIndex != 255) {
-						SetLightPosition(light, niLight->world.translate);
+					SetLightPosition(light, niLight->world.translate);
 
-						if ((light.color.x + light.color.y + light.color.z) * light.fade > 1e-4 && light.radius > 1e-4 &&
-							lightsData.size() < MAX_LIGHTS) {
-							lightsData.push_back(light);
-						}
+					if ((light.color.x + light.color.y + light.color.z) * light.fade > 1e-4 && light.radius > 1e-4 &&
+						lightsData.size() < MAX_LIGHTS) {
+						lightsData.push_back(light);
 					}
 				}
 			}
@@ -3681,9 +3688,17 @@ void LightLimitFix::Hooks::BSLightingShader_SetupGeometry::thunk(RE::BSShader* T
 
 void LightLimitFix::Hooks::BSEffectShader_SetupGeometry::thunk(RE::BSShader* This, RE::BSRenderPass* Pass, uint32_t RenderFlags)
 {
+	using EffectFlags = SIE::ShaderCache::EffectShaderFlags;
+	constexpr auto sceneLightMask = static_cast<uint32_t>(EffectFlags::Lighting) | static_cast<uint32_t>(EffectFlags::Membrane);
+	const auto* state = globals::state;
+	// Only confirmed unlit passes bypass validation; either stage's lighting or
+	// membrane flags and unknown shader state retain the full guard.
+	const bool validateSceneLights = !This || !state || state->currentShader != This ||
+	                                 ((state->currentVertexDescriptor | state->currentPixelDescriptor) & sceneLightMask) != 0;
+
 	// Cache validated pairs for this frame, but reread the NiLight pointer so a
 	// recycled BSLight falls back to the full committed-range checks.
-	if (Pass && Pass->sceneLights && Pass->numLights > 0) {
+	if (validateSceneLights && Pass && Pass->sceneLights && Pass->numLights > 0) {
 		std::uint8_t validCount = 0;
 		auto& validationCache = globals::features::lightLimitFix.effectLightValidationCache;
 		for (std::uint8_t i = 0; i < Pass->numLights; ++i) {

@@ -81,18 +81,24 @@ namespace stl
 	template <class T>
 	long detour_thunk(REL::RelocationID a_relId)
 	{
-		T::func = a_relId.address();
-		return Util::AttachDetour(reinterpret_cast<PVOID*>(&T::func), reinterpret_cast<PVOID>(T::thunk)).error;
+		const auto address = a_relId.address();
+		T::func = address;
+		const auto result = Util::AttachDetour(reinterpret_cast<PVOID*>(&T::func), reinterpret_cast<PVOID>(T::thunk));
+		if (result.error != NO_ERROR) {
+			SKSE::log::error("[Hooks] Detour attach failed at 0x{:X} (error {})", address, result.error);
+			T::func = 0;
+		}
+		return result.error;
 	}
 
 	template <class T>
 	void detour_thunk_ignore_func(REL::RelocationID a_relId)
 	{
-		auto target = reinterpret_cast<PVOID>(a_relId.address());
-		DetourTransactionBegin();
-		DetourUpdateThread(GetCurrentThread());
-		DetourAttach(&target, reinterpret_cast<PVOID>(T::thunk));
-		DetourTransactionCommit();
+		const auto address = a_relId.address();
+		auto target = reinterpret_cast<PVOID>(address);
+		const auto result = Util::AttachDetour(&target, reinterpret_cast<PVOID>(T::thunk));
+		if (result.error != NO_ERROR)
+			SKSE::log::error("[Hooks] Detour attach failed at 0x{:X} (error {})", address, result.error);
 	}
 
 	template <std::size_t idx, class T, class Interface>

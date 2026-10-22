@@ -3,19 +3,21 @@
 #include "Common/FrameBuffer.hlsli"
 #include "Common/VR.hlsli"
 
+#if defined(VSHADER)
 struct VS_INPUT
 {
 	float4 Position: POSITION0;
 
-#if defined(TEX) || defined(HORIZFADE)
+#	if defined(TEX) || defined(HORIZFADE)
 	float2 TexCoord: TEXCOORD0;
-#endif
+#	endif
 
 	float4 Color: COLOR0;
-#if defined(VR)
+#	if defined(VR)
 	uint InstanceID: SV_INSTANCEID;
-#endif  // VR
+#	endif  // VR
 };
+#endif
 
 struct VS_OUTPUT
 {

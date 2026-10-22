@@ -103,7 +103,7 @@ struct UnifiedWater : OverlayFeature
 
 	struct BSWaterShader_SetupGeometry
 	{
-		static void thunk(RE::BSShader* waterShader, RE::BSRenderPass* pass);
+		static void thunk(RE::BSShader* waterShader, RE::BSRenderPass* pass, uint32_t renderFlags);
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 

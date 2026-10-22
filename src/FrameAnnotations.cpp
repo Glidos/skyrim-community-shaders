@@ -7,6 +7,7 @@
 #include "Features/TerrainBlending.h"
 #include "Features/Upscaling.h"
 #include "Features/Upscaling/NeuralRendering/ExposureCapture.h"
+#include "Globals.h"
 #include "GpuPass.h"
 #include "RE/B/BSImagespaceShader.h"
 #include "State.h"
@@ -20,6 +21,38 @@ namespace FrameAnnotations
 	namespace
 	{
 		std::atomic_uint32_t renderShadowmasksPhaseDepth{ 0 };
+
+		/** @brief Clears native reflections when the interior cell or exterior worldspace changes. */
+		void ResetWaterReflectionCubemapOnSceneChange()
+		{
+			const auto tes = globals::game::tes;
+			const auto renderer = globals::game::renderer;
+			const auto context = globals::d3d::context;
+			if (!tes || !renderer || !context)
+				return;
+
+			const auto interiorCell = tes->interiorCell;
+			const auto worldSpace = interiorCell ? nullptr : tes->GetRuntimeData2().worldSpace;
+			static const RE::TESObjectCELL* previousInteriorCell = nullptr;
+			static const RE::TESWorldSpace* previousWorldSpace = nullptr;
+			static bool initialized = false;
+			if (initialized && interiorCell == previousInteriorCell && worldSpace == previousWorldSpace)
+				return;
+
+			auto& reflections = renderer->GetRendererData().cubemapRenderTargets[RE::RENDER_TARGETS_CUBEMAP::kREFLECTIONS];
+			// Retry the scene transition until every face can be cleared together.
+			for (auto* rtv : reflections.cubeSideRTV)
+				if (!rtv)
+					return;
+
+			const float clear[4]{};
+			for (auto* rtv : reflections.cubeSideRTV)
+				context->ClearRenderTargetView(rtv, clear);
+
+			previousInteriorCell = interiorCell;
+			previousWorldSpace = worldSpace;
+			initialized = true;
+		}
 
 		// Shader defines change rarely, so cache their filename suffix instead of
 		// re-deriving and allocating it for every annotated geometry draw.
@@ -390,6 +423,7 @@ namespace FrameAnnotations
 		static void thunk()
 		{
 			CS_GPU_PASS("Water::RenderWaterEffects");
+			ResetWaterReflectionCubemapOnSceneChange();
 			func();
 		};
 		static inline REL::Relocation<decltype(thunk)> func;
@@ -1158,7 +1192,10 @@ namespace FrameAnnotations
 		stl::write_vfunc<0x2A, BSShaderAccumulator_FinishAccumulatingDispatch>(
 			RE::VTABLE_BSShaderAccumulator[0]);
 
-		stl::write_vfunc<0x35, BSCubeMapCamera_RenderCubemap>(RE::VTABLE_BSCubeMapCamera[0]);
+		if (globals::game::isVR)
+			stl::write_vfunc<0x36, BSCubeMapCamera_RenderCubemap>(RE::VTABLE_BSCubeMapCamera[0]);
+		else
+			stl::write_vfunc<0x35, BSCubeMapCamera_RenderCubemap>(RE::VTABLE_BSCubeMapCamera[0]);
 
 		stl::write_vfunc<0xA, BSShadowFrustumLight_RenderShadowmaps>(
 			RE::VTABLE_BSShadowFrustumLight[0]);

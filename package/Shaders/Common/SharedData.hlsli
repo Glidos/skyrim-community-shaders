@@ -419,7 +419,7 @@ namespace SharedData
 		uint Enabled;
 		float TerrainCullDistance;
 		float BlendStrength;
-		float pad0;
+		uint LandscapeSeams;
 	};
 
 	struct TruePBRSettings

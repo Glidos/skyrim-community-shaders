@@ -44,7 +44,7 @@ private:
 public:
 	virtual inline std::string GetName() override { return "Volumetric Lighting"; }
 	virtual inline std::string GetShortName() override { return "VolumetricLighting"; }
-	virtual std::string_view GetShaderCacheAbiVersion() override { return "godray-composite-color-1"; }
+	virtual std::string_view GetShaderCacheAbiVersion() override { return "godray-linear-depth-blur-2"; }
 	virtual std::string_view GetCategory() const override { return FeatureCategories::kLighting; }
 
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
@@ -117,9 +117,9 @@ public:
 	RE::BSImagespaceShader* GetOrCreateRaymarchCS(RE::BSComputeShader* computeShader);
 	RE::BSImagespaceShader* GetOrCreateBlurHCS(RE::BSComputeShader* computeShader);
 	RE::BSImagespaceShader* GetOrCreateBlurVCS(RE::BSComputeShader* computeShader);
-	/** @brief Whether the current render area is safe for replacement blur dispatch. */
+	/** @brief Whether the current render area and camera are safe for replacement blur dispatch. */
 	bool HasValidBlurDimensions() const { return blurDimensionsValid; }
-	/** @brief Bind active blur bounds at b1 after selecting a replacement shader. */
+	/** @brief Bind active blur bounds and camera data at b1 after selecting a replacement shader. */
 	void SetDimensionsCB() const;
 	/** @brief Set both active-area dispatch axes, keeping horizontal VR groups within each eye. */
 	void SetGroupCountsHCS(uint32_t& threadGroupCountX, uint32_t& threadGroupCountY) const;
@@ -204,8 +204,10 @@ private:
 		int32_t eyeWidth;
 		uint32_t horizontalGroupsPerEye;
 		uint32_t pad[2];
+		float4 cameraData;
 	};
 	STATIC_ASSERT_ALIGNAS_16(VLData);
+	static_assert(sizeof(VLData) == 48);
 	VLData vlData = VLData();
 	ConstantBuffer* vlDataCB = nullptr;
 	bool blurDimensionsValid = false;

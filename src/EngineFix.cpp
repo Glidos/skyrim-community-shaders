@@ -3,8 +3,10 @@
 
 #include "EngineFixes/CullPoolExhaustionFix.h"
 #include "EngineFixes/EffectShaderNoDecalsFix.h"
+#include "EngineFixes/LODBlendRingFix.h"
 #include "EngineFixes/ShadowmapCascadeCullingFix.h"
 #include "EngineFixes/ShadowmapCascadeRasterizerFix.h"
+#include "EngineFixes/SunOcclusionPollFix.h"
 #include "EngineFixes/VRGrassLifetimeFix.h"
 
 const std::vector<EngineFix*>& EngineFix::GetOnPostPostLoadFixesList()
@@ -14,14 +16,17 @@ const std::vector<EngineFix*>& EngineFix::GetOnPostPostLoadFixesList()
 	static EffectShaderNoDecalsFix effectShaderNoDecalsFix;
 	static ShadowmapCascadeCullingFix shadowmapCascadeCullingFix;
 	static ShadowmapRasterizerFix shadowmapRasterizerFix;
+	static SunOcclusionPollFix sunOcclusionPollFix;
 	static VRGrassLifetimeFix vrGrassLifetimeFix;
 
 	static std::vector<EngineFix*> fixes = {
 		&sunShadowReceiverFix,
 		&cullPoolExhaustionFix,
 		&effectShaderNoDecalsFix,
+		&LODBlendRingFix::GetInstance(),
 		&shadowmapCascadeCullingFix,
 		&shadowmapRasterizerFix,
+		&sunOcclusionPollFix,
 		&vrGrassLifetimeFix
 	};
 

@@ -139,8 +139,15 @@ static const float3 noise3D[32] = {
 						float3 positionWS = jitteredMS + FrameBuffer::CameraPosAdjust[0].xyz;
 						uint cascadeIndex = (linearDepth > shadowData.EndSplitDistances.x) ? 1u : 0u;
 						float3 positionLS = mul(shadowData.ShadowProj[cascadeIndex], float4(positionWS, 1)).xyz;
+						bool inCascade = all(positionLS.xy > 0) && all(positionLS.xy < 1) && positionLS.z > 0 && positionLS.z < 1;
+						// Jitter can leave the near cascade's footprint while remaining inside the wider cascade.
+						if (!inCascade && cascadeIndex == 0u) {
+							cascadeIndex = 1u;
+							positionLS = mul(shadowData.ShadowProj[1], float4(positionWS, 1)).xyz;
+							inCascade = all(positionLS.xy > 0) && all(positionLS.xy < 1) && positionLS.z > 0 && positionLS.z < 1;
+						}
 
-						if (all(positionLS.xy > 0) && all(positionLS.xy < 1) && positionLS.z > 0 && positionLS.z < 1) {
+						if (inCascade) {
 							shadowSample = ESRAMShadow.SampleCmpLevelZero(comparisonSampler, float3(positionLS.xy, cascadeIndex), positionLS.z);
 
 							float fade = saturate(linearDepth / shadowData.EndSplitDistances.y);

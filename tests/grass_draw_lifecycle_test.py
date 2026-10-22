@@ -56,6 +56,16 @@ int main() {
     try {
         for (bool vr : {false, true}) {
             globals::game::isVR = vr;
+            for (bool loaded : {false, true}) for (bool enabled : {false, true}) {
+                Fixture f;
+                globals::features::grassOptimizations.loaded = loaded;
+                globals::features::grassOptimizations.enabled = enabled;
+                f.Setup();
+                const auto expected = loaded && enabled ? 1u : 0u;
+                Require(globals::game::shadowState->addressUpdates == expected &&
+                        globals::game::shadowState->filterUpdates == expected,
+                    "Sampler overrides must follow both the loaded and enabled grass gates");
+            }
             {
                 Fixture f;
                 f.Setup();
@@ -156,6 +166,10 @@ int main() {
                 f.Draw();
                 Require(f.renderer.impl->submissions == 1 && GrassBucketRenderer::nativeCalls == 0,
                     "A missing initial CPU snapshot must recover through native preparation");
+                Require(f.nativeSetupCalls > 1 &&
+                        globals::game::shadowState->addressUpdates == f.nativeSetupCalls &&
+                        globals::game::shadowState->filterUpdates == f.nativeSetupCalls,
+                    "Batch preparation and restoration must retain native sampler overrides");
             }
             {
                 Fixture f;

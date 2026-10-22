@@ -190,12 +190,24 @@ public:
 	[[nodiscard]] CSX::NvidiaPipelinePolicy::ProxyLifecycleState GetLifecycleState() const noexcept;
 
 private:
+	struct AllocatorFenceWait
+	{
+		winrt::handle event;
+		UINT64 value = 0;
+	};
+	/** Waits at most one second for allocator reuse, retaining timed-out event registrations. */
+	HRESULT WaitForAllocator(UINT a_frameIndex) noexcept;
+	/** Releases completed registrations; false keeps the proxy generation quarantined. */
+	bool RetireAllocatorFenceWaits() noexcept;
 	void ResetResources() noexcept;
 	HRESULT PresentInternal(UINT syncInterval, UINT flags, const DXGI_PRESENT_PARAMETERS* presentParameters) noexcept;
 	HRESULT RefreshAfterResize(DXGI_FORMAT publicFormat) noexcept;
 	HRESULT RestoreFrameGenerationAfterFailedResize() noexcept;
 	static DXGI_FORMAT ResolveBackendFormat(DXGI_FORMAT publicFormat) noexcept;
+	static constexpr DWORD kFrameFenceTimeoutMs = 1000;
 	std::array<UINT64, 2> allocatorFenceValues{};
+	std::array<AllocatorFenceWait, 2> allocatorFenceWaits{};
 	CSX::NvidiaPipelinePolicy::ProxyLifecycleGate lifecycle;
+	bool frameFenceTimeoutLogged = false;
 	bool runtimeQuarantined = false;
 };

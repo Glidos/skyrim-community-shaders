@@ -31,6 +31,7 @@
 #include "PerformanceTuningDevBenchBridge.h"
 #include "ProfilerDevBenchBridge.h"
 #ifdef DEVBENCH_BRIDGE_ENABLED
+#	include "Diagnostics/NvPerf.h"
 #	include "Diagnostics/EngineStutterMonitor.h"
 #endif
 #include "SceneSettingsManager.h"
@@ -181,6 +182,9 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 			// compilation. If DevBench's PostLoad listener runs later, the
 			// PostPostLoad attempt below provides the deterministic retry.
 			CSX::Api::ProfilerApiDevBenchBridge::Install();
+#ifdef DEVBENCH_BRIDGE_ENABLED
+			NvPerf::InstallDevBench();
+#endif
 			ScreenshotDevBenchBridge::Install();
 			CSX::Api::UpscalingDevBenchBridge::Install();
 			CSX::Api::WeatherDevBenchBridge::Install();
@@ -196,6 +200,9 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 				VRFpsStabilizer::InstallDevBench();
 				ScreenshotDevBenchBridge::Install();
 				CSX::Api::ProfilerApiDevBenchBridge::Install();
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				NvPerf::InstallDevBench();
+#endif
 				// DevBench publishes its interface from its own PostLoad listener. If
 				// CSX's listener ran first, this is the first deterministic retry after
 				// all PostLoad listeners have completed.
@@ -311,6 +318,9 @@ void MessageHandler(SKSE::MessagingInterface::Message* message)
 				PerformanceTuningDevBenchBridge::Install();
 				ScreenshotDevBenchBridge::Install();
 				CSX::Api::ProfilerApiDevBenchBridge::Install();
+#ifdef DEVBENCH_BRIDGE_ENABLED
+				NvPerf::InstallDevBench();
+#endif
 				CSX::Api::UpscalingDevBenchBridge::Install();
 				CSX::Api::WeatherDevBenchBridge::Install();
 				CSX::Api::ShaderDevBenchBridge::Install();

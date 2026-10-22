@@ -500,6 +500,7 @@ public:
 		float neuralRenderingLocalStructure = 0.9f;
 		float neuralRenderingSkinStructure = 0.9f;
 		uint neuralRenderingStyle = 3;
+		uint neuralRenderingNetwork = 0;
 		bool neuralRenderingAutoMask = true;
 		bool neuralRenderingUICorrection = false;
 		float neuralRenderingSingleSubrectScale = 1.0f;

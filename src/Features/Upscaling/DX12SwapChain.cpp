@@ -3,6 +3,7 @@
 #include <FidelityFX/api/include/dx12/ffx_api_dx12.hpp>
 #include <dxgi1_6.h>
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -107,6 +108,11 @@ bool DX12SwapChain::ResetUnpublished() noexcept
 {
 	auto& upscaling = globals::features::upscaling;
 	auto& fidelityFX = globals::features::upscaling.fidelityFX;
+	if (!RetireAllocatorFenceWaits()) {
+		lifecycle.CancelConstruction(false, upscaling.d3d12SwapChainActive);
+		logger::critical("[DX12SwapChain] Unpublished proxy has an unretired allocator wait; retaining the complete candidate generation");
+		return false;
+	}
 	if (!fidelityFX.ResetFrameGenerationContexts()) {
 		lifecycle.CancelConstruction(false, upscaling.d3d12SwapChainActive);
 		logger::critical(
@@ -149,6 +155,7 @@ void DX12SwapChain::ResetResources() noexcept
 	frameIndex = 0;
 	fenceSequence.Reset();
 	allocatorFenceValues.fill(0);
+	frameFenceTimeoutLogged = false;
 	runtimeQuarantined = false;
 }
 
@@ -195,6 +202,11 @@ void DX12SwapChain::OnProxyDestroyed(IDXGISwapChain4* a_swapChain) noexcept
 		return;
 
 	auto& upscaling = globals::features::upscaling;
+	if (!RetireAllocatorFenceWaits()) {
+		logger::critical("[DX12SwapChain] Published proxy has an unretired allocator wait; retaining every dependent D3D resource");
+		lifecycle.CompleteRetirement(false, upscaling.d3d12SwapChainActive);
+		return;
+	}
 	if (!upscaling.fidelityFX.ResetFrameGenerationContexts()) {
 		logger::critical(
 			"[DX12SwapChain] Published proxy destruction left FidelityFX ownership indeterminate; retaining every dependent D3D resource");
@@ -430,6 +442,76 @@ DXGI_FORMAT DX12SwapChain::ResolveBackendFormat(DXGI_FORMAT publicFormat) noexce
 	return publicFormat;
 }
 
+HRESULT DX12SwapChain::WaitForAllocator(UINT a_frameIndex) noexcept
+{
+	const auto value = allocatorFenceValues[a_frameIndex];
+	if (!value)
+		return S_OK;
+	const auto removalReason = [this]() {
+		const HRESULT reason = d3d12Device ? d3d12Device->GetDeviceRemovedReason() : DXGI_ERROR_DEVICE_REMOVED;
+		return FAILED(reason) ? reason : DXGI_ERROR_DEVICE_REMOVED;
+	};
+	const auto completed = d3d12Fence->GetCompletedValue();
+	if (completed == UINT64_MAX)
+		return removalReason();
+
+	auto& wait = allocatorFenceWaits[a_frameIndex];
+	if (wait.event && completed >= wait.value)
+		wait = {};
+	if (completed >= value)
+		return S_OK;
+
+	if (wait.event) {
+		if (wait.value != value)
+			return E_UNEXPECTED;
+	} else {
+		winrt::handle event(CreateEventW(nullptr, FALSE, FALSE, nullptr));
+		if (!event) {
+			const DWORD error = GetLastError();
+			return HRESULT_FROM_WIN32(error ? error : ERROR_GEN_FAILURE);
+		}
+		const HRESULT registration = d3d12Fence->SetEventOnCompletion(value, event.get());
+		if (FAILED(registration))
+			return registration;
+		wait.event = std::move(event);
+		wait.value = value;
+	}
+
+	const DWORD result = WaitForSingleObject(wait.event.get(), kFrameFenceTimeoutMs);
+	const DWORD error = result == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
+	const auto retired = d3d12Fence->GetCompletedValue();
+	if (retired == UINT64_MAX)
+		return removalReason();
+	if (result == WAIT_FAILED)
+		return HRESULT_FROM_WIN32(error ? error : ERROR_GEN_FAILURE);
+	if (result != WAIT_OBJECT_0 && result != WAIT_TIMEOUT)
+		return E_UNEXPECTED;
+	if (retired >= value) {
+		wait = {};
+		return S_OK;
+	}
+	// A timed-out registration may still signal; retry it without recycling its event.
+	if (result == WAIT_TIMEOUT)
+		return DXGI_ERROR_WAS_STILL_DRAWING;
+	return E_UNEXPECTED;
+}
+
+bool DX12SwapChain::RetireAllocatorFenceWaits() noexcept
+{
+	const auto completed = d3d12Fence ? d3d12Fence->GetCompletedValue() : 0;
+	bool retired = true;
+	for (auto& wait : allocatorFenceWaits) {
+		if (!wait.event)
+			continue;
+		if (completed == UINT64_MAX || completed < wait.value) {
+			retired = false;
+			continue;
+		}
+		wait = {};
+	}
+	return retired;
+}
+
 HRESULT DX12SwapChain::Present(UINT syncInterval, UINT flags)
 {
 	return PresentInternal(syncInterval, flags, nullptr);
@@ -493,12 +575,16 @@ HRESULT DX12SwapChain::PresentInternal(
 		if (auto result = check(commandQueue->Wait(d3d12Fence.get(), *producerFenceValue), "D3D12 queue wait"))
 			return *result;
 
-		// Queue waits do not protect CPU allocator reuse; block until its
-		// previous submission has completed before resetting it.
-		if (allocatorFenceValues[frameIndex] != 0) {
-			if (auto result = check(d3d12Fence->SetEventOnCompletion(allocatorFenceValues[frameIndex], nullptr), "command allocator fence wait"))
-				return *result;
+		// Queue waits do not protect CPU allocator reuse; only a retired fence permits reset.
+		const HRESULT allocatorWait = WaitForAllocator(frameIndex);
+		if (allocatorWait == DXGI_ERROR_WAS_STILL_DRAWING) {
+			retainPreparedInputs = true;
+			if (!std::exchange(frameFenceTimeoutLogged, true))
+				logger::warn("[DX12SwapChain] Allocator fence did not retire within {} ms; skipping presentation until it completes", kFrameFenceTimeoutMs);
+			return allocatorWait;
 		}
+		if (auto result = check(allocatorWait, "command allocator fence wait"))
+			return *result;
 		if (auto result = check(commandAllocators[frameIndex]->Reset(), "command allocator reset"))
 			return *result;
 		if (auto result = check(commandLists[frameIndex]->Reset(commandAllocators[frameIndex].get(), nullptr), "command list reset"))

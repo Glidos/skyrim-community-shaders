@@ -46,6 +46,9 @@ namespace logger
 	template <class... Args>
 	void error(Args&&...)
 	{}
+	template <class... Args>
+	void warn(Args&&...)
+	{}
 }
 
 struct DXGI_PRESENT_PARAMETERS
@@ -194,7 +197,10 @@ struct DX12SwapChain
 	std::unique_ptr<WrappedResource> depthBufferShared12 = std::make_unique<WrappedResource>();
 	std::unique_ptr<WrappedResource> motionVectorBufferShared12 = std::make_unique<WrappedResource>();
 	UINT frameIndex = 0;
+	static constexpr unsigned kFrameFenceTimeoutMs = 1000;
+	bool frameFenceTimeoutLogged = false;
 	bool runtimeQuarantined = false;
+	HRESULT WaitForAllocator(UINT) noexcept { return S_OK; }
 	HRESULT Present(UINT, UINT);
 	HRESULT Present1(UINT, UINT, const DXGI_PRESENT_PARAMETERS*);
 	HRESULT PresentInternal(UINT, UINT, const DXGI_PRESENT_PARAMETERS*) noexcept;

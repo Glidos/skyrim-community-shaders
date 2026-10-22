@@ -709,6 +709,23 @@ archive download, and FOMOD payload. The workflow's existing tag and release
 publication rules still apply. Automatic tag/release runs always include
 both runtimes; manual runs include both by default.
 
+### Build an explicitly standard-only package
+
+For a requested package without Horizon Fix compatibility records, pass
+`--no-include-horizon-fix` to both `build-shader-cache.py` and
+`build-fomod-package.py`. Combine it with `--runtime VR` on the cache builder
+and `--no-include-se-ae` on the assembler for a VR-cache-only AIO.
+The cache builder compiles only standard permutations; the assembler rejects
+any supplied cache that still contains Horizon Fix records. Pack integrity,
+canonical record identities, runtime and ABI validation remain required.
+Installer descriptions reflect the selected coverage. Defaults and release
+workflows continue to require both Water compatibility variants.
+
+This option controls cache coverage. To omit the Horizon Fix feature itself,
+configure the core AIO with `-DAIO_EXCLUDED_FEATURE_PACKAGES=HorizonFix` before
+staging it. The universal DLL remains unchanged; without the feature INI,
+its Horizon Fix integration stays unloaded.
+
 ## CI and release workflow
 
 ### Stable main-VR releases

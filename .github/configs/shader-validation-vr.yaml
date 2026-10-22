@@ -1,6 +1,7 @@
 captured_shader_variants: 3605
-# Lighting pixel keys are normalized; the captured count retains source provenance.
-normalized_shader_variants: 3135
+# Inventory includes normalized Lighting keys, PBR Utility and terrain seam variants.
+# The captured count retains source provenance.
+normalized_shader_variants: 3155
 common_defines:
     - D3DCOMPILE_DEBUG
     - D3DCOMPILE_SKIP_OPTIMIZATION
@@ -12579,6 +12580,34 @@ shaders:
                         - LOD_LAND_BLEND
                         - MULTI_TEXTURE
                         - TRUE_PBR
+                  - entry: Lighting:Pixel:13000041
+                    defines:
+                        - LANDSCAPE
+                        - LANDSCAPE_SEAMS
+                        - LOD_LAND_BLEND
+                        - MULTI_TEXTURE
+                  - entry: Lighting:Pixel:13000049
+                    defines:
+                        - LANDSCAPE
+                        - LANDSCAPE_SEAMS
+                        - LOD_LAND_BLEND
+                        - MULTI_TEXTURE
+                        - TRUE_PBR
+                  - entry: Lighting:Pixel:13000051
+                    defines:
+                        - DEFERRED
+                        - LANDSCAPE
+                        - LANDSCAPE_SEAMS
+                        - LOD_LAND_BLEND
+                        - MULTI_TEXTURE
+                  - entry: Lighting:Pixel:13000059
+                    defines:
+                        - DEFERRED
+                        - LANDSCAPE
+                        - LANDSCAPE_SEAMS
+                        - LOD_LAND_BLEND
+                        - MULTI_TEXTURE
+                        - TRUE_PBR
                   - entry: Lighting:Pixel:13010009
                     defines:
                         - ANISO_LIGHTING
@@ -12593,6 +12622,25 @@ shaders:
                         - DEFERRED
                         - GLINT
                         - LANDSCAPE
+                        - LOD_LAND_BLEND
+                        - MULTI_TEXTURE
+                        - TRUE_PBR
+                  - entry: Lighting:Pixel:13010049
+                    defines:
+                        - ANISO_LIGHTING
+                        - GLINT
+                        - LANDSCAPE
+                        - LANDSCAPE_SEAMS
+                        - LOD_LAND_BLEND
+                        - MULTI_TEXTURE
+                        - TRUE_PBR
+                  - entry: Lighting:Pixel:13010059
+                    defines:
+                        - ANISO_LIGHTING
+                        - DEFERRED
+                        - GLINT
+                        - LANDSCAPE
+                        - LANDSCAPE_SEAMS
                         - LOD_LAND_BLEND
                         - MULTI_TEXTURE
                         - TRUE_PBR
@@ -12950,6 +12998,30 @@ shaders:
                         - LANDSCAPE
                         - MULTI_TEXTURE
                         - TRUE_PBR
+                  - entry: Lighting:Pixel:8000041
+                    defines:
+                        - LANDSCAPE
+                        - LANDSCAPE_SEAMS
+                        - MULTI_TEXTURE
+                  - entry: Lighting:Pixel:8000049
+                    defines:
+                        - LANDSCAPE
+                        - LANDSCAPE_SEAMS
+                        - MULTI_TEXTURE
+                        - TRUE_PBR
+                  - entry: Lighting:Pixel:8000051
+                    defines:
+                        - DEFERRED
+                        - LANDSCAPE
+                        - LANDSCAPE_SEAMS
+                        - MULTI_TEXTURE
+                  - entry: Lighting:Pixel:8000059
+                    defines:
+                        - DEFERRED
+                        - LANDSCAPE
+                        - LANDSCAPE_SEAMS
+                        - MULTI_TEXTURE
+                        - TRUE_PBR
                   - entry: Lighting:Pixel:8001
                     defines:
                         - PROJECTED_UV
@@ -12970,6 +13042,23 @@ shaders:
                         - DEFERRED
                         - GLINT
                         - LANDSCAPE
+                        - MULTI_TEXTURE
+                        - TRUE_PBR
+                  - entry: Lighting:Pixel:8010049
+                    defines:
+                        - ANISO_LIGHTING
+                        - GLINT
+                        - LANDSCAPE
+                        - LANDSCAPE_SEAMS
+                        - MULTI_TEXTURE
+                        - TRUE_PBR
+                  - entry: Lighting:Pixel:8010059
+                    defines:
+                        - ANISO_LIGHTING
+                        - DEFERRED
+                        - GLINT
+                        - LANDSCAPE
+                        - LANDSCAPE_SEAMS
                         - MULTI_TEXTURE
                         - TRUE_PBR
                   - entry: Lighting:Pixel:8011
@@ -13962,6 +14051,58 @@ shaders:
                   - SHADOWSPLITCOUNT=3
                   - VR
               entries:
+                  - entry: Utility:Pixel:42000002
+                    defines:
+                        - RENDER_BASE_TEXTURE
+                        - TEXTURE
+                        - TRUE_PBR
+                  - entry: Utility:Pixel:42000003
+                    defines:
+                        - RENDER_BASE_TEXTURE
+                        - TEXTURE
+                        - TRUE_PBR
+                        - VC
+                  - entry: Utility:Pixel:42000082
+                    defines:
+                        - ALPHA_TEST
+                        - RENDER_BASE_TEXTURE
+                        - TEXTURE
+                        - TRUE_PBR
+                  - entry: Utility:Pixel:42000083
+                    defines:
+                        - ALPHA_TEST
+                        - RENDER_BASE_TEXTURE
+                        - TEXTURE
+                        - TRUE_PBR
+                        - VC
+                  - entry: Utility:Pixel:46000002
+                    defines:
+                        - RENDER_BASE_TEXTURE
+                        - TEXTURE
+                        - TREE_ANIM
+                        - TRUE_PBR
+                  - entry: Utility:Pixel:46000003
+                    defines:
+                        - RENDER_BASE_TEXTURE
+                        - TEXTURE
+                        - TREE_ANIM
+                        - TRUE_PBR
+                        - VC
+                  - entry: Utility:Pixel:46000082
+                    defines:
+                        - ALPHA_TEST
+                        - RENDER_BASE_TEXTURE
+                        - TEXTURE
+                        - TREE_ANIM
+                        - TRUE_PBR
+                  - entry: Utility:Pixel:46000083
+                    defines:
+                        - ALPHA_TEST
+                        - RENDER_BASE_TEXTURE
+                        - TEXTURE
+                        - TREE_ANIM
+                        - TRUE_PBR
+                        - VC
                   - entry: Utility:Pixel:10000003
                     defines: &id526
                         - LOCALMAP_FOGOFWAR

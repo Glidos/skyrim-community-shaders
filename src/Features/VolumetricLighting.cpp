@@ -1,6 +1,7 @@
 #include "VolumetricLighting.h"
 #include "AdaptiveBrightness.h"
 #include "Menu/SettingsPage.h"
+#include "Utils/Game.h"
 #include "Utils/RuntimeToggle.h"
 #include "Utils/UI.h"
 
@@ -544,7 +545,8 @@ void VolumetricLighting::SetupResources()
 void VolumetricLighting::UpdateBlurDimensions()
 {
 	blurDimensionsValid = false;
-	if (!globals::state || !globals::game::graphicsState || !vlDataCB)
+	if (!globals::state || !globals::game::graphicsState || !vlDataCB ||
+		!globals::game::cameraNear || !globals::game::cameraFar)
 		return;
 
 	const auto fullSize = globals::state->screenSize;
@@ -557,6 +559,12 @@ void VolumetricLighting::UpdateBlurDimensions()
 		!validDimension(fullSize.y, 1.0f, D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION) ||
 		!validDimension(renderSize.x, minimumWidth, fullSize.x) ||
 		!validDimension(renderSize.y, 1.0f, fullSize.y)) {
+		return;
+	}
+
+	const auto cameraData = Util::GetCameraData();
+	if (!std::isfinite(cameraData.x) || !std::isfinite(cameraData.y) || !std::isfinite(cameraData.w) ||
+		cameraData.y <= 0.0f || cameraData.x <= cameraData.y || cameraData.w <= 0.0f) {
 		return;
 	}
 
@@ -578,6 +586,7 @@ void VolumetricLighting::UpdateBlurDimensions()
 	const int32_t maximumEyeWidth = globals::game::isVR ? vlData.screenX - vlData.eyeWidth : vlData.screenX;
 	vlData.horizontalGroupsPerEye =
 		(maximumEyeWidth + BlurThreadGroupSizeX - BlurWindow * 2u - 1u) / (BlurThreadGroupSizeX - BlurWindow * 2u);
+	vlData.cameraData = cameraData;
 	vlDataCB->Update(vlData);
 	blurDimensionsValid = true;
 }

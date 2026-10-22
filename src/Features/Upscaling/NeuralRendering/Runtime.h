@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CapacityFallback.h"
+#include "NetworkSelection.h"
 #include "RegionCapacity.h"
 #include "TuningLimits.h"
 
@@ -88,6 +89,7 @@ namespace NeuralRendering
 
 	struct Tuning
 	{
+		std::uint32_t networkPreset = kNetworkDefault;
 		float intensity = 0.8f;
 		float localToneStrength = 0.75f;
 		float localStructureStrength = 0.9f;
@@ -144,7 +146,7 @@ namespace NeuralRendering
 		bool PrepareFeature(ID3D12GraphicsCommandList*, std::uint32_t slot,
 			const NativeEvaluationLayout&, ID3D12Resource* color = nullptr,
 			ID3D12Resource* controlMask = nullptr, bool providerBlending = false,
-			RuntimeExecutionEvidence* evidence = nullptr);
+			RuntimeExecutionEvidence* evidence = nullptr, std::uint32_t networkPreset = kNetworkDefault);
 		/** Consume first-use reset only after the renderer commits the complete real transaction. */
 		void AcknowledgePresentedFeatures(std::uint32_t slotMask);
 		bool ResetFeature(std::uint32_t a_slot);
@@ -162,8 +164,12 @@ namespace NeuralRendering
 		[[nodiscard]] std::filesystem::path Path() const;
 		[[nodiscard]] std::string Hash() const;
 		[[nodiscard]] std::string Version() const;
-		/** Use probed DLL limits, or cached installed-file metadata before initialization. */
-		[[nodiscard]] TuningLimits GetTuningLimits() const;
+		/** Resolve network limits from probed metadata, or cached installed metadata before initialization. */
+		[[nodiscard]] TuningLimits GetTuningLimits(std::uint32_t selection = kNetworkDefault) const;
+		/** Whether the probed provider, or installed metadata before probing, supports explicit networks. */
+		[[nodiscard]] bool SupportsNetworkSelection() const;
+		/** Resolves a saved selection without changing provider ownership or loading another DLL. */
+		[[nodiscard]] std::uint32_t GetNetworkPreset(std::uint32_t selection) const;
 		[[nodiscard]] std::filesystem::path ParameterCorePath() const;
 		[[nodiscard]] std::string ParameterCoreHash() const;
 		[[nodiscard]] ParameterCoreTrust CoreTrust() const;
@@ -187,11 +193,17 @@ namespace NeuralRendering
 		/** Resident handles only; NVIDIA does not expose their allocation byte size. */
 		[[nodiscard]] std::uint32_t GetResidentFeatureMask() const;
 		/** Checks creation compatibility without changing a resident handle. */
-		[[nodiscard]] bool HasCompatibleFeature(std::uint32_t slot, const NativeEvaluationLayout&, bool providerBlending) const;
+		[[nodiscard]] bool HasCompatibleFeature(std::uint32_t slot, const NativeEvaluationLayout&, bool providerBlending,
+			std::uint32_t networkPreset = kNetworkDefault) const;
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		/** Actual creation presets by logical slot; UINT32_MAX denotes no valid configured feature. */
+		[[nodiscard]] std::array<std::uint32_t, kFeatureSlotCount> GetFeatureNetworkPresets() const;
+#endif
 
 	private:
 		struct FeatureConfiguration
 		{
+			std::uint32_t networkPreset = kNetworkDefault;
 			UpscalingDLSS::Extent colorBacking{};
 			NativeCreationExtents creation{};
 			bool featureUpscaling = false;
@@ -220,7 +232,7 @@ namespace NeuralRendering
 
 		bool PrepareFeatureLocked(ID3D12GraphicsCommandList*, std::uint32_t,
 			const NativeEvaluationLayout&, ID3D12Resource*, ID3D12Resource*, bool,
-			RuntimeExecutionEvidence*);
+			RuntimeExecutionEvidence*, std::uint32_t);
 		bool ProbeLocked(const std::filesystem::path& a_explicitPath);
 		bool ResetFeatureLocked(std::uint32_t a_slot);
 		bool ResetFeaturesLocked(bool a_stopOnFailure = false);
@@ -234,6 +246,7 @@ namespace NeuralRendering
 		std::string hash_;
 		std::string version_;
 		std::optional<TuningLimits> tuningLimits_;
+		std::optional<bool> networkSelectionSupported_;
 		std::filesystem::path corePath_;
 		std::string coreHash_;
 		ParameterCoreTrust coreTrust_ = ParameterCoreTrust::Unknown;

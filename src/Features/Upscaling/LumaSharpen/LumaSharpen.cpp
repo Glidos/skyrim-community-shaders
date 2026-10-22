@@ -25,16 +25,18 @@ void LumaSharpen::Initialize(bool enableMotionAdaptive)
 	if (lumaSharpenConfigCB && lumaSharpenComputeShader)
 		return;
 
-	logger::info("[LumaSharpen] Creating resources");
 	if (!lumaSharpenComputeShader)
 		CreateComputeShader();
-	if (!lumaSharpenConfigCB)
+	if (!lumaSharpenConfigCB) {
+		logger::info("[LumaSharpen] Creating resources");
 		lumaSharpenConfigCB = new ConstantBuffer(ConstantBufferDesc<LumaSharpenConfig>());
+	}
 }
 
 void LumaSharpen::ClearShaderCache()
 {
 	lumaSharpenComputeShader = nullptr;
+	shaderUnavailableLogged = false;
 	motionAdaptive.ClearShaderCache();
 }
 
@@ -68,9 +70,13 @@ bool LumaSharpen::ApplySharpen(ID3D11ShaderResourceView* inputSRV, ID3D11Unorder
 		Initialize();
 
 	if (!lumaSharpenComputeShader) {
-		logger::warn("[LumaSharpen] Compute shader not compiled");
+		if (!shaderUnavailableLogged) {
+			logger::warn("[LumaSharpen] Compute shader not compiled");
+			shaderUnavailableLogged = true;
+		}
 		return false;
 	}
+	shaderUnavailableLogged = false;
 	if (!lumaSharpenConfigCB) {
 		logger::warn("[LumaSharpen] Constant buffer not initialized");
 		return false;

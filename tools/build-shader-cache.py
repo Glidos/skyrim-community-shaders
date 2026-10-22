@@ -2545,9 +2545,11 @@ def cache_variants_for(profile: CacheProfile) -> tuple[CacheVariant, ...]:
     return (STANDARD_CACHE_VARIANT,)
 
 
-def compile_variants_for(profile: CacheProfile) -> tuple[CacheVariant, ...]:
+def compile_variants_for(
+    profile: CacheProfile, include_horizon_fix: bool = True
+) -> tuple[CacheVariant, ...]:
     """Return loose variants required as inputs to the managed pack."""
-    if profile.name == SHIPPED_CACHE_PROFILE.name:
+    if include_horizon_fix and profile.name == SHIPPED_CACHE_PROFILE.name:
         return CACHE_VARIANTS
     return (STANDARD_CACHE_VARIANT,)
 
@@ -2694,6 +2696,8 @@ def validate_cache_archive(
                 f"packaged {runtime} cache pack manifest disagrees with its pack files: {exc}"
             ) from exc
         inventory.validate(pack_stats)
+        if horizon_variants is False and "legacy-horizon-fix" in pack_manifest["compatibilityVariants"]:
+            raise SystemExit("packaged cache contains excluded Horizon Fix records")
 
 
 def prepare_cache_archive(
@@ -2706,10 +2710,11 @@ def prepare_cache_archive(
     *,
     profile: CacheProfile = SHIPPED_CACHE_PROFILE,
     source_root: Path = REPO,
+    include_horizon_fix: bool = True,
 ) -> Path:
     """Create a validated candidate archive without changing published output."""
     variants = cache_variants_for(profile)
-    horizon_variants = HORIZON_FIX_CACHE_VARIANT in compile_variants_for(profile)
+    horizon_variants = HORIZON_FIX_CACHE_VARIANT in compile_variants_for(profile, include_horizon_fix)
     archive_name = f"ShaderCache-{runtime}-{safe_label(label)}.7z"
     temporary_archive = workspace / archive_name
     command = [
@@ -2841,13 +2846,14 @@ def build_runtime(
     write_manifest: Callable[..., int],
     profile: CacheProfile,
     distribution_profile: DistributionProfile | None = None,
+    include_horizon_fix: bool = True,
 ) -> tuple[Path, dict[str, int], int]:
     runtime_root = workspace / runtime
     shader_contract = shader_contract_identity(
         source_root, DEFAULT_SHADER_CONTRACT_FILES
     )
     shader_cache_abi = sha256_bytes(canonical_bytes(shader_contract))
-    variants = compile_variants_for(profile)
+    variants = compile_variants_for(profile, include_horizon_fix)
     compatibility_variants = compatibility_variant_manifest(source_root)
     has_horizon_variant = HORIZON_FIX_CACHE_VARIANT in variants
     if has_horizon_variant and distribution_profile is None:
@@ -3014,6 +3020,12 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--include-horizon-fix",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include Horizon Fix compatibility cache records (default: included).",
+    )
+    parser.add_argument(
         "--source-root",
         help="Repo checkout to take shaders/configs/version from (default: this repo).",
     )
@@ -3169,6 +3181,7 @@ def main() -> int:
                 write_manifest=write_manifest,
                 profile=profile,
                 distribution_profile=distribution_profile,
+                include_horizon_fix=args.include_horizon_fix,
             )
             archive_candidate = None
             if args.package:
@@ -3182,6 +3195,7 @@ def main() -> int:
                     cmake,
                     profile=profile,
                     source_root=source_root,
+                    include_horizon_fix=args.include_horizon_fix,
                 )
             prepared.append(
                 (

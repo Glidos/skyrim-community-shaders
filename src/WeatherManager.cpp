@@ -157,6 +157,10 @@ void WeatherManager::LoadPerWeatherSettingsFromDisk()
 
 void WeatherManager::UpdateFeatures()
 {
+	// Keep pre-map weather overrides until the world scene resumes.
+	if (globals::state->isMapMenuOpen)
+		return;
+
 	EvaluateCurrentWeatherState(false);
 }
 

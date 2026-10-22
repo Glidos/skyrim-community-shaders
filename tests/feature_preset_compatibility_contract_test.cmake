@@ -23,6 +23,7 @@ string(JSON _action_count LENGTH
     "${_descriptor}" inputSchema properties action enum
 )
 set(_compatibility_found FALSE)
+set(_terrain_seams_found FALSE)
 math(EXPR _action_last "${_action_count} - 1")
 foreach(_index RANGE 0 ${_action_last})
     string(JSON _action GET
@@ -30,15 +31,20 @@ foreach(_index RANGE 0 ${_action_last})
     )
     if(_action STREQUAL "preset_compatibility")
         set(_compatibility_found TRUE)
+    elseif(_action STREQUAL "terrain_seams")
+        set(_terrain_seams_found TRUE)
     endif()
 endforeach()
 if(NOT _compatibility_found)
     message(FATAL_ERROR "Feature DevBench schema is missing preset_compatibility")
 endif()
+if(NOT _terrain_seams_found)
+    message(FATAL_ERROR "Feature DevBench schema is missing terrain_seams")
+endif()
 
 foreach(_bridge_contract IN ITEMS
-    "ServiceFoundation value({ ServiceName, 1, 1, 20 })"
-    "{ \"minor\", 1 }, { \"schemaRevision\", 20 }"
+    "ServiceFoundation value({ ServiceName, 1, 1, 21 })"
+    "{ \"minor\", 1 }, { \"schemaRevision\", 21 }"
     "PresetCompatibility::ToJson(PresetCompatibility::GetPublished())"
 )
     string(FIND "${_bridge}" "${_bridge_contract}" _bridge_position)
@@ -46,6 +52,18 @@ foreach(_bridge_contract IN ITEMS
         message(FATAL_ERROR "Feature DevBench compatibility contract is missing: ${_bridge_contract}")
     endif()
 endforeach()
+
+string(JSON _seams GET "${_descriptor}" inputSchema properties terrainSeams)
+string(JSON _seams_type GET "${_seams}" type)
+string(JSON _seams_extra GET "${_seams}" additionalProperties)
+string(JSON _seams_required_count LENGTH "${_seams}" required)
+string(JSON _seams_required GET "${_seams}" required 0)
+string(JSON _seams_enabled_type GET "${_seams}" properties enabled type)
+if(NOT _seams_type STREQUAL "object" OR _seams_extra OR
+   NOT _seams_required_count EQUAL 1 OR NOT _seams_required STREQUAL "enabled" OR
+   NOT _seams_enabled_type STREQUAL "boolean")
+    message(FATAL_ERROR "Terrain seam requests must require one boolean enabled field")
+endif()
 
 foreach(_coverage IN ITEMS terrain parallax)
     string(JSON _coverage_default GET

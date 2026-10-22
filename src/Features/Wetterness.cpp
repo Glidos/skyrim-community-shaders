@@ -4,6 +4,7 @@
 #include "Menu/SettingsPage.h"
 #include "Profiler.h"
 #include "State.h"
+#include "Utils/Game.h"
 #include "Utils/UI.h"
 #include "WeatherPicker.h"
 #include "WetternessLightingPolicy.h"
@@ -944,26 +945,6 @@ namespace
 			RAIN_CONTACT_WETNESS_SCALE_MIN,
 			RAIN_CONTACT_WETNESS_SCALE_MAX,
 			DEFAULT_RAIN_CONTACT_WETNESS_SCALE);
-	}
-
-	RE::BSParticleShaderRainEmitter* GetRainEmitterFromPrecipGeometry(RE::BSGeometry* precipObject)
-	{
-		if (!precipObject) {
-			return nullptr;
-		}
-
-		auto* shaderProp = precipObject->GetGeometryRuntimeData().shaderProperty.get();
-		auto particleShaderProperty = netimmerse_cast<RE::BSParticleShaderProperty*>(shaderProp);
-		if (!particleShaderProperty || !particleShaderProperty->particleEmitter) {
-			return nullptr;
-		}
-
-		auto* emitter = particleShaderProperty->particleEmitter;
-		if (!emitter->emitterType.any(RE::BSParticleShaderEmitter::EMITTER_TYPE::kRain)) {
-			return nullptr;
-		}
-
-		return static_cast<RE::BSParticleShaderRainEmitter*>(emitter);
 	}
 }
 
@@ -2244,10 +2225,10 @@ Wetterness::PerFrame Wetterness::GetCommonBufferData() const
 				RE::BSParticleShaderRainEmitter* currentRainEmitter = nullptr;
 				RE::BSParticleShaderRainEmitter* lastRainEmitter = nullptr;
 				if (precip->currentPrecip) {
-					currentRainEmitter = GetRainEmitterFromPrecipGeometry(precip->currentPrecip.get());
+					currentRainEmitter = Util::GetRainEmitterFromPrecipGeometry(precip->currentPrecip.get());
 				}
 				if (precip->lastPrecip) {
-					lastRainEmitter = GetRainEmitterFromPrecipGeometry(precip->lastPrecip.get());
+					lastRainEmitter = Util::GetRainEmitterFromPrecipGeometry(precip->lastPrecip.get());
 				}
 
 				auto* rainEmitter = currentRainEmitter ? currentRainEmitter : lastRainEmitter;

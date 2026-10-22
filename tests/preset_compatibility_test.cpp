@@ -52,6 +52,11 @@ int main(int argc, char** argv)
 		assert(nr.at("neuralRenderingEnabled") == false);
 		assert(nr.at("neuralRenderingMode") == 2);
 		assert(nr.at("neuralRenderingInsertionPoint") == 0);
+		assert(nr.at("neuralRenderingNetwork") == 0);
+		assert(preset.at("Terrain Blending").at("LandscapeSeams") == 0);
+		assert(preset.at("Performance Overlay").at("ShowRenderTargets") == false);
+		assert(preset.at("Sky Sync").at("DisabledWorldspaces") == nlohmann::json::array(
+																	  { "Blackreach", "AlftandWorld", "Sovngarde", "DLC01SoulCairn", "DLC01Boneyard", "DLC2ApocryphaWorld" }));
 	}
 
 	const auto unmarked = PresetCompatibility::Evaluate(nlohmann::json::object(), "CSX 3.20.0-VR");
@@ -68,7 +73,7 @@ int main(int argc, char** argv)
 	assert(!older.ShouldApply());
 
 	for (const auto presetId : { "csx-unified-performance", "csx-unified-balanced", "csx-unified-quality" }) {
-		for (const auto revision : { 8u, 9u, 10u, 11u, 12u, 13u }) {
+		for (const auto revision : { 8u, 9u, 10u, 11u, 12u, 13u, 14u }) {
 			auto legacy = CompatiblePreset();
 			auto& marker = legacy["Preset Compatibility"];
 			marker["presetId"] = presetId;

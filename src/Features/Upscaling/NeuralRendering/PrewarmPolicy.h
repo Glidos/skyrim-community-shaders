@@ -31,6 +31,7 @@ namespace NeuralRendering
 		std::uintptr_t device = 0, context = 0;
 		std::uint64_t generation = 0;
 		std::uint32_t slotMask = 0;
+		std::uint32_t networkPreset = 0;
 		bool operator==(const PrewarmKey&) const = default;
 	};
 

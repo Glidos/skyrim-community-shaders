@@ -56,6 +56,7 @@ namespace RE
 			Sky,
 			Effect,
 			ImageSpace,
+			Utility,
 			Total
 		};
 		struct TypeValue
@@ -66,6 +67,7 @@ namespace RE
 			unsigned underlying() const { return static_cast<unsigned>(value); }
 		} shaderType;
 		const char* fxpFilename = "Lighting";
+		std::vector<BSGraphics::PixelShader*> pixelShaders;
 	};
 }
 namespace REL
@@ -166,6 +168,11 @@ namespace globals
 		} upscaling;
 		struct TerrainBlending
 		{
+			bool loaded = true;
+			struct
+			{
+				bool Enabled = true, LandscapeSeams = false;
+			} settings;
 			void OnBeginTechnique(RE::BSShader*, uint32_t, uint32_t) {}
 		} terrainBlending;
 	}
@@ -253,11 +260,22 @@ namespace SIE
 }
 namespace Permutations
 {
-	std::vector<uint32_t> pixelPermutations;
-	const auto& GeneratePBRLightingPixelPermutations() { return pixelPermutations; }
+	std::set<uint32_t> pixelPermutations;
+	bool lastLandscapeSeams = false;
+	const auto& GeneratePBRLightingPixelPermutations(bool seams)
+	{
+		lastLandscapeSeams = seams;
+		return pixelPermutations;
+	}
+	std::set<uint32_t> GeneratePBRUtilityPixelPermutations() { return {}; }
 }
 struct TruePBR
 {
+	bool loaded = true;
+	struct
+	{
+		bool Enabled = true;
+	} settings;
 	void GenerateShaderPermutations(RE::BSShader*);
 };
 #include "pbr_prewarm.h"
@@ -282,6 +300,16 @@ namespace Hooks
 		static inline bool (*func)(RE::BSShader*, uint32_t, uint32_t, bool) = nullptr;
 	};
 }
+struct TerrainSeams
+{
+	bool enabled = false;
+	bool IsEnabled() const { return enabled; }
+	static TerrainSeams& GetInstance()
+	{
+		static TerrainSeams instance;
+		return instance;
+	}
+};
 #include "begin_technique.h"
 namespace NeuralRendering
 {
@@ -335,6 +363,8 @@ struct Fixture
 		globals::game::currentPixelShader = &current;
 		state.currentShader = &shader;
 		native.shader = reinterpret_cast<ID3D11PixelShader*>(&native);
+		globals::features::terrainBlending = {};
+		TerrainSeams::GetInstance().enabled = false;
 	}
 	void Bind(uint32_t descriptor)
 	{
@@ -531,6 +561,32 @@ void TestWarningDeduplication()
 	state.RecordPreparationFailure(args, "category capture pending");
 	Require(logger::warnings == 3);
 }
+void TestSeamTechniqueFallback()
+{
+	constexpr auto seams = static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::LandscapeSeams);
+	constexpr uint32_t plain = 0x10001u;
+	for (bool enabled : { false, true }) {
+		for (bool ready : { false, true }) {
+			for (bool skipPixel : { false, true }) {
+				Fixture f;
+				TerrainSeams::GetInstance().enabled = enabled;
+				Hooks::BSShader_BeginTechnique::func = NativeTechnique;
+				nativeTechniqueReady = true;
+				nativeTechniquePixel = &f.native;
+				f.cache.Add(f.shader, plain);
+				ID3D11VertexShader nativeVS;
+				RE::BSGraphics::VertexShader vertex{ &nativeVS };
+				if (ready) {
+					f.cache.vertex = &vertex;
+					f.cache.Add(f.shader, plain | seams);
+				}
+				Require(Hooks::BSShader_BeginTechnique::thunk(&f.shader, plain | seams, plain | seams, skipPixel));
+				const auto expected = plain | (enabled && ready && !skipPixel ? seams : 0u);
+				Require(f.state.currentVertexDescriptor == expected && f.state.currentPixelDescriptor == expected);
+			}
+		}
+	}
+}
 void TestNullPixelBinding()
 {
 	for (bool cached : { false, true }) {
@@ -568,6 +624,45 @@ void TestPBRPrewarming()
 		Require(f.cache.compilationSet.requests.empty());
 	}
 }
+void TestSeamPrewarming()
+{
+	constexpr auto seams = static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::LandscapeSeams);
+	constexpr auto deferred = static_cast<uint32_t>(SIE::ShaderCache::LightingShaderFlags::Deferred);
+	constexpr auto land = static_cast<uint32_t>(SIE::ShaderCache::LightingShaderTechniques::MTLand) << 24;
+	constexpr auto lod = static_cast<uint32_t>(SIE::ShaderCache::LightingShaderTechniques::MTLandLODBlend) << 24;
+	const auto category = SIE::ShaderCache::GetCharacterCategoryFlag(RE::BSShader::Type::Lighting);
+	Permutations::pixelPermutations = {};
+	for (unsigned configuration = 0; configuration < 32; ++configuration) {
+		for (bool categories : { false, true }) {
+			Fixture f;
+			TruePBR feature;
+			feature.loaded = (configuration & 1u) != 0;
+			feature.settings.Enabled = (configuration & 2u) != 0;
+			auto& terrain = globals::features::terrainBlending;
+			terrain.loaded = (configuration & 4u) != 0;
+			terrain.settings.Enabled = (configuration & 8u) != 0;
+			terrain.settings.LandscapeSeams = (configuration & 16u) != 0;
+			f.deferred.categories = categories;
+			RE::BSGraphics::PixelShader nativeLand, nativeLod, unrelated;
+			nativeLand.id = land;
+			nativeLod.id = lod;
+			f.shader.pixelShaders = { &nativeLand, &nativeLod, &unrelated };
+			feature.GenerateShaderPermutations(&f.shader);
+			const bool enabled = configuration == 31;
+			Require(Permutations::lastLandscapeSeams == enabled);
+			std::set<uint32_t> expected;
+			if (enabled) {
+				for (const auto descriptor : { land | seams, lod | seams }) {
+					expected.insert(descriptor);
+					expected.insert(descriptor | deferred);
+					if (categories)
+						expected.insert(descriptor | deferred | category);
+				}
+			}
+			Require(f.cache.compilationSet.requests == expected);
+		}
+	}
+}
 int main()
 {
 	try {
@@ -582,7 +677,9 @@ int main()
 			TestBoundGrassVariant();
 			TestNullPixelBinding();
 			TestTechniqueAdmission();
+			TestSeamTechniqueFallback();
 			TestPBRPrewarming();
+			TestSeamPrewarming();
 		}
 		TestWarningDeduplication();
 		std::cout << "Category fallback and warning checks: " << assertions << " passed (flat and VR)\n";

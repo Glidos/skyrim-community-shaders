@@ -312,6 +312,7 @@ namespace NeuralRendering
 						});
 				});
 			const bool tuningMatches =
+				left.tuning.networkPreset == right.tuning.networkPreset &&
 				left.tuning.intensity == right.tuning.intensity &&
 				left.tuning.localToneStrength == right.tuning.localToneStrength &&
 				left.tuning.localStructureStrength == right.tuning.localStructureStrength &&
@@ -350,7 +351,8 @@ namespace NeuralRendering
 			const auto validStrength = [](float a_value) {
 				return std::isfinite(a_value) && a_value >= 0.0f && a_value <= 2.0f;
 			};
-			return validStrength(a_tuning.intensity) &&
+			return a_tuning.networkPreset <= kNetworkNewer &&
+			       validStrength(a_tuning.intensity) &&
 			       validStrength(a_tuning.localToneStrength) &&
 			       validStrength(a_tuning.localStructureStrength) &&
 			       validStrength(a_tuning.skinStructureStrength) &&
@@ -582,6 +584,7 @@ namespace NeuralRendering
 
 		struct ResourceKey
 		{
+			std::uint32_t networkPreset = kNetworkDefault;
 			std::uint32_t colorWidth = 0;
 			std::uint32_t colorHeight = 0;
 			std::uint32_t guideWidth = 0;
@@ -1379,6 +1382,7 @@ namespace NeuralRendering
 		                                  DXGI_FORMAT_R32G32B32A32_FLOAT :
 		                                  DXGI_FORMAT_R16G16B16A16_FLOAT;
 		a_resources.resourceKey = {
+			.networkPreset = a_args.tuning.networkPreset,
 			.colorWidth = a_resources.nativeLayout.color.backing.width,
 			.colorHeight = a_resources.nativeLayout.color.backing.height,
 			.guideWidth = a_resources.nativeLayout.depth.backing.width,
@@ -2407,7 +2411,7 @@ namespace NeuralRendering
 			if (replacing) {
 				const auto& layout = resource.nativeLayout;
 				const bool preparedNative = !replacingBackend && (prewarm_.unusedMask & FeatureSlotBit(a_args[index].featureSlot)) &&
-				                            Runtime::Instance().HasCompatibleFeature(a_args[index].featureSlot, layout, resource.resourceKey.providerBlending);
+				                            Runtime::Instance().HasCompatibleFeature(a_args[index].featureSlot, layout, resource.resourceKey.providerBlending, resource.resourceKey.networkPreset);
 				if (!preparedNative)
 					additionalBytes += MemoryRecoveryPolicy::kNativeFeatureReserve;
 				if (!append(resource.resourceKey.colorFormat, layout.color.backing) ||
@@ -2733,7 +2737,7 @@ namespace NeuralRendering
 			return true;
 
 		const bool prepared = !slot.resourcesValid && (prewarm_.unusedMask & FeatureSlotBit(a_slot)) &&
-		                      Runtime::Instance().HasCompatibleFeature(a_slot, a_resources.nativeLayout, a_resources.resourceKey.providerBlending);
+		                      Runtime::Instance().HasCompatibleFeature(a_slot, a_resources.nativeLayout, a_resources.resourceKey.providerBlending, a_resources.resourceKey.networkPreset);
 		if (!prepared && !RetireSlotLocked(a_slot, a_evidence))
 			return false;
 		prewarm_.Adopt(a_slot, prepared);
@@ -3822,8 +3826,8 @@ namespace NeuralRendering
 		ID3D12GraphicsCommandList* parallelCommands = nullptr;
 		// Feature creation stays on the primary queue; only independent, resident eye models overlap.
 		if (a_args.size() == 2 && a_args[0].parallelEyes && !interop_.IsParallelDisabled() && !colorConfiguration_.experiments.transportBypass &&
-			Runtime::Instance().HasCompatibleFeature(a_args[0].featureSlot, resources[0].nativeLayout, a_args[0].providerBlending) &&
-			Runtime::Instance().HasCompatibleFeature(a_args[1].featureSlot, resources[1].nativeLayout, a_args[1].providerBlending))
+			Runtime::Instance().HasCompatibleFeature(a_args[0].featureSlot, resources[0].nativeLayout, a_args[0].providerBlending, a_args[0].tuning.networkPreset) &&
+			Runtime::Instance().HasCompatibleFeature(a_args[1].featureSlot, resources[1].nativeLayout, a_args[1].providerBlending, a_args[1].tuning.networkPreset))
 			parallelCommands = interop_.ParallelList();
 
 		std::array<FeatureResourceTransition, kMaximumTransitionResourceCount>
@@ -4749,7 +4753,7 @@ namespace NeuralRendering
 			if (policy.preparedMask & FeatureSlotBit(slot))
 				continue;
 			if (Runtime::Instance().GetResidentFeatureMask() & FeatureSlotBit(slot)) {
-				if (!Runtime::Instance().HasCompatibleFeature(slot, policy.key.layout, false)) {
+				if (!Runtime::Instance().HasCompatibleFeature(slot, policy.key.layout, false, policy.key.networkPreset)) {
 					policy.reason = "live_incompatible_feature";
 					policy.failed = true;
 					return;
@@ -4764,7 +4768,7 @@ namespace NeuralRendering
 				(void)FailLocked(RendererStage::CommandBegin, interop_.LastError(), "prewarm command begin failed", slot, true, true, false);
 				return;
 			}
-			if (!Runtime::Instance().PrepareFeature(commands, slot, policy.key.layout)) {
+			if (!Runtime::Instance().PrepareFeature(commands, slot, policy.key.layout, nullptr, nullptr, false, nullptr, policy.key.networkPreset)) {
 				const bool aborted = interop_.AbortD3D12();
 				policy.failed = true;
 				policy.stage = "failed";

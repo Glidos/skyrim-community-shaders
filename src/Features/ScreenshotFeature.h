@@ -68,6 +68,8 @@ struct ScreenshotFeature : public Feature
 	/** Persist canonical capture choices and their backward-compatible sequence mirror. */
 	virtual void SaveSettings(json& a_json) override;
 	virtual void PostPostLoad() override;
+	/** Release the UI-only preview at Present after the main menu closes. */
+	void Reset() override;
 
 	/** Submits one contract-v1 capture for the native UI or screenshot hotkey. */
 	void RequestUiCapture();

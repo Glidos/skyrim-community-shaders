@@ -91,7 +91,12 @@ namespace RE
 	struct VRControllerState
 	{
 		std::array<ImVec2, 2> thumbsticks{};
-		bool buttonHeld = false;
+		struct Button
+		{
+			bool isPressed = false;
+		};
+		std::array<Button, 2> buttons{};
+		const Button& operator[](size_t key) const { return buttons.at(key); }
 	};
 }
 
@@ -160,6 +165,16 @@ namespace
 	bool gHasLastMenuNavigationMode = false;
 	bool gLastMenuNavigationUsesWand = false;
 	std::array<bool, 2> gBlockRawTriggerUntilRelease{};
+	bool gPrevPrimaryVRInputStates[2]{};
+	bool gPrevSecondaryVRInputStates[2]{};
+	struct Mapping
+	{
+		size_t keyCode;
+	};
+	std::array<Mapping, 2> GetVRInputMappings(bool secondary)
+	{
+		return secondary ? std::array{ Mapping{ 1 }, Mapping{ 0 } } : std::array{ Mapping{ 0 }, Mapping{ 1 } };
+	}
 	void CancelWandMouseInput(VR&) {}
 	void ResetCursorOwnershipState() {}
 }
@@ -253,10 +268,17 @@ static void CheckNavigation(ScrollFixture& f)
 {
 	// The physical stick returned to centre without delivering a neutral event.
 	f.Event(1, -1);
-	f.Controller().buttonHeld = true;
+	f.Controller().buttons[0].isPressed = true;
 	f.vr.ReleaseMenuImGuiInputState();
 	f.RequireIdle();
-	Require(f.Controller().buttonHeld, "menu resets must preserve held shortcut buttons");
+	Require(f.Controller().buttons[0].isPressed, "menu resets must preserve held shortcut buttons");
+	for (bool secondary : { false, true }) {
+		const auto mappings = GetVRInputMappings(secondary);
+		const auto& physical = secondary ? f.vr.secondaryControllerState : f.vr.primaryControllerState;
+		const auto* previous = secondary ? gPrevSecondaryVRInputStates : gPrevPrimaryVRInputStates;
+		for (size_t index = 0; index < mappings.size(); ++index)
+			Require(previous[index] == physical[mappings[index].keyCode].isPressed, "reset must latch physical held buttons in mapping order");
+	}
 
 	f.Stick(0, -1);
 	f.Frames(12);
@@ -300,7 +322,7 @@ static void CheckLostEvents(ScrollFixture& f)
 	Runtime::Stick(1 - f.hand) = { 0, 1 };
 	f.RequireIdle();
 	const auto& other = f.hand == 0 ? f.vr.secondaryControllerState : f.vr.primaryControllerState;
-	Require(other.thumbsticks[1 - f.hand].y == 1 && f.Controller().buttonHeld,
+	Require(other.thumbsticks[1 - f.hand].y == 1 && f.Controller().buttons[0].isPressed,
 		"a missing neutral event must not clear the other hand or shortcut buttons");
 
 	// A delayed queue batch after a render stall must not restore old movement.

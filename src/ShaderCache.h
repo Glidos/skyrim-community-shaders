@@ -605,6 +605,7 @@ namespace SIE
 		enum class ClaimResult
 		{
 			CacheHit,  // Already compiled; use the returned blob
+			Failed,    // Retry only after the entry is invalidated
 			Claimed,   // Claimed as Pending; caller must compile and call AddCompletedShader
 			RejectedStale
 		};
@@ -808,6 +809,8 @@ namespace SIE
 			// CSX start
 			TruePbr = 1 << 3,
 			Deferred = 1 << 4,
+			// Bit 5 belongs to the character-category output layout.
+			LandscapeSeams = 1 << 6,
 			// CSX end
 			Specular = 1 << 9,
 			SoftLighting = 1 << 10,
@@ -963,6 +966,7 @@ namespace SIE
 			LodObject = 1 << 27,
 			LocalMapFogOfWar = 1 << 28,
 			OpaqueEffect = 1 << 29,
+			TruePbr = 1u << 30,
 		};
 
 		// Shader blocking data for developer mode

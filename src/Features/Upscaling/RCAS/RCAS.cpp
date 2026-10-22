@@ -22,16 +22,18 @@ void RCAS::Initialize(bool enableMotionAdaptive)
 	if (rcasConfigCB && rcasComputeShader)
 		return;
 
-	logger::info("[RCAS] Creating resources");
 	if (!rcasComputeShader)
 		CreateComputeShader();
-	if (!rcasConfigCB)
+	if (!rcasConfigCB) {
+		logger::info("[RCAS] Creating resources");
 		rcasConfigCB = new ConstantBuffer(ConstantBufferDesc<RCASConfig>(), "Upscaling::RCASConfig");
+	}
 }
 
 void RCAS::ClearShaderCache()
 {
 	rcasComputeShader = nullptr;
+	shaderUnavailableLogged = false;
 	motionAdaptive.ClearShaderCache();
 }
 
@@ -65,9 +67,13 @@ bool RCAS::ApplySharpen(ID3D11ShaderResourceView* inputSRV, ID3D11UnorderedAcces
 		Initialize();
 
 	if (!rcasComputeShader) {
-		logger::warn("[RCAS] Compute shader not compiled");
+		if (!shaderUnavailableLogged) {
+			logger::warn("[RCAS] Compute shader not compiled");
+			shaderUnavailableLogged = true;
+		}
 		return false;
 	}
+	shaderUnavailableLogged = false;
 	if (!rcasConfigCB) {
 		logger::warn("[RCAS] Constant buffer not initialized");
 		return false;

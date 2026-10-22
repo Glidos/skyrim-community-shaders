@@ -1,4 +1,9 @@
 #include "State.h"
+#if defined(DEVBENCH_BRIDGE_ENABLED) && defined(NVPERF_ENABLED)
+#	include "Diagnostics/NvPerf.h"
+#endif
+#include "Features/TerrainBlending.h"
+#include "Features/TerrainSeams.h"
 #include "Features/TextureStreaming.h"
 #ifdef DEVBENCH_BRIDGE_ENABLED
 #	include "Diagnostics/EngineStutterMonitor.h"
@@ -26,6 +31,7 @@
 #include <pystring/pystring.h>
 
 #include "Deferred.h"
+#include "EngineFixes/LODBlendRingFix.h"
 #include "FeatureIssues.h"
 #include "Features/AdaptiveBrightness.h"
 #include "Features/CSEditor.h"
@@ -563,6 +569,14 @@ void State::Draw()
 			}
 		}
 
+		if (currentShader && globals::profiler->IsRenderTargetCaptureActive()) {
+			if (auto* shadowState = globals::game::shadowState) {
+				const uint32_t depthStencil = globals::game::isVR ? shadowState->GetVRRuntimeData().depthStencil : shadowState->GetRuntimeData().depthStencil;
+				const uint32_t renderTarget = static_cast<uint32_t>(globals::game::isVR ? shadowState->GetVRRuntimeData().renderTargets[0] : shadowState->GetRuntimeData().renderTargets[0]);
+				globals::profiler->CountRenderTargetDraw(depthStencil, renderTarget);
+			}
+		}
+
 		if (globals::menu->overlayVisible && globals::features::performanceOverlay.loaded && globals::features::performanceOverlay.IsOverlayVisible()) {
 			ScopedStateDrawPhaseTimer phaseDiag(StateDrawPhase::DebugOverlay, stateDrawDiagFrame, stateDrawDiagActive);
 			Debug();
@@ -852,6 +866,10 @@ void State::Reset()
 	if (globals::game::isVR)
 		globals::profiler->EndFrame(frameCount);
 	Feature::ForEachLoadedFeature("Reset", [](Feature* feature) { feature->Reset(); });
+	const auto& terrain = globals::features::terrainBlending;
+	const auto& pbr = globals::features::truePBR;
+	TerrainSeams::GetInstance().Update(terrain.loaded && terrain.settings.Enabled && terrain.settings.LandscapeSeams &&
+									   pbr.loaded && pbr.settings.Enabled && globals::shaderCache->IsEnabled());
 	if (!globals::game::ui->GameIsPaused())
 		timer += RE::GetSecondsSinceLastFrame();
 
@@ -875,6 +893,7 @@ void State::Reset()
 	frameCount++;
 	frameCountAtomic.store(frameCount, std::memory_order_relaxed);
 	UpdateSaveLoadSafeMode();
+	LODBlendRingFix::GetInstance().Update();
 
 	globals::shaderCache->TickActiveShaderCapture(globals::menu && globals::menu->IsEnabled);
 	globals::shaderCache->ProcessPendingClear();
@@ -2026,7 +2045,8 @@ void State::ModifyShaderLookup(const RE::BSShader& a_shader, uint& a_vertexDescr
 										(uint32_t)SIE::ShaderCache::LightingShaderFlags::AnisoLighting |
 										(uint32_t)SIE::ShaderCache::LightingShaderFlags::BaseObjectIsSnow |
 										(uint32_t)SIE::ShaderCache::LightingShaderFlags::Snow |
-										(uint32_t)SIE::ShaderCache::LightingShaderFlags::TruePbr);
+										(uint32_t)SIE::ShaderCache::LightingShaderFlags::TruePbr |
+										(uint32_t)SIE::ShaderCache::LightingShaderFlags::LandscapeSeams);
 
 				a_pixelDescriptor &= ~((uint32_t)SIE::ShaderCache::LightingShaderFlags::AmbientSpecular |
 									   (uint32_t)SIE::ShaderCache::LightingShaderFlags::ShadowDir |
@@ -2109,6 +2129,8 @@ void State::ModifyShaderLookup(const RE::BSShader& a_shader, uint& a_vertexDescr
 			}
 			break;
 		}
+	} else if (a_shader.shaderType.get() == RE::BSShader::Type::Utility) {
+		a_vertexDescriptor &= ~static_cast<uint32_t>(SIE::ShaderCache::UtilityShaderFlags::TruePbr);
 	}
 }
 
@@ -2134,6 +2156,9 @@ void State::RefreshDrawAnnotations()
 
 void State::BeginDrawEvent(std::string_view title)
 {
+#if defined(DEVBENCH_BRIDGE_ENABLED) && defined(NVPERF_ENABLED)
+	NvPerf::PushRange(title);
+#endif
 	// Keep high-frequency draw annotations available to RenderDoc/PIX without
 	// creating a dynamic Tracy source location for every geometry draw.
 	if (pPerf.Get()) {
@@ -2144,12 +2169,18 @@ void State::BeginDrawEvent(std::string_view title)
 
 void State::EndDrawEvent()
 {
+#if defined(DEVBENCH_BRIDGE_ENABLED) && defined(NVPERF_ENABLED)
+	NvPerf::PopRange();
+#endif
 	if (pPerf.Get())
 		pPerf->EndEvent();
 }
 
 void State::BeginPerfEvent(std::string_view title)
 {
+#if defined(DEVBENCH_BRIDGE_ENABLED) && defined(NVPERF_ENABLED)
+	NvPerf::PushRange(title);
+#endif
 #ifdef TRACY_ENABLE
 	// Use dynamic source location so Tracy displays the title as the zone name
 	// rather than the static function name "BeginPerfEvent".
@@ -2170,6 +2201,9 @@ void State::BeginPerfEvent(std::string_view title)
 
 void State::EndPerfEvent()
 {
+#if defined(DEVBENCH_BRIDGE_ENABLED) && defined(NVPERF_ENABLED)
+	NvPerf::PopRange();
+#endif
 #ifdef TRACY_ENABLE
 	if (!s_tracyPerfZones.empty()) {
 		TracyCZoneEnd(s_tracyPerfZones.back());

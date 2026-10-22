@@ -3,6 +3,8 @@
 #include "Buffer.h"
 #include "Utils/LazyShader.h"
 
+#include <cfloat>
+
 #ifdef DEVBENCH_BRIDGE_ENABLED
 #	include "GrassCollisionVertexProbe.h"
 #	include <atomic>
@@ -55,8 +57,8 @@ public:
 
 	struct alignas(16) BoundingBoxPacked
 	{
-		float2 MinExtent = { 0, 0 };
-		float2 MaxExtent = { 0, 0 };
+		float2 MinExtent = { FLT_MAX, FLT_MAX };
+		float2 MaxExtent = { -FLT_MAX, -FLT_MAX };
 		uint IndexStart = 0;
 		uint IndexEnd = 0;
 		float2 pad0;
