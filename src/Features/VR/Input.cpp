@@ -24,6 +24,7 @@ namespace
 	{
 		float x = 0.0f;
 		float y = 0.0f;
+		vr::TrackedDeviceIndex_t device = vr::k_unTrackedDeviceIndexInvalid;
 	};
 
 	enum class CursorOwner
@@ -63,6 +64,7 @@ namespace
 	}();
 	WandMousePointer gLastPresentedWandPointer;
 	std::unordered_map<size_t, ScrollAccum> gVRScrollAccums;
+
 	CursorOwner gCursorOwner = CursorOwner::Desktop;
 	ImVec2 gLastDesktopMousePos = ImVec2(0.0f, 0.0f);
 	ImVec2 gLastControllerCursorPos = ImVec2(0.0f, 0.0f);
@@ -193,6 +195,39 @@ namespace
 		return controllerState == &primaryControllerState ?
 		           static_cast<size_t>(RE::ControllerRole::Primary) :
 		           static_cast<size_t>(RE::ControllerRole::Secondary);
+	}
+
+	void RefreshMenuThumbstickInput(VR& a_vr)
+	{
+		auto* system = RE::BSOpenVR::GetIVRSystem();
+		std::array<vr::TrackedDevicePose_t, vr::k_unMaxTrackedDeviceCount> poses{};
+		const bool havePoses = system && Util::GetDeviceToAbsoluteTrackingPoseCompatible(
+											 vr::TrackingUniverseStanding, 0, poses.data(), static_cast<uint32_t>(poses.size()));
+		const bool leftHanded = RE::BSOpenVRControllerDevice::IsLeftHandedMode();
+		for (const auto hand : { ControllerDevice::Primary, ControllerDevice::Secondary }) {
+			auto& controller = hand == ControllerDevice::Primary ? a_vr.primaryControllerState : a_vr.secondaryControllerState;
+			const auto slot = GetThumbstickIndexForController(&controller, a_vr.primaryControllerState);
+			controller.thumbsticks[slot] = {};
+			const auto index = havePoses ? Util::GetControllerIndexForDevice(hand, leftHanded) : vr::k_unTrackedDeviceIndexInvalid;
+			vr::VRControllerState_t state{};
+			if (index < poses.size() && poses[index].bPoseIsValid && poses[index].bDeviceIsConnected &&
+				system->GetControllerState(index, &state, sizeof(state))) {
+				// Skyrim's thumbstick/trackpad is OpenVR axis 0; queued events may omit its neutral state.
+				const auto& axis = state.rAxis[0];
+				if (std::isfinite(axis.x) && std::isfinite(axis.y) && std::abs(axis.x) <= 1.0f && std::abs(axis.y) <= 1.0f)
+					controller.thumbsticks[slot] = { axis.x, axis.y };
+			}
+			auto& accum = gVRScrollAccums[slot];
+			// A handedness change or reconnect must not inherit another device's partial step.
+			if (accum.device != index)
+				accum = {};
+			accum.device = index;
+			const auto& axis = controller.thumbsticks[slot];
+			if (std::abs(axis.x) <= a_vr.settings.mouseDeadzone || axis.x * accum.x < 0.0f)
+				accum.x = 0.0f;
+			if (std::abs(axis.y) <= a_vr.settings.mouseDeadzone || axis.y * accum.y < 0.0f)
+				accum.y = 0.0f;
+		}
 	}
 
 	bool ApplyThumbstickCursorDelta(RE::VRControllerState& controllerState, size_t thumbstickIndex, float deadzone, float mouseSpeed, ImVec2& mousePos, const ImVec2& displaySize)
@@ -1066,6 +1101,7 @@ void VR::ProcessControllerInputForImGui()
 		}
 	}
 
+	RefreshMenuThumbstickInput(*this);
 	if (useWandNavigation) {
 		if (!testMode)
 			ProcessOCUPointerInput();

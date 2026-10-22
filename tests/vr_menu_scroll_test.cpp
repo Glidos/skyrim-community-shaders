@@ -3,12 +3,73 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+static void Require(bool condition, const char* message)
+{
+	if (!condition)
+		throw std::runtime_error(message);
+}
+
+namespace vr
+{
+	using TrackedDeviceIndex_t = uint32_t;
+	constexpr auto k_unTrackedDeviceIndexInvalid = ~TrackedDeviceIndex_t{};
+	constexpr uint32_t k_unMaxTrackedDeviceCount = 4;
+	enum ETrackingUniverseOrigin
+	{
+		TrackingUniverseStanding
+	};
+	struct TrackedDevicePose_t
+	{
+		bool bPoseIsValid = true, bDeviceIsConnected = true;
+	};
+	struct VRControllerState_t
+	{
+		std::array<ImVec2, 5> rAxis{};
+	};
+}
+
+enum class ControllerDevice
+{
+	Primary,
+	Secondary
+};
+
+namespace Runtime
+{
+	struct System
+	{
+		std::array<vr::VRControllerState_t, vr::k_unMaxTrackedDeviceCount> states{};
+		std::array<bool, vr::k_unMaxTrackedDeviceCount> readable{ true, true, true, true };
+		bool GetControllerState(vr::TrackedDeviceIndex_t index, vr::VRControllerState_t* out, uint32_t size)
+		{
+			Require(index < states.size() && size == sizeof(*out), "controller reads must use valid indices and state size");
+			*out = states[index];
+			return readable[index];
+		}
+	} system;
+	bool available = true, posesAvailable = true, leftHanded = false;
+	std::array<vr::TrackedDevicePose_t, vr::k_unMaxTrackedDeviceCount> poses{};
+	std::array<vr::TrackedDeviceIndex_t, 2> indices{ 2, 3 };
+	void Reset(bool handedness)
+	{
+		system = {};
+		available = posesAvailable = true;
+		leftHanded = handedness;
+		poses = {};
+		indices = { 2, 3 };
+	}
+	size_t PhysicalHand(size_t role) { return role ^ static_cast<size_t>(leftHanded); }
+	ImVec2& Stick(size_t role) { return system.states[indices[PhysicalHand(role)]].rAxis[0]; }
+}
 
 namespace RE
 {
@@ -19,14 +80,33 @@ namespace RE
 	};
 	struct BSOpenVRControllerDevice
 	{
-		static bool IsPrimaryController(size_t device) { return device == 0; }
-		static bool IsSecondaryController(size_t device) { return device == 1; }
+		static bool IsLeftHandedMode() { return Runtime::leftHanded; }
+		static bool IsPrimaryController(size_t device) { return device == Runtime::PhysicalHand(0); }
+		static bool IsSecondaryController(size_t device) { return device == Runtime::PhysicalHand(1); }
+	};
+	struct BSOpenVR
+	{
+		static Runtime::System* GetIVRSystem() { return Runtime::available ? &Runtime::system : nullptr; }
 	};
 	struct VRControllerState
 	{
 		std::array<ImVec2, 2> thumbsticks{};
 		bool buttonHeld = false;
 	};
+}
+
+namespace Util
+{
+	vr::TrackedDeviceIndex_t GetControllerIndexForDevice(ControllerDevice role, bool leftHanded)
+	{
+		return Runtime::indices[static_cast<size_t>(role) ^ static_cast<size_t>(leftHanded)];
+	}
+	bool GetDeviceToAbsoluteTrackingPoseCompatible(vr::ETrackingUniverseOrigin, float, vr::TrackedDevicePose_t* out, uint32_t count)
+	{
+		Require(count == Runtime::poses.size(), "pose reads must use the complete compatible snapshot");
+		std::copy_n(Runtime::poses.begin(), count, out);
+		return Runtime::posesAvailable;
+	}
 }
 
 struct Menu
@@ -52,12 +132,17 @@ struct VR
 		float thumbstickX, thumbstickY;
 		std::string controllerRole;
 	};
+	struct Settings
+	{
+		float mouseDeadzone = .15f;
+	} settings;
 	std::vector<VRControllerEventLog> vrControllerEventLog;
 	RE::VRControllerState primaryControllerState, secondaryControllerState;
 	bool customVRCursorVisible = false;
 	ImVec2 customVRCursorPos{};
 	void ReleaseOCUPointerState() {}
 	void ReleaseMenuImGuiInputState();
+	void PollThumbstickInput();
 	void UpdateControllerState(const Menu::KeyEvent&);
 	void ProcessThumbstickScroll(RE::VRControllerState&, size_t, float, ImGuiIO&);
 	void ProcessThumbstickScrollMouseNavigation(RE::VRControllerState&, size_t, float, ImGuiIO&);
@@ -68,6 +153,7 @@ namespace
 #include "ui_vr_cursor_delta.h"
 #include "ui_vr_scroll_types.h"
 	std::unordered_map<size_t, ScrollAccum> gVRScrollAccums;
+#include "ui_vr_scroll_refresh.h"
 	bool gWandActivationPending = false;
 	bool gHasOCUPointerInputSource = false;
 	bool gUsingOCUPointerInput = false;
@@ -76,46 +162,62 @@ namespace
 	std::array<bool, 2> gBlockRawTriggerUntilRelease{};
 	void CancelWandMouseInput(VR&) {}
 	void ResetCursorOwnershipState() {}
-	void Require(bool condition, const char* message)
-	{
-		if (!condition)
-			throw std::runtime_error(message);
-	}
 }
 
-// Runtime dependencies are substituted; input updates, reset and scrolling use production code.
+// Runtime services are substituted; production polling, reset and scrolling use real ImGui.
 #include "ui_vr_input_release.h"
 #include "ui_vr_scroll.h"
 
-static void CheckScrolling(bool mouseNavigation, size_t hand)
+void VR::PollThumbstickInput()
 {
-	const std::unique_ptr<ImGuiContext, decltype(&ImGui::DestroyContext)> context(ImGui::CreateContext(), ImGui::DestroyContext);
-	auto& io = ImGui::GetIO();
-	io.IniFilename = nullptr;
-	io.DisplaySize = { 1024, 768 };
-	io.ConfigFlags = ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_DockingEnable;
-	io.ConfigInputTrickleEventQueue = false;
-	io.Fonts->AddFontDefault();
-	io.Fonts->Build();
+#include "ui_vr_scroll_poll.h"
+}
+
+struct ScrollFixture
+{
+	std::unique_ptr<ImGuiContext, decltype(&ImGui::DestroyContext)> context{ ImGui::CreateContext(), ImGui::DestroyContext };
 	VR vr;
-	auto& controller = hand == 0 ? vr.primaryControllerState : vr.secondaryControllerState;
-	const auto setStick = [&](float x, float y) { vr.UpdateControllerState({ hand, x, y }); };
-	auto scroll = [&] {
-		if (mouseNavigation)
-			vr.ProcessThumbstickScrollMouseNavigation(controller, hand, .15f, io);
-		else
-			vr.ProcessThumbstickScroll(controller, hand, .15f, io);
-	};
+	size_t hand;
+	bool mouseNavigation;
 	ImGuiWindow* body = nullptr;
-	auto frame = [&] {
-		scroll();
+
+	ScrollFixture(bool mouse, size_t role, bool trickle, bool leftHanded) : hand(role), mouseNavigation(mouse)
+	{
+		Runtime::Reset(leftHanded);
+		gVRScrollAccums.clear();
+		auto& io = ImGui::GetIO();
+		io.IniFilename = nullptr;
+		io.DisplaySize = { 1024, 768 };
+		io.ConfigFlags = ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_DockingEnable;
+		io.ConfigInputTrickleEventQueue = trickle;
+		io.Fonts->AddFontDefault();
+		io.Fonts->Build();
+		io.AddMousePosEvent(100, 100);
+		Frames(2);
+		Require(body->ScrollMax.x > 0 && body->ScrollMax.y > 0, "fixture must scroll on both axes");
+	}
+	RE::VRControllerState& Controller() { return hand == 0 ? vr.primaryControllerState : vr.secondaryControllerState; }
+	void Event(float x, float y) { vr.UpdateControllerState({ Runtime::PhysicalHand(hand), x, y }); }
+	void Stick(float x, float y)
+	{
+		Runtime::Stick(hand) = { x, y };
+		Event(x, y);
+	}
+	void Frame(bool dispatchScroll = true)
+	{
+		vr.PollThumbstickInput();
+		auto& io = ImGui::GetIO();
+		if (dispatchScroll && mouseNavigation)
+			vr.ProcessThumbstickScrollMouseNavigation(Controller(), hand, vr.settings.mouseDeadzone, io);
+		else if (dispatchScroll)
+			vr.ProcessThumbstickScroll(Controller(), hand, vr.settings.mouseDeadzone, io);
 		ImGui::NewFrame();
 		ImGui::SetNextWindowPos({ 20, 20 });
 		ImGui::SetNextWindowSize({ 400, 300 });
 		ImGui::Begin("Settings", nullptr, ImGuiWindowFlags_NoSavedSettings);
 		ImGui::BeginChild("Body", {}, ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar);
 		body = ImGui::GetCurrentWindow();
-		for (int item = 0; item < 50; ++item) {
+		for (int item = 0; item < 200; ++item) {
 			ImGui::PushID(item);
 			ImGui::Button("Setting", { 650, 30 });
 			ImGui::PopID();
@@ -123,77 +225,185 @@ static void CheckScrolling(bool mouseNavigation, size_t hand)
 		ImGui::EndChild();
 		ImGui::End();
 		ImGui::Render();
-	};
-	const auto frames = [&](int count) {
-		for (int frameIndex = 0; frameIndex < count; ++frameIndex)
-			frame();
-	};
-	const auto pressKey = [&](ImGuiKey key) {
-		io.AddKeyEvent(key, true);
-		frame();
-		io.AddKeyEvent(key, false);
-		frames(2);
-	};
-	const auto requireIdle = [&] {
-		const ImVec2 stoppedAt = body->Scroll;
-		frames(30);
+	}
+	void Frames(int count)
+	{
+		for (int i = 0; i < count; ++i) Frame();
+	}
+	void Key(ImGuiKey key)
+	{
+		ImGui::GetIO().AddKeyEvent(key, true);
+		Frame();
+		ImGui::GetIO().AddKeyEvent(key, false);
+		Frames(2);
+	}
+	void RequireIdle()
+	{
+		const auto stoppedAt = body->Scroll;
+		Frames(30);
 		Require(body->Scroll.x == stoppedAt.x && body->Scroll.y == stoppedAt.y,
-			"menu must stay still without fresh stick input");
-	};
-	io.AddMousePosEvent(100, 100);
-	frames(2);
-	Require(body->ScrollMax.x > 0 && body->ScrollMax.y > 0, "fixture must scroll on both axes");
+			"menu must stay still without current physical stick input");
+		ImVec2 cursor{ 200, 200 };
+		Require(!ApplyThumbstickCursorDelta(Controller(), hand, vr.settings.mouseDeadzone, 10, cursor, ImGui::GetIO().DisplaySize),
+			"inactive input must also stop cursor motion");
+	}
+};
 
-	// A menu transition can occur after the last gameplay stick event.
-	setStick(1, -1);
-	controller.buttonHeld = true;
-	vr.ReleaseMenuImGuiInputState();
-	requireIdle();
-	Require(controller.buttonHeld, "menu resets must preserve held shortcut buttons");
-	ImVec2 cursor{ 200, 200 };
-	Require(!ApplyThumbstickCursorDelta(controller, hand, .15f, 10, cursor, io.DisplaySize),
-		"reset must not replay stale cursor movement");
+static void CheckNavigation(ScrollFixture& f)
+{
+	// The physical stick returned to centre without delivering a neutral event.
+	f.Event(1, -1);
+	f.Controller().buttonHeld = true;
+	f.vr.ReleaseMenuImGuiInputState();
+	f.RequireIdle();
+	Require(f.Controller().buttonHeld, "menu resets must preserve held shortcut buttons");
 
-	// Fresh input must scroll both before and after keyboard navigation.
-	setStick(0, -1);
-	frames(12);
-	Require(body->Scroll.y > 0, "fresh controller input must scroll");
-	setStick(0, 0);
-	frame();
-	requireIdle();
-
+	f.Stick(0, -1);
+	f.Frames(12);
+	Require(f.body->Scroll.y > 0, "held input must scroll without repeated thumbstick events");
+	f.Stick(0, 0);
+	f.Frame();
+	f.RequireIdle();
 	for (bool enterBody : { false, true }) {
 		if (enterBody)
-			pressKey(ImGuiKey_Enter);
-		pressKey(ImGuiKey_Tab);
-		Require(GImGui->NavId != 0 && GImGui->NavCursorVisible && (!enterBody || GImGui->NavWindow == body),
-			"Tab must focus the requested window before the scrolling check");
-		const float afterTab = body->Scroll.y;
-		setStick(0, -1);
-		frames(12);
-		Require(body->Scroll.y > afterTab, "Tab must not disable fresh controller scrolling");
-		vr.ReleaseMenuImGuiInputState();
-		requireIdle();
+			f.Key(ImGuiKey_Enter);
+		f.Key(ImGuiKey_Tab);
+		Require(GImGui->NavId != 0 && GImGui->NavCursorVisible && (!enterBody || GImGui->NavWindow == f.body),
+			"Tab must focus the requested window before scrolling");
+		const float afterTab = f.body->Scroll.y;
+		f.Stick(0, -1);
+		f.Frames(12);
+		Require(f.body->Scroll.y > afterTab, "Tab must not disable controller scrolling");
+		Runtime::Stick(f.hand) = {};
+		f.vr.ReleaseMenuImGuiInputState();
+		f.RequireIdle();
 	}
-	setStick(1, 0);
-	frames(12);
-	Require(mouseNavigation ? body->Scroll.x > 0 : body->Scroll.x == 0,
-		"horizontal scrolling must retain the navigation mode policy");
-	Require(ApplyThumbstickCursorDelta(controller, hand, .15f, 10, cursor, io.DisplaySize) && cursor.x > 200,
-		"fresh stick input must still move the cursor");
-	vr.ReleaseMenuImGuiInputState();
-	requireIdle();
+	f.Stick(1, 0);
+	f.Frames(12);
+	Require(f.mouseNavigation ? f.body->Scroll.x > 0 : f.body->Scroll.x == 0, "horizontal scrolling must retain the navigation policy");
+	ImVec2 cursor{ 200, 200 };
+	Require(ApplyThumbstickCursorDelta(f.Controller(), f.hand, .15f, 10, cursor, ImGui::GetIO().DisplaySize) && cursor.x > 200,
+		"current input must still move the cursor");
+	Runtime::Stick(f.hand) = {};
+	f.vr.ReleaseMenuImGuiInputState();
+	f.RequireIdle();
+}
 
-	// Reset must also discard a partial wheel step before accepting fresh input.
-	setStick(0, -.75f);
-	frames(3);
-	vr.ReleaseMenuImGuiInputState();
-	const float beforePartialStep = body->Scroll.y;
-	setStick(0, -.75f);
-	frames(2);
-	Require(body->Scroll.y == beforePartialStep, "reset must clear partial scroll accumulation");
-	setStick(.15f, -.15f);
-	requireIdle();
+static void CheckLostEvents(ScrollFixture& f)
+{
+	f.Stick(0, -1);
+	f.Frames(60);
+	const float heldAt = f.body->Scroll.y;
+	f.Frames(30);
+	Require(f.body->Scroll.y > heldAt, "unchanged held input must not time out without repeated events");
+	Runtime::Stick(f.hand) = {};
+	Runtime::Stick(1 - f.hand) = { 0, 1 };
+	f.RequireIdle();
+	const auto& other = f.hand == 0 ? f.vr.secondaryControllerState : f.vr.primaryControllerState;
+	Require(other.thumbsticks[1 - f.hand].y == 1 && f.Controller().buttonHeld,
+		"a missing neutral event must not clear the other hand or shortcut buttons");
+
+	// A delayed queue batch after a render stall must not restore old movement.
+	f.Event(1, -1);
+	f.RequireIdle();
+	Runtime::Stick(f.hand) = { 0, 1 };
+	const float resumeAt = f.body->Scroll.y;
+	f.Frames(12);
+	Require(f.body->Scroll.y < resumeAt, "physical input must resume without an engine thumbstick event");
+	Runtime::Stick(f.hand) = {};
+	Runtime::Stick(1 - f.hand) = {};
+	f.Frame();
+}
+
+static void CheckPartialSteps(ScrollFixture& f)
+{
+	f.Stick(0, -.75f);
+	f.Frames(3);
+	f.vr.ReleaseMenuImGuiInputState();
+	const float beforeReset = f.body->Scroll.y;
+	f.Frames(2);
+	Require(f.body->Scroll.y == beforeReset, "reset must discard partial scrolling");
+	Runtime::Stick(f.hand) = { .15f, -.15f };
+	f.RequireIdle();
+
+	f.Stick(0, -.75f);
+	f.Frames(3);
+	Runtime::Stick(f.hand) = {};
+	f.Event(1, -1);
+	f.Frame(false);
+	const float beforeNeutral = f.body->Scroll.y;
+	f.Stick(0, -.75f);
+	f.Frames(2);
+	Require(f.body->Scroll.y == beforeNeutral, "a lost neutral event must discard partial scrolling");
+
+	f.Stick(0, .75f);
+	f.Frames(3);
+	const float beforeReverse = f.body->Scroll.y;
+	f.Stick(0, -.75f);
+	f.Frames(5);
+	Require(f.body->Scroll.y > beforeReverse, "direction reversal must not inherit the opposite partial step");
+	Runtime::Stick(f.hand) = {};
+	f.Frame();
+
+	f.Stick(0, -.75f);
+	f.Frames(3);
+	Runtime::Stick(1 - f.hand) = { 0, -.75f };
+	Runtime::leftHanded = !Runtime::leftHanded;
+	const float beforeRemap = f.body->Scroll.y;
+	f.Frames(2);
+	Require(f.body->Scroll.y == beforeRemap, "handedness changes must not transfer partial steps between devices");
+	Runtime::Stick(f.hand) = Runtime::Stick(1 - f.hand) = {};
+	f.Frame();
+}
+
+static void CheckUnavailableInput(ScrollFixture& f)
+{
+	const auto physical = Runtime::PhysicalHand(f.hand);
+	const auto index = Runtime::indices[physical];
+	for (int failure = 0; failure < 7; ++failure) {
+		f.Stick(0, -.75f);
+		f.Frames(3);
+		switch (failure) {
+		case 0:
+			Runtime::available = false;
+			break;
+		case 1:
+			Runtime::posesAvailable = false;
+			break;
+		case 2:
+			Runtime::poses[index].bPoseIsValid = false;
+			break;
+		case 3:
+			Runtime::poses[index].bDeviceIsConnected = false;
+			break;
+		case 4:
+			Runtime::system.readable[index] = false;
+			break;
+		case 5:
+			Runtime::indices[physical] = vr::k_unTrackedDeviceIndexInvalid;
+			break;
+		case 6:
+			Runtime::indices[physical] = vr::k_unMaxTrackedDeviceCount;
+			break;
+		}
+		f.RequireIdle();
+		Runtime::available = Runtime::posesAvailable = true;
+		Runtime::poses[index] = {};
+		Runtime::system.readable[index] = true;
+		Runtime::indices[physical] = index;
+		const float beforeRecovery = f.body->Scroll.y;
+		f.Frames(2);
+		Require(f.body->Scroll.y == beforeRecovery, "input failure must discard partial steps before recovery");
+		Runtime::Stick(f.hand) = {};
+		f.Frame();
+	}
+	for (float invalid : { std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), 1.01f, -1.01f }) {
+		for (bool vertical : { false, true }) {
+			Runtime::Stick(f.hand) = vertical ? ImVec2{ .75f, invalid } : ImVec2{ invalid, -.75f };
+			f.Event(1, -1);
+			f.RequireIdle();
+		}
+	}
 }
 
 int main()
@@ -201,8 +411,15 @@ int main()
 	try {
 		for (bool mouseNavigation : { false, true })
 			for (size_t hand : { 0u, 1u })
-				CheckScrolling(mouseNavigation, hand);
-		std::cout << "VR menu scrolling passed\n";
+				for (bool trickleEvents : { false, true })
+					for (bool leftHanded : { false, true }) {
+						ScrollFixture fixture(mouseNavigation, hand, trickleEvents, leftHanded);
+						CheckNavigation(fixture);
+						CheckLostEvents(fixture);
+						CheckPartialSteps(fixture);
+						CheckUnavailableInput(fixture);
+					}
+		std::cout << "VR menu scrolling passed (16 navigation/hand/queue/handedness combinations)\n";
 		return 0;
 	} catch (const std::exception& error) {
 		std::cerr << error.what() << '\n';

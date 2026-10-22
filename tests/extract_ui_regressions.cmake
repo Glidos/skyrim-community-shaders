@@ -5,6 +5,8 @@ extract_between("${source}" "\tenum class WandPoseUpdateMode" "\tconstexpr float
 extract_between("${source}" "\tWandPoseUpdateMode GetWandPoseUpdateMode(" "\tvoid ResetWandPoseTracking()" "ui_wand_pose.h")
 file(READ "${PROJECT_ROOT}/src/Features/VR/Input.cpp" source)
 extract_between("${source}" "\tstruct ScrollAccum" "\tenum class CursorOwner" "ui_vr_scroll_types.h")
+extract_between("${source}" "\tsize_t GetThumbstickIndexForController(" "\tbool ApplyThumbstickCursorDelta(" "ui_vr_scroll_refresh.h")
+extract_between("${source}" "\tRefreshMenuThumbstickInput(*this);" "\tif (useWandNavigation)" "ui_vr_scroll_poll.h")
 extract_between("${source}" "\tbool ApplyThumbstickCursorDelta(" "\tvoid ApplyThumbstickCursor(" "ui_vr_cursor_delta.h")
 extract_between("${source}" "void VR::UpdateControllerState(" "void VR::ResetComboRecordingState()" "ui_vr_scroll.h")
 extract_between("${source}" "void VR::ReleaseMenuImGuiInputState()" "void VR::ResetMenuInputRuntimeState()" "ui_vr_input_release.h")

@@ -305,7 +305,7 @@ static void CheckRealDockedHeader()
 			return;
 		}
 		const auto title = settings->DockNode->TabBar->BarRect;
-		const float iconSize = GetDockedActionIconSize(1, title.GetHeight());
+		const float iconSize = GetDockedActionIconSize(title.GetHeight());
 		actionPosition = { title.Max.x - ThemeManager::Constants::DOCKED_RIGHT_MARGIN - ThemeManager::Constants::DOCKED_ICON_SPACING - iconSize * .5f,
 			(title.Min.y + title.Max.y) * .5f };
 		if (cover) {
