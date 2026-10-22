@@ -20,8 +20,8 @@ namespace
 					{ "target",
 						{
 							{ "runtime", "VR" },
-							{ "minimumVersion", "3.20" },
-							{ "maximumVersionExclusive", "3.21" },
+							{ "minimumVersion", "3.21" },
+							{ "maximumVersionExclusive", "3.22" },
 						} },
 					{ "settingsContract",
 						{
@@ -44,9 +44,11 @@ int main(int argc, char** argv)
 		std::ifstream input(path);
 		assert(input.is_open());
 		const auto preset = nlohmann::json::parse(input);
-		const auto result = PresetCompatibility::Evaluate(preset, "CSX 3.20.0-VR");
+		const auto result = PresetCompatibility::Evaluate(preset, "CSX 3.21.0-VR");
 		assert(result.disposition == Disposition::kCompatible);
 		assert(result.ShouldApply());
+		assert(preset.at("Version") == "CSX 3.21.0-VR");
+		assert(!PresetCompatibility::Evaluate(preset, "CSX 3.20.0-VR").ShouldApply());
 		assert(preset.at("VR").at("WandAimPitchTrimDegrees") == -26.0);
 		const auto& nr = preset.at("Neural Rendering").at("rendering");
 		assert(nr.at("neuralRenderingEnabled") == false);
@@ -59,11 +61,11 @@ int main(int argc, char** argv)
 																	  { "Blackreach", "AlftandWorld", "Sovngarde", "DLC01SoulCairn", "DLC01Boneyard", "DLC2ApocryphaWorld" }));
 	}
 
-	const auto unmarked = PresetCompatibility::Evaluate(nlohmann::json::object(), "CSX 3.20.0-VR");
+	const auto unmarked = PresetCompatibility::Evaluate(nlohmann::json::object(), "CSX 3.21.0-VR");
 	assert(unmarked.disposition == Disposition::kUnmarked);
 	assert(unmarked.ShouldApply());
 
-	const auto compatible = PresetCompatibility::Evaluate(CompatiblePreset(), "CSX 3.20.0-VR");
+	const auto compatible = PresetCompatibility::Evaluate(CompatiblePreset(), "CSX 3.21.0-VR");
 	assert(compatible.disposition == Disposition::kCompatible);
 	assert(compatible.ShouldApply());
 	assert(compatible.presetId == "csx-unified-balanced");
@@ -73,7 +75,7 @@ int main(int argc, char** argv)
 	assert(!older.ShouldApply());
 
 	for (const auto presetId : { "csx-unified-performance", "csx-unified-balanced", "csx-unified-quality" }) {
-		for (const auto revision : { 8u, 9u, 10u, 11u, 12u, 13u, 14u }) {
+		for (const auto revision : { 8u, 9u, 10u, 11u, 12u, 13u, 14u, 15u }) {
 			auto legacy = CompatiblePreset();
 			auto& marker = legacy["Preset Compatibility"];
 			marker["presetId"] = presetId;
@@ -81,55 +83,59 @@ int main(int argc, char** argv)
 			marker["target"]["minimumVersion"] = "3.20";
 			marker["target"]["maximumVersionExclusive"] = "3.21";
 			assert(PresetCompatibility::Evaluate(legacy, "CSX 3.20.0-VR").ShouldApply());
-			assert(!PresetCompatibility::Evaluate(legacy, "CSX 3.21.0-VR").ShouldApply());
-			assert(!PresetCompatibility::Evaluate(legacy, "CSX 3.20.0-SE").ShouldApply());
+			assert(PresetCompatibility::Evaluate(legacy, "CSX 3.21.0-VR").ShouldApply());
+			assert(PresetCompatibility::Evaluate(legacy, "CSX 3.21.1-VR").ShouldApply());
+			assert(!PresetCompatibility::Evaluate(legacy, "CSX 3.22.0-VR").ShouldApply());
+			assert(!PresetCompatibility::Evaluate(legacy, "CSX 3.21.0-SE").ShouldApply());
 			auto olderRange = legacy;
 			olderRange["Preset Compatibility"]["target"]["minimumVersion"] = "3.19";
 			olderRange["Preset Compatibility"]["target"]["maximumVersionExclusive"] = "3.20";
 			assert(PresetCompatibility::Evaluate(olderRange, "CSX 3.20.0-VR").ShouldApply() == (revision == 8));
+			assert(PresetCompatibility::Evaluate(olderRange, "CSX 3.21.0-VR").ShouldApply() == (revision == 8));
+			assert(!PresetCompatibility::Evaluate(olderRange, "CSX 3.22.0-VR").ShouldApply());
 			marker["presetId"] = "another-preset";
-			assert(!PresetCompatibility::Evaluate(legacy, "CSX 3.20.0-VR").ShouldApply());
+			assert(!PresetCompatibility::Evaluate(legacy, "CSX 3.21.0-VR").ShouldApply());
 		}
 	}
 	for (const auto revision : { 5u, 7u, PresetCompatibility::kSettingsContractRevision + 1 }) {
 		auto incompatibleContract = CompatiblePreset();
 		incompatibleContract["Preset Compatibility"]["settingsContract"]["revision"] = revision;
-		assert(!PresetCompatibility::Evaluate(incompatibleContract, "CSX 3.20.0-VR").ShouldApply());
+		assert(!PresetCompatibility::Evaluate(incompatibleContract, "CSX 3.21.0-VR").ShouldApply());
 	}
-	const auto newer = PresetCompatibility::Evaluate(CompatiblePreset(), "CSX 3.21.0-VR");
+	const auto newer = PresetCompatibility::Evaluate(CompatiblePreset(), "CSX 3.22.0-VR");
 	assert(newer.disposition == Disposition::kRejected);
 	auto thirdParty = CompatiblePreset();
 	thirdParty["Preset Compatibility"]["presetId"] = "another-preset";
 	thirdParty["Preset Compatibility"]["settingsContract"]["revision"] = 8u;
-	assert(!PresetCompatibility::Evaluate(thirdParty, "CSX 3.20.0-VR").ShouldApply());
-	for (const auto label : { "CSX 3.20.x-VR", "CSX 3.20.0.1-VR", "CSX 3.20.-VR", "CSX 3.20.4294967296-VR" }) {
+	assert(!PresetCompatibility::Evaluate(thirdParty, "CSX 3.21.0-VR").ShouldApply());
+	for (const auto label : { "CSX 3.21.x-VR", "CSX 3.21.0.1-VR", "CSX 3.21.-VR", "CSX 3.21.4294967296-VR" }) {
 		assert(!PresetCompatibility::Evaluate(CompatiblePreset(), label).ShouldApply());
 	}
 	auto invalidRange = CompatiblePreset();
 	invalidRange["Preset Compatibility"]["target"]["minimumVersion"] = "3.19.0";
-	assert(!PresetCompatibility::Evaluate(invalidRange, "CSX 3.20.0-VR").ShouldApply());
+	assert(!PresetCompatibility::Evaluate(invalidRange, "CSX 3.21.0-VR").ShouldApply());
 
-	const auto wrongRuntime = PresetCompatibility::Evaluate(CompatiblePreset(), "CSX 3.20.0-SE");
+	const auto wrongRuntime = PresetCompatibility::Evaluate(CompatiblePreset(), "CSX 3.21.0-SE");
 	assert(wrongRuntime.disposition == Disposition::kRejected);
 
 	auto futureContract = CompatiblePreset();
 	futureContract["Preset Compatibility"]["contractVersion"] = 2u;
-	const auto unsupported = PresetCompatibility::Evaluate(futureContract, "CSX 3.20.0-VR");
+	const auto unsupported = PresetCompatibility::Evaluate(futureContract, "CSX 3.21.0-VR");
 	assert(unsupported.disposition == Disposition::kRejected);
 
 	auto malformed = CompatiblePreset();
 	malformed["Preset Compatibility"]["target"].erase("maximumVersionExclusive");
-	const auto invalid = PresetCompatibility::Evaluate(malformed, "CSX 3.20.0-VR");
+	const auto invalid = PresetCompatibility::Evaluate(malformed, "CSX 3.21.0-VR");
 	assert(invalid.disposition == Disposition::kRejected);
 
 	auto previousSettings = CompatiblePreset();
 	previousSettings["Preset Compatibility"]["presetId"] = "another-preset";
 	previousSettings["Preset Compatibility"]["settingsContract"]["revision"] = PresetCompatibility::kSettingsContractRevision - 1;
-	assert(!PresetCompatibility::Evaluate(previousSettings, "CSX 3.20.0-VR").ShouldApply());
+	assert(!PresetCompatibility::Evaluate(previousSettings, "CSX 3.21.0-VR").ShouldApply());
 
 	auto futureSettings = CompatiblePreset();
 	futureSettings["Preset Compatibility"]["settingsContract"]["revision"] = PresetCompatibility::kSettingsContractRevision + 1;
-	const auto unsupportedSettings = PresetCompatibility::Evaluate(futureSettings, "CSX 3.20.0-VR");
+	const auto unsupportedSettings = PresetCompatibility::Evaluate(futureSettings, "CSX 3.21.0-VR");
 	assert(unsupportedSettings.disposition == Disposition::kRejected);
 	for (const auto key : { "contractVersion", "revision" }) {
 		auto oversized = CompatiblePreset();
@@ -138,12 +144,12 @@ int main(int argc, char** argv)
 			marker[key] = (std::uint64_t{ 1 } << 32) + PresetCompatibility::kContractVersion;
 		else
 			marker["settingsContract"][key] = (std::uint64_t{ 1 } << 32) + PresetCompatibility::kSettingsContractRevision;
-		assert(!PresetCompatibility::Evaluate(oversized, "CSX 3.20.0-VR").ShouldApply());
+		assert(!PresetCompatibility::Evaluate(oversized, "CSX 3.21.0-VR").ShouldApply());
 	}
 
 	auto invalidSourceHash = CompatiblePreset();
 	invalidSourceHash["Preset Compatibility"]["settingsContract"]["sourceTreeSha256"] = std::string(64, 'Z');
-	const auto malformedSourceHash = PresetCompatibility::Evaluate(invalidSourceHash, "CSX 3.20.0-VR");
+	const auto malformedSourceHash = PresetCompatibility::Evaluate(invalidSourceHash, "CSX 3.21.0-VR");
 	assert(malformedSourceHash.disposition == Disposition::kRejected);
 
 	PresetCompatibility::Publish(compatible);

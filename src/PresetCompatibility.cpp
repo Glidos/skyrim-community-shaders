@@ -68,14 +68,14 @@ namespace
 	bool IsCompatibleLegacyUnifiedPreset(const PresetCompatibility::Evaluation& a_evaluation, const Version& a_current)
 	{
 		// Older Unified presets use current loaders and defaults for added optional fields.
-		if (a_current.major != 3 || a_current.minor != 20 || a_current.runtime != "VR" ||
+		if (a_current.major != 3 || (a_current.minor != 20 && a_current.minor != 21) || a_current.runtime != "VR" ||
 			(a_evaluation.presetId != "csx-unified-performance" &&
 				a_evaluation.presetId != "csx-unified-balanced" &&
 				a_evaluation.presetId != "csx-unified-quality"))
 			return false;
 		return (a_evaluation.settingsContractRevision == 8 &&
 				   a_evaluation.minimumVersion == "3.19" && a_evaluation.maximumVersionExclusive == "3.20") ||
-		       ((a_evaluation.settingsContractRevision >= 8 && a_evaluation.settingsContractRevision <= 14) &&
+		       ((a_evaluation.settingsContractRevision >= 8 && a_evaluation.settingsContractRevision <= 15) &&
 				   a_evaluation.minimumVersion == "3.20" && a_evaluation.maximumVersionExclusive == "3.21");
 	}
 

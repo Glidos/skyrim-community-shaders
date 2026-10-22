@@ -855,7 +855,9 @@ check to a warning.
 ## Updating the plugin version
 
 1. Update the appropriate `CSX_VERSION` values in
-   `CMakePresets.json`.
+   `CMakePresets.json` and the matching default in `CMakeLists.txt`.
+   Keep the project version derived from these values; release automation
+   supplies the stable patch version.
 2. Confirm the compiled plugin's `Plugin::VERSION_LABEL` will be identical.
 3. Rebuild the caches; do not reuse archives whose `Info.ini` has the previous
    label.
