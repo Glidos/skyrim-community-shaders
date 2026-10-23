@@ -170,6 +170,7 @@ struct AdaptiveBrightness : Feature
 		bool enabled = true;
 		bool useAmbientEffectLighting = false;
 		float godrayFinalBrightness = AdaptiveBalanceGodray::kDefault;
+		float volumetricClarity = AdaptiveBalanceGodray::kClarityDefault;
 		float moonReflectionStrength = kMoonReflectionStrengthDefault;
 		float dayStartHour = 9.0f;
 		float nightStartHour = 21.0f;
@@ -345,6 +346,8 @@ struct AdaptiveBrightness : Feature
 	bool IsRuntimeEnabled() const;
 	/** Return the global final godray multiplier, or neutral while Adaptive Balance is bypassed. */
 	float GetEffectiveGodrayFinalBrightness() const;
+	/** Return smooth volumetric haze suppression, or zero while Adaptive Balance is bypassed. */
+	float GetEffectiveVolumetricClarity() const;
 	/** Resolves the exterior night specular multiplier; neutral indoors and while bypassed. */
 	float GetEffectiveMoonReflectionStrength() const;
 	/** Resolves shared lighting and refreshes its matching per-draw point-light requirement. */

@@ -48,6 +48,7 @@ namespace SharedData
 		float4 VRFoveationCenterOffsets;  // xy=left eye offset, zw=right eye offset
 
 		float4 VolumetricLightingCustomColor;  // rgb=custom color, w=contribution
+		float4 VolumetricLightingClarity;      // x=smooth haze suppression, yzw=reserved
 	};
 
 	struct GrassLightingSettings

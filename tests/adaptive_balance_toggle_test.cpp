@@ -161,6 +161,7 @@ struct AdaptiveBrightness
 	bool IsRuntimeAvailable() const;
 	bool IsRuntimeEnabled() const;
 	float GetEffectiveGodrayFinalBrightness() const;
+	float GetEffectiveVolumetricClarity() const;
 	float GetEffectiveMoonReflectionStrength() const;
 	void SetEnabled(bool enabled);
 	PerFrameData GetCommonBufferData() const;
@@ -1152,9 +1153,11 @@ void CheckFinalGodrayBrightness()
 {
 	AdaptiveBrightness balance;
 	assert(balance.settings.godrayFinalBrightness == 1.0f);
+	assert(balance.settings.volumetricClarity == 0.0f);
 	balance.settings.globalProfile.advanced = false;
 	balance.throwProfileResolution = true;
 	balance.settings.godrayFinalBrightness = 4.5f;
+	balance.settings.volumetricClarity = 0.75f;
 	for (unsigned flags = 0; flags < 32; ++flags) {
 		balance.loaded = (flags & 1) != 0;
 		balance.SetEnabled((flags & 2) != 0);
@@ -1163,7 +1166,9 @@ void CheckFinalGodrayBrightness()
 		RE::PlayerCharacter::GetSingleton()->hasCell = (flags & 16) != 0;
 		const bool active = (flags & 7) == 7 && !(flags & 8) && (flags & 16);
 		assert(balance.GetEffectiveGodrayFinalBrightness() == (active ? 4.5f : 1.0f));
+		assert(balance.GetEffectiveVolumetricClarity() == (active ? 0.75f : 0.0f));
 		assert(balance.settings.godrayFinalBrightness == 4.5f);
+		assert(balance.settings.volumetricClarity == 0.75f);
 	}
 	globals::state->menuOpen = false;
 	RE::PlayerCharacter::GetSingleton()->hasCell = true;
@@ -1189,6 +1194,19 @@ void CheckFinalGodrayBrightness()
 		assert(AdaptiveBalanceGodray::IsValidFinalBrightness(runtimeInput) == valid);
 	}
 	assert(balance.profileResolutions == 0);
+	for (const auto& [input, expected, valid] : std::array<BrightnessCase, 8>{ { { 0.0f, 0.0f, true }, { 0.5f, 0.5f, true }, { 1.0f, 1.0f, true },
+			 { -0.01f, 0.0f, false }, { 1.01f, 1.0f, false },
+			 { std::numeric_limits<float>::infinity(), 0.0f, false },
+			 { -std::numeric_limits<float>::infinity(), 0.0f, false },
+			 { std::numeric_limits<float>::quiet_NaN(), 0.0f, false } } }) {
+		volatile float runtimeInput = input;
+		balance.settings.volumetricClarity = runtimeInput;
+		assert(balance.GetEffectiveVolumetricClarity() == expected);
+		assert(AdaptiveBalanceGodray::SanitizeClarity(runtimeInput) == expected);
+		assert(ValidateAdaptiveBalanceVisuals({ { "volumetricClarity", input } }).empty() == valid);
+	}
+	for (const auto& value : std::vector<json>{ true, nullptr, "1" })
+		assert(!ValidateAdaptiveBalanceVisuals({ { "volumetricClarity", value } }).empty());
 	for (const auto value : { 0.0, 1.0, 5.0 })
 		assert(ValidateAdaptiveBalanceVisuals({ { "godrayFinalBrightness", value } }).empty());
 	for (const auto& value : std::vector<json>{ -0.01, 5.01, true, nullptr, "1",

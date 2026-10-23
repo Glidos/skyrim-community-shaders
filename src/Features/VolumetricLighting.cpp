@@ -197,6 +197,7 @@ json VolumetricLighting::CapturePerformanceSettingsState() const
 void VolumetricLighting::DrawGodrayTuningSettings()
 {
 	MenuUI::SectionHeading("Godray tuning");
+	MenuUI::DetailNote("These controls affect shafts and volumetric haze together. Adaptive Balance's Volumetric Clarity reduces the smooth veil while retaining local shaft detail.");
 	const bool tuningAvailable = IsImageSpaceReplacementEnabled();
 	if (!tuningAvailable) {
 		ImGui::TextDisabled("Godray tuning requires ImageSpace pixel-shader replacement.");

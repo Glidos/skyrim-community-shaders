@@ -406,8 +406,9 @@ namespace
 			double minimum;
 			double maximum;
 		};
-		static constexpr std::array<Field, 25> fields{ { { "skySaturation", 0.0, 2.0 },
+		static constexpr std::array<Field, 26> fields{ { { "skySaturation", 0.0, 2.0 },
 			{ "godrayFinalBrightness", AdaptiveBalanceGodray::kMin, AdaptiveBalanceGodray::kMax },
+			{ "volumetricClarity", AdaptiveBalanceGodray::kClarityMin, AdaptiveBalanceGodray::kClarityMax },
 			{ "moonReflectionStrength", AdaptiveBrightness::kMoonReflectionStrengthMin, AdaptiveBrightness::kMoonReflectionStrengthMax },
 			{ "cloudBrightness", 0.0, 2.0 },
 			{ "cloudSaturation", 0.0, 2.0 },
@@ -512,6 +513,7 @@ namespace
 		configured["lightingAdvanced"] = profile.advanced;
 		configured["useAmbientEffectLighting"] = balance.settings.useAmbientEffectLighting;
 		configured["godrayFinalBrightness"] = balance.settings.godrayFinalBrightness;
+		configured["volumetricClarity"] = balance.settings.volumetricClarity;
 		configured["moonReflectionStrength"] = balance.settings.moonReflectionStrength;
 		auto effective = waterFields(balance.GetEffectiveWaterAppearanceSettings());
 		const auto lighting = balance.GetEffectiveSharedLightingSettings();
@@ -536,6 +538,7 @@ namespace
 		effective["appearance"] = lighting.appearance;
 		effective["useAmbientEffectLighting"] = balance.IsRuntimeEnabled() && balance.settings.useAmbientEffectLighting;
 		effective["godrayFinalBrightness"] = balance.GetEffectiveGodrayFinalBrightness();
+		effective["volumetricClarity"] = balance.GetEffectiveVolumetricClarity();
 		effective["moonReflectionStrength"] = balance.GetEffectiveMoonReflectionStrength();
 		return { { "global", std::move(configured) }, { "effective", std::move(effective) } };
 	}
@@ -1229,6 +1232,7 @@ namespace
 				balance.settings.globalProfile = profile;
 				balance.settings.useAmbientEffectLighting = visuals.value("useAmbientEffectLighting", balance.settings.useAmbientEffectLighting);
 				balance.settings.godrayFinalBrightness = visuals.value("godrayFinalBrightness", balance.settings.godrayFinalBrightness);
+				balance.settings.volumetricClarity = visuals.value("volumetricClarity", balance.settings.volumetricClarity);
 				balance.settings.moonReflectionStrength = visuals.value("moonReflectionStrength", balance.settings.moonReflectionStrength);
 				menu->RequestSettingsDirtyCheck();
 				return { { "action", action }, { "persisted", false }, { "status", BuildStatus() } };
@@ -1450,7 +1454,7 @@ namespace MenuDevBenchBridge
 			const json finalBrightnessSchema = {
 				{ "type", "number" }, { "minimum", AdaptiveBalanceGodray::kMin }, { "maximum", AdaptiveBalanceGodray::kMax },
 				{ "default", AdaptiveBalanceGodray::kDefault },
-				{ "description", "Global final godray brightness after gamma conversion; independent of profile intensity and lightingAdvanced. Adaptive Balance off makes the effective multiplier 1. Does not enable godrays." }
+				{ "description", "Global final volumetric lighting brightness after gamma conversion and clarity: master for both shafts and haze. The legacy godrayFinalBrightness key is retained. Independent of profile intensity and lightingAdvanced. Adaptive Balance off makes the effective multiplier 1. Does not enable godrays." }
 			};
 			document["inputSchema"]["properties"]["visuals"]["properties"]["godrayFinalBrightness"] = finalBrightnessSchema;
 			json finalBrightnessStatus = {
@@ -1458,6 +1462,16 @@ namespace MenuDevBenchBridge
 				{ "properties", { { "global", { { "type", "object" }, { "properties", { { "godrayFinalBrightness", finalBrightnessSchema } } } } },
 									{ "effective", { { "type", "object" }, { "properties", { { "godrayFinalBrightness", finalBrightnessSchema } } } } } } }
 			};
+			const json claritySchema = {
+				{ "type", "number" }, { "minimum", AdaptiveBalanceGodray::kClarityMin }, { "maximum", AdaptiveBalanceGodray::kClarityMax },
+				{ "default", AdaptiveBalanceGodray::kClarityDefault },
+				{ "description", "Global smooth volumetric haze suppression: 0 preserves the original image, 1 removes the estimated local background while retaining bright shaft detail. Approximate spatial separation; broad smooth beams can also fade. Ordinary fog, scene textures and lens flare are unchanged. Independent of lightingAdvanced; Adaptive Balance off makes the effective value 0. Does not enable volumetric lighting or override zero master brightness. Omission preserves the saved value." }
+			};
+			document["inputSchema"]["properties"]["visuals"]["properties"]["volumetricClarity"] = claritySchema;
+			for (const auto* layer : { "global", "effective" })
+				finalBrightnessStatus["properties"][layer]["properties"]["volumetricClarity"] = claritySchema;
+			document["description"] = document["description"].get<std::string>() +
+			                          " set_adaptive_balance_visuals accepts volumetricClarity in [0,1] (default 0) to reduce the smooth volumetric veil while retaining local shaft detail. Broad smooth beams can also fade. godrayFinalBrightness remains the master for shafts and haze; both controls work without lightingAdvanced.";
 			const json moonReflectionSchema = {
 				{ "type", "number" }, { "minimum", AdaptiveBrightness::kMoonReflectionStrengthMin }, { "maximum", AdaptiveBrightness::kMoonReflectionStrengthMax },
 				{ "default", AdaptiveBrightness::kMoonReflectionStrengthDefault },

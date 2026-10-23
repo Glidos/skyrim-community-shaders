@@ -79,8 +79,8 @@
       "maximumVersionExclusive": "3.22"
     },
     "settingsContract": {
-      "revision": 15,
-      "sourceTreeSha256": "FF189A455CA87C568EDE92F63B310905A0EF1ABDF9A5FA91D74045CBF4CEE969"
+      "revision": 16,
+      "sourceTreeSha256": "1325A4B73B170B183C984D582448F21C37E19D7230D770E50E6039D008A59479"
     }
   },
   "Upscaling": {
@@ -442,6 +442,7 @@
   },
   "Adaptive Balance": {
     "godrayFinalBrightness": 1.0,
+    "volumetricClarity": 0.0,
     "depthOfField": {
       "enabled": false,
       "fixUnderwaterFogDofBlur": false,

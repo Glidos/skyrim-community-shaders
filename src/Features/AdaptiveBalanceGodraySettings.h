@@ -10,6 +10,9 @@ namespace AdaptiveBalanceGodray
 	inline constexpr float kMin = 0.0f;
 	inline constexpr float kMax = 5.0f;
 	inline constexpr float kDefault = 1.0f;
+	inline constexpr float kClarityMin = 0.0f;
+	inline constexpr float kClarityMax = 1.0f;
+	inline constexpr float kClarityDefault = 0.0f;
 
 	/** Validate external writes without silently replacing an unsupported value. */
 	[[nodiscard]] inline bool IsValidFinalBrightness(double a_value) noexcept
@@ -21,5 +24,11 @@ namespace AdaptiveBalanceGodray
 	[[nodiscard]] inline float SanitizeFinalBrightness(float a_value) noexcept
 	{
 		return Util::ClampFinite(a_value, kMin, kMax, kDefault);
+	}
+
+	/** Bound smooth volumetric haze suppression; invalid values preserve the original image. */
+	[[nodiscard]] inline float SanitizeClarity(float a_value) noexcept
+	{
+		return Util::ClampFinite(a_value, kClarityMin, kClarityMax, kClarityDefault);
 	}
 }

@@ -39,7 +39,9 @@ namespace Runtime
 		} effective;
 		bool enabled = true;
 		float finalBrightness = 1.0f;
+		float volumetricClarity = 0.0f;
 		float GetEffectiveGodrayFinalBrightness() const { return enabled ? finalBrightness : 1.0f; }
+		float GetEffectiveVolumetricClarity() const { return enabled ? volumetricClarity : 0.0f; }
 		EffectiveSettings GetEffectiveSharedLightingSettings() const { return enabled ? effective : EffectiveSettings{}; }
 	};
 

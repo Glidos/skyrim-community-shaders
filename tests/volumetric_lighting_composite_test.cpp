@@ -9,6 +9,7 @@
 #include <d3d11shader.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -49,18 +50,19 @@ namespace
 		ComPtr<ID3D11ShaderResourceView> srv;
 		ComPtr<ID3D11RenderTargetView> rtv;
 
-		Texture(ID3D11Device* device, const char* name, UINT flags, const float4* pixels = nullptr)
+		Texture(ID3D11Device* device, const char* name, UINT flags, const float4* pixels = nullptr, UINT width = 2, UINT height = 1)
 		{
 			D3D11_TEXTURE2D_DESC desc{};
-			desc.Width = 2;
-			desc.Height = desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
+			desc.Width = width;
+			desc.Height = height;
+			desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
 			desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
 			desc.BindFlags = flags;
 			if (!flags) {
 				desc.Usage = D3D11_USAGE_STAGING;
 				desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
 			}
-			D3D11_SUBRESOURCE_DATA initial{ pixels, 2 * sizeof(float4), 0 };
+			D3D11_SUBRESOURCE_DATA initial{ pixels, width * sizeof(float4), 0 };
 			Check(device->CreateTexture2D(&desc, pixels ? &initial : nullptr, resource.GetAddressOf()));
 			Util::SetResourceName(resource.Get(), "VolumetricTest::%s", name);
 			if (flags & D3D11_BIND_SHADER_RESOURCE) {
@@ -78,6 +80,7 @@ namespace
 	{
 		ID3D11DeviceContext* context;
 		bool volumetric, lensFlare;
+		UINT width, height;
 		ComPtr<ID3D11PixelShader> pixel;
 		ComPtr<ID3D11VertexShader> vertex;
 		ComPtr<ID3D11ShaderReflection> reflection;
@@ -87,11 +90,13 @@ namespace
 		static constexpr float4 shaftPixels[2]{ { 0.5f, 0, 0, 0 }, { 0.5f, 0, 0, 0 } };
 		static constexpr float4 flarePixels[2]{ { 0.1f, 0.2f, 0.3f, 0 }, { 0.1f, 0.2f, 0.3f, 0 } };
 
-		Fixture(ID3D11Device* device, ID3D11DeviceContext* context, bool vr, bool vl, bool lf) :
+		Fixture(ID3D11Device* device, ID3D11DeviceContext* context, bool vr, bool vl, bool lf, UINT width = 2, UINT height = 1,
+			D3D11_FILTER filter = D3D11_FILTER_MIN_MAG_MIP_POINT) :
 			context(context), volumetric(vl), lensFlare(lf),
-			output(device, "Output", D3D11_BIND_RENDER_TARGET), staging(device, "Readback", 0),
-			shafts(device, "Shafts", D3D11_BIND_SHADER_RESOURCE, shaftPixels),
-			flare(device, "Flare", D3D11_BIND_SHADER_RESOURCE, flarePixels)
+			width(width), height(height),
+			output(device, "Output", D3D11_BIND_RENDER_TARGET, nullptr, width, height), staging(device, "Readback", 0, nullptr, width, height),
+			shafts(device, "Shafts", D3D11_BIND_SHADER_RESOURCE, width == 2 && height == 1 ? shaftPixels : nullptr, width, height),
+			flare(device, "Flare", D3D11_BIND_SHADER_RESOURCE, width == 2 && height == 1 ? flarePixels : nullptr, width, height)
 		{
 			std::vector<D3D_SHADER_MACRO> defines{ { "PSHADER", "1" } };
 			if (vr)
@@ -118,7 +123,7 @@ namespace
 			Check(device->CreateVertexShader(vertexCode->GetBufferPointer(), vertexCode->GetBufferSize(), nullptr, vertex.GetAddressOf()));
 			Util::SetResourceName(vertex.Get(), "VolumetricTest::FullscreenVS");
 			D3D11_SAMPLER_DESC desc{};
-			desc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+			desc.Filter = filter;
 			desc.AddressU = desc.AddressV = desc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
 			desc.MaxLOD = D3D11_FLOAT32_MAX;
 			Check(device->CreateSamplerState(&desc, sampler.GetAddressOf()));
@@ -130,6 +135,7 @@ namespace
 				Require(shared->Offset("SharedData::VolumetricLightingSaturation") == offsetof(SharedDataCB, VolumetricLightingSaturation), "Saturation offset mismatch");
 				Require(shared->Offset("SharedData::VolumetricLightingOpacity") == offsetof(SharedDataCB, VolumetricLightingOpacity), "Opacity offset mismatch");
 				Require(shared->Offset("SharedData::GodrayFinalBrightness") == offsetof(SharedDataCB, GodrayFinalBrightness), "Final brightness offset mismatch");
+				Require(shared->Offset("SharedData::VolumetricLightingClarity") == offsetof(SharedDataCB, VolumetricLightingClarity), "Clarity offset mismatch");
 				Require(shared->Offset("SharedData::VolumetricLightingCustomColor") == offsetof(SharedDataCB, VolumetricLightingCustomColor), "Custom color offset mismatch");
 				geometry = std::make_unique<Buffer>(device, reflection.Get(), "PerGeometry");
 				frame = std::make_unique<Buffer>(device, reflection.Get(), "FrameBuffer::PerFrame");
@@ -138,10 +144,11 @@ namespace
 			}
 		}
 
-		float4 Draw(float4 authored, float saturation = 1, float4 custom = {}, float opacity = 1, bool linear = false, float finalBrightness = 1, float gamma = 1)
+		float4 Draw(float4 authored, float saturation = 1, float4 custom = {}, float opacity = 1, bool linear = false, float finalBrightness = 1, float gamma = 1, float clarity = 0)
 		{
 			SharedDataCB data{};
 			data.GodrayFinalBrightness = finalBrightness;
+			data.VolumetricLightingClarity.x = clarity;
 			data.VolumetricLightingSaturation = saturation;
 			data.VolumetricLightingOpacity = opacity;
 			data.VolumetricLightingCustomColor = custom;
@@ -149,6 +156,13 @@ namespace
 		}
 
 		float4 Draw(float4 authored, const SharedDataCB& data, bool linear = false, float gamma = 1)
+		{
+			const auto result = DrawPixels(authored, data, linear, gamma);
+			Require(std::abs(result[0].x - result[1].x) < 1e-5f && std::abs(result[0].y - result[1].y) < 1e-5f && std::abs(result[0].z - result[1].z) < 1e-5f, "Stereo eyes differ");
+			return result[0];
+		}
+
+		std::vector<float4> DrawPixels(float4 authored, const SharedDataCB& data, bool linear = false, float gamma = 1)
 		{
 			context->ClearState();
 			feature->SetMember("SharedData::linearLightingSettings", "enableLinearLighting", uint(linear));
@@ -168,7 +182,7 @@ namespace
 			context->PSSetSamplers(0, 2, samplers);
 			ID3D11RenderTargetView* target = output.rtv.Get();
 			context->OMSetRenderTargets(1, &target, nullptr);
-			D3D11_VIEWPORT viewport{ 0, 0, 2, 1, 0, 1 };
+			D3D11_VIEWPORT viewport{ 0, 0, static_cast<float>(width), static_cast<float>(height), 0, 1 };
 			context->RSSetViewports(1, &viewport);
 			context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 			context->VSSetShader(vertex.Get(), nullptr, 0);
@@ -178,11 +192,11 @@ namespace
 			context->CopyResource(staging.resource.Get(), output.resource.Get());
 			D3D11_MAPPED_SUBRESOURCE mapped{};
 			Check(context->Map(staging.resource.Get(), 0, D3D11_MAP_READ, 0, &mapped));
-			std::array<float4, 2> result;
-			std::memcpy(result.data(), mapped.pData, sizeof(result));
+			std::vector<float4> result(width * height);
+			for (UINT row = 0; row < height; ++row)
+				std::memcpy(result.data() + row * width, static_cast<const std::byte*>(mapped.pData) + row * mapped.RowPitch, width * sizeof(float4));
 			context->Unmap(staging.resource.Get(), 0);
-			Require(std::abs(result[0].x - result[1].x) < 1e-5f && std::abs(result[0].y - result[1].y) < 1e-5f && std::abs(result[0].z - result[1].z) < 1e-5f, "Stereo eyes differ");
-			return result[0];
+			return result;
 		}
 	};
 
@@ -196,6 +210,119 @@ namespace
 		}
 	}
 
+	void VerifyClarity(ID3D11Device* device, ID3D11DeviceContext* context, bool vr)
+	{
+		struct Case
+		{
+			UINT width, height;
+			float scale;
+		};
+		for (const auto& config : { Case{ 128, 96, 1 }, Case{ 128, 96, 0.5f }, Case{ 129, 97, 1 } }) {
+			const UINT width = vr ? config.width * 2 - (config.width % 2) : config.width;
+			Fixture fixture(device, context, vr, true, false, width, config.height);
+			const UINT activeWidth = static_cast<UINT>(width * config.scale);
+			const UINT activeHeight = static_cast<UINT>(config.height * config.scale);
+			const UINT eyeWidth = vr ? activeWidth / 2 : activeWidth;
+			const UINT eyeCount = vr ? 2 : 1;
+			fixture.frame->SetVariable("FrameBuffer::DynamicResolutionParams1", float4{ config.scale, config.scale, config.scale, config.scale });
+			fixture.frame->SetVariable("FrameBuffer::DynamicResolutionParams2", float4{ 1 / config.scale, 1 / config.scale, config.scale, config.scale });
+			SharedDataCB data{};
+			data.GodrayFinalBrightness = data.VolumetricLightingOpacity = data.VolumetricLightingSaturation = 1;
+			std::vector<float4> pixels(width * config.height);
+			const auto upload = [&](bool beams) {
+				std::fill(pixels.begin(), pixels.end(), float4{});
+				for (UINT y = 0; y < activeHeight; ++y) {
+					for (UINT x = 0; x < activeWidth; ++x) {
+						const UINT eye = vr && x >= eyeWidth ? 1 : 0;
+						const float haze = eye == 0 ? 0.2f : 0.65f;
+						const UINT beamColumn = eye * eyeWidth + eyeWidth / 2;
+						pixels[y * width + x].x = haze + (beams && x == beamColumn ? 0.6f : 0.0f);
+					}
+				}
+				context->UpdateSubresource(fixture.shafts.resource.Get(), 0, nullptr, pixels.data(), width * sizeof(float4), 0);
+			};
+			const auto sample = [&](const std::vector<float4>& output, UINT eye, UINT sourceColumn) {
+				const UINT x = std::min(width - 1, static_cast<UINT>((eye * eyeWidth + sourceColumn + 0.5f) / config.scale));
+				return output[(config.height / 2) * width + x];
+			};
+			for (float gamma : { 0.5f, 1.0f, 2.0f }) {
+				upload(false);
+				data.VolumetricLightingClarity.x = 1;
+				const auto clear = fixture.DrawPixels({ 1, 1, 1, 0 }, data, true, gamma);
+				for (const auto& pixel : clear)
+					Expect(pixel, {}, "Uniform haze survived clarity or sampled another eye/inactive pixels");
+
+				for (float clarity : { 0.0f, 0.5f }) {
+					data.VolumetricLightingClarity.x = clarity;
+					const auto output = fixture.DrawPixels({ 1, 1, 1, 0 }, data, true, gamma);
+					for (UINT eye = 0; eye < eyeCount; ++eye) {
+						const float expected = std::pow(eye == 0 ? 0.2f : 0.65f, gamma) * (1 - clarity);
+						Expect(sample(output, eye, eyeWidth / 4), { expected, expected, expected, 0 }, "Clarity did not interpolate the processed haze floor");
+					}
+				}
+
+				upload(true);
+				data.VolumetricLightingClarity.x = 1;
+				const auto beams = fixture.DrawPixels({ 1, 1, 1, 0 }, data, true, gamma);
+				for (UINT eye = 0; eye < eyeCount; ++eye) {
+					const float haze = eye == 0 ? 0.2f : 0.65f;
+					const float expected = std::pow(haze + 0.6f, gamma) - std::pow(haze, gamma);
+					Expect(sample(beams, eye, eyeWidth / 2), { expected, expected, expected, 0 }, "Clarity lost bright shaft detail");
+					Expect(sample(beams, eye, eyeWidth / 4), {}, "Clarity retained broad haze beside a shaft");
+				}
+				for (const auto& pixel : beams)
+					Require(std::isfinite(pixel.x) && pixel.x >= 0, "Clarity created negative or nonfinite lighting");
+			}
+
+			data.GodrayFinalBrightness = 0;
+			for (const auto& pixel : fixture.DrawPixels({ 1, 1, 1, 0 }, data))
+				Expect(pixel, {}, "Clarity overrode zero master brightness");
+			data.GodrayFinalBrightness = 1;
+			for (float invalid : { std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN() }) {
+				data.VolumetricLightingClarity.x = invalid;
+				const auto output = fixture.DrawPixels({ 1, 1, 1, 0 }, data);
+				Expect(sample(output, 0, eyeWidth / 4), { 0.2f, 0.2f, 0.2f, 0 }, "Invalid shader clarity did not preserve the original image");
+			}
+		}
+	}
+
+	void VerifyClarityFiltering(ID3D11Device* device, ID3D11DeviceContext* context, bool vr)
+	{
+		const UINT width = vr ? 258 : 129;
+		constexpr UINT height = 97;
+		constexpr float scaleX = 0.725f, scaleY = 0.61f;
+		const UINT activeWidth = static_cast<UINT>(width * scaleX);
+		const UINT activeHeight = static_cast<UINT>(height * scaleY);
+		for (auto filter : { D3D11_FILTER_MIN_MAG_MIP_POINT, D3D11_FILTER_MIN_MAG_MIP_LINEAR }) {
+			Fixture fixture(device, context, vr, true, false, width, height, filter);
+			fixture.frame->SetVariable("FrameBuffer::DynamicResolutionParams1", float4{ scaleX, scaleY, scaleX, scaleY });
+			fixture.frame->SetVariable("FrameBuffer::DynamicResolutionParams2", float4{ 1 / scaleX, 1 / scaleY, scaleX, scaleX });
+			std::vector<float4> pixels(width * height, { 10, 0, 0, 0 });
+			for (UINT y = 0; y < activeHeight; ++y)
+				for (UINT x = 0; x < activeWidth; ++x)
+					pixels[y * width + x].x = vr && x >= activeWidth / 2 ? 0.65f : 0.2f;
+			context->UpdateSubresource(fixture.shafts.resource.Get(), 0, nullptr, pixels.data(), width * sizeof(float4), 0);
+			SharedDataCB data{};
+			data.GodrayFinalBrightness = data.VolumetricLightingSaturation = 1;
+			for (float opacity : { 0.0f, 0.5f, 1.0f, 2.0f }) {
+				data.VolumetricLightingOpacity = opacity;
+				for (float clarity : { 0.0f, 0.5f, 1.0f }) {
+					data.VolumetricLightingClarity.x = clarity;
+					const auto output = fixture.DrawPixels({ 1, 1, 1, 0 }, data);
+					for (UINT y = 0; y < height; ++y) {
+						for (UINT x = 0; x < width; ++x) {
+							const float haze = vr && (x + 0.5f) / width >= 0.5f ? 0.65f : 0.2f;
+							const float expected = (1 - std::pow(1 - haze, opacity)) * (1 - clarity);
+							if (std::abs(output[y * width + x].x - expected) >= 2e-4f)
+								std::cerr << "filter=" << filter << " x=" << x << " y=" << y << " opacity=" << opacity << " clarity=" << clarity << '\n';
+							Expect(output[y * width + x], { expected, expected, expected, 0 }, "Filtering sampled outside the active eye or changed clarity/opacity composition");
+						}
+					}
+				}
+			}
+		}
+	}
+
 	void Verify(Fixture& fixture)
 	{
 		const float4 authored{ 2.0f, 0.6f, 0.2f, 0 };
@@ -204,6 +331,7 @@ namespace
 		if (!fixture.volumetric) {
 			for (float brightness : { 0.0f, 0.5f, 1.0f, 2.0f, 5.0f }) {
 				Expect(fixture.Draw(authored, 0, { 0, 1, 0, 1 }, 0, false, brightness), lens, "Godray tuning affected lens flare");
+				Expect(fixture.Draw(authored, 0, { 0, 1, 0, 1 }, 0, false, brightness, 1, 1), lens, "Clarity affected lens flare without volumetric lighting");
 			}
 			return;
 		}
@@ -271,6 +399,8 @@ namespace
 		const float4 neutral{ 1, 0.3f, 0.1f, 0 };
 		balance.finalBrightness = 2.0f;
 		expectRuntime({ 2, 0.6f, 0.2f, 0 }, "Final brightness did not reach composite");
+		balance.volumetricClarity = 1.0f;
+		expectRuntime({}, "Clarity did not remove uniform haze through runtime upload");
 		balance.enabled = false;
 		expectRuntime(neutral, "Disabled Adaptive Balance retained final brightness");
 		balance.enabled = true;
@@ -332,6 +462,9 @@ int main()
 		Check(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
 			D3D11_SDK_VERSION, device.GetAddressOf(), nullptr, context.GetAddressOf()));
 		for (bool vr : { false, true }) {
+			VerifyClarity(device.Get(), context.Get(), vr);
+			VerifyClarityFiltering(device.Get(), context.Get(), vr);
+			std::cout << (vr ? "VR" : "SE/AE") << " clarity: haze, shafts, gamma, dynamic bounds and master gate passed\n";
 			for (const auto mode : { std::array{ true, false }, std::array{ false, true }, std::array{ true, true } }) {
 				Fixture fixture(device.Get(), context.Get(), vr, mode[0], mode[1]);
 				Verify(fixture);

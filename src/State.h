@@ -478,6 +478,7 @@ public:
 		float4 VRFoveationCenterOffsets;  // xy=left eye offset, zw=right eye offset
 
 		float4 VolumetricLightingCustomColor;  // rgb=custom color, w=contribution
+		float4 VolumetricLightingClarity;      // x=smooth haze suppression, yzw=reserved
 	};
 #ifdef _MSC_VER
 #	pragma warning(pop)
@@ -487,7 +488,8 @@ public:
 	static_assert(offsetof(SharedDataCB, VolumetricLightingSaturation) % 16 == 0);
 	static_assert(offsetof(SharedDataCB, GodrayFinalBrightness) == 516);
 	static_assert(offsetof(SharedDataCB, SSSHumanMaleIntensity) == 520);
-	static_assert(sizeof(SharedDataCB) == 672);
+	static_assert(sizeof(SharedDataCB) == 688);
+	static_assert(offsetof(SharedDataCB, VolumetricLightingClarity) == 672);
 	static_assert(offsetof(SharedDataCB, VolumetricShadowsEnabled) == offsetof(SharedDataCB, SSSHumanFemaleBaseSaturation) + sizeof(float));
 	static_assert(offsetof(SharedDataCB, VolumetricLightingOpacity) == offsetof(SharedDataCB, VolumetricShadowsEnabled) + sizeof(uint));
 	static_assert(offsetof(SharedDataCB, AmbientSHR) % 16 == 0);

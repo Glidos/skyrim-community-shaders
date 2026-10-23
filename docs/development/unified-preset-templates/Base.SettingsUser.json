@@ -429,6 +429,7 @@
   },
   "Adaptive Balance": {
     "godrayFinalBrightness": 1.0,
+    "volumetricClarity": 0.0,
     "depthOfField": {
       "enabled": false,
       "fixUnderwaterFogDofBlur": false,

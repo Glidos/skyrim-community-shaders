@@ -2,8 +2,8 @@
 #include "Common/DummyVSTexCoord.hlsl"
 #include "Common/FrameBuffer.hlsli"
 #include "Common/SharedData.hlsli"
-#include "Common/VRStereoEffects.hlsli"
 #include "Common/VolumetricLighting.hlsli"
+#include "Common/VolumetricLightingClarity.hlsli"
 
 typedef VS_OUTPUT PS_INPUT;
 
@@ -31,16 +31,21 @@ PS_OUTPUT main(PS_INPUT input)
 	float3 color = 0.0.xxx;
 
 #	if defined(VOLUMETRIC_LIGHTING)
-	float2 screenPosition = FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(input.TexCoord);
-#		if defined(VR)
 	uint eyeIndex = Stereo::GetEyeIndexFromTexCoord(input.TexCoord);
-	screenPosition = VRStereoEffects::ClampDynamicStereoUVToEyeTexel(
-		screenPosition, eyeIndex, VLSourceTex, FrameBuffer::DynamicResolutionParams1.xy);
-#		endif
-	float volumetricLightingPower = VolumetricLighting::ApplyOpacity(VLSourceTex.Sample(VLSourceSampler, screenPosition).x, SharedData::VolumetricLightingOpacity);
+	VolumetricLighting::SamplingRegion region = VolumetricLighting::GetSamplingRegion(
+		VLSourceTex, FrameBuffer::DynamicResolutionParams1.xy, eyeIndex);
+	float2 screenPosition = clamp(FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(input.TexCoord),
+		region.minimumUV, region.maximumUV);
+	float rawVolumetricLighting = VLSourceTex.Sample(VLSourceSampler, screenPosition).x;
+	float volumetricLightingPower = VolumetricLighting::ApplyOpacity(rawVolumetricLighting, SharedData::VolumetricLightingOpacity);
 	float3 godrayColor = VolumetricLighting::ApplyColor(VolumetricLightingColor.xyz,
 		SharedData::VolumetricLightingSaturation, SharedData::VolumetricLightingCustomColor);
-	color += godrayColor * Color::VolumetricLighting(volumetricLightingPower.xxx).x * SharedData::GodrayFinalBrightness;
+	float processedPower = Color::VolumetricLighting(volumetricLightingPower.xxx).x;
+	float clarity = SharedData::GodrayFinalBrightness > 0.0 ? SharedData::VolumetricLightingClarity.x : 0.0;
+	float clearPower = VolumetricLighting::ApplyClarity(VLSourceTex, VLSourceSampler, screenPosition,
+		region, rawVolumetricLighting, processedPower,
+		clarity, SharedData::VolumetricLightingOpacity);
+	color += godrayColor * clearPower * SharedData::GodrayFinalBrightness;
 #	endif
 
 #	if defined(LENS_FLARE)

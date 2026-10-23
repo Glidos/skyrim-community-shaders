@@ -15,11 +15,11 @@
     "tierOrder": ["Performance", "Balanced", "Quality"],
     "baseTemplate": {
         "path": "docs/development/unified-preset-templates/Base.SettingsUser.json",
-        "sha256": "562AFA8EAF022899721A3DAAB9C9B4DABABC2C77F67F5DCEE03B85B5D7D37F0C"
+        "sha256": "85870A1ED343B33562C99225E99B8690B62FB1B9F603BD7E820695C1387A14F7"
     },
     "runtimeSettingsContract": {
-        "revision": 15,
-        "sourceTreeSha256": "FF189A455CA87C568EDE92F63B310905A0EF1ABDF9A5FA91D74045CBF4CEE969",
+        "revision": 16,
+        "sourceTreeSha256": "1325A4B73B170B183C984D582448F21C37E19D7230D770E50E6039D008A59479",
         "inventory": {
             "fixedSources": [
                 "src/Api/FeatureDevBenchBridge.cpp",
@@ -808,6 +808,7 @@
             { "path": ["Screenshot", "SettingsSchemaVersion"], "value": 2 },
             { "path": ["Screenshot", "Sequence", "Schedule", "Basis"], "value": "game_frames" },
             { "path": ["Advanced", "PBR Verbose JSON Logging"], "value": false },
+            { "path": ["Adaptive Balance", "volumetricClarity"], "value": 0.0 },
             { "path": ["Adaptive Balance", "globalProfile", "advanced"], "value": true },
             { "path": ["Adaptive Balance", "globalProfile", "skySaturation"], "value": 1.0 },
             {

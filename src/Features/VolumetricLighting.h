@@ -44,7 +44,7 @@ private:
 public:
 	virtual inline std::string GetName() override { return "Volumetric Lighting"; }
 	virtual inline std::string GetShortName() override { return "VolumetricLighting"; }
-	virtual std::string_view GetShaderCacheAbiVersion() override { return "godray-linear-depth-blur-2"; }
+	virtual std::string_view GetShaderCacheAbiVersion() override { return "godray-volumetric-clarity-3"; }
 	virtual std::string_view GetCategory() const override { return FeatureCategories::kLighting; }
 
 	virtual std::pair<std::string, std::vector<std::string>> GetFeatureSummary() override
