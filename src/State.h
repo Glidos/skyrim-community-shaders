@@ -459,7 +459,7 @@ public:
 		float PBRMetalHighlightScale;   // matches HLSL SharedData::PBRMetalHighlightScale
 		uint HasDirectionalShadows;     // Exterior or interior sun directional shadow availability
 		float VolumetricLightingSaturation;
-		float GodrayFinalBrightness;
+		float VolumetricLightingReserved;
 		float SSSHumanMaleIntensity;
 		float SSSHumanMaleSaturation;
 		float SSSHumanMaleBrightness;
@@ -478,7 +478,7 @@ public:
 		float4 VRFoveationCenterOffsets;  // xy=left eye offset, zw=right eye offset
 
 		float4 VolumetricLightingCustomColor;  // rgb=custom color, w=contribution
-		float4 VolumetricLightingClarity;      // x=smooth haze suppression, yzw=reserved
+		float4 VolumetricLightingClarity;      // x=haze suppression, y=shaft intensity, zw=reserved
 	};
 #ifdef _MSC_VER
 #	pragma warning(pop)
@@ -486,7 +486,7 @@ public:
 	STATIC_ASSERT_ALIGNAS_16(SharedDataCB);
 	static_assert(offsetof(SharedDataCB, RefractionScale) % 16 == 0);
 	static_assert(offsetof(SharedDataCB, VolumetricLightingSaturation) % 16 == 0);
-	static_assert(offsetof(SharedDataCB, GodrayFinalBrightness) == 516);
+	static_assert(offsetof(SharedDataCB, VolumetricLightingReserved) == 516);
 	static_assert(offsetof(SharedDataCB, SSSHumanMaleIntensity) == 520);
 	static_assert(sizeof(SharedDataCB) == 688);
 	static_assert(offsetof(SharedDataCB, VolumetricLightingClarity) == 672);

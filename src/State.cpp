@@ -2312,8 +2312,7 @@ void State::UpdateSharedData([[maybe_unused]] bool a_inWorld, [[maybe_unused]] b
 		const auto& volumetricShadows = globals::features::volumetricShadows;
 		data.VolumetricShadowsEnabled = volumetricShadows.loaded && volumetricShadows.settings.Enabled;
 		const auto godrayProfile = a_inWorld ? globals::features::volumetricLighting.GetRuntimeGodrayProfile() : VolumetricLighting::GodrayProfile{};
-		data.GodrayFinalBrightness = a_inWorld ? globals::features::adaptiveBrightness.GetEffectiveGodrayFinalBrightness() : AdaptiveBalanceGodray::kDefault;
-		data.VolumetricLightingClarity = { a_inWorld ? globals::features::adaptiveBrightness.GetEffectiveVolumetricClarity() : AdaptiveBalanceGodray::kClarityDefault, 0, 0, 0 };
+		data.VolumetricLightingClarity = { a_inWorld ? globals::features::adaptiveBrightness.GetEffectiveVolumetricClarity() : AdaptiveBalanceGodray::kClarityDefault, godrayProfile.ShaftIntensity, 0, 0 };
 		data.VolumetricLightingOpacity = godrayProfile.Opacity;
 		data.VolumetricLightingSaturation = godrayProfile.Saturation;
 		data.VolumetricLightingCustomColor = {

@@ -160,7 +160,6 @@ struct AdaptiveBrightness
 
 	bool IsRuntimeAvailable() const;
 	bool IsRuntimeEnabled() const;
-	float GetEffectiveGodrayFinalBrightness() const;
 	float GetEffectiveVolumetricClarity() const;
 	float GetEffectiveMoonReflectionStrength() const;
 	void SetEnabled(bool enabled);
@@ -1149,7 +1148,7 @@ void CheckSkyGradientOwnership()
 	balance = {};
 }
 
-void CheckFinalGodrayBrightness()
+void CheckVolumetricClarity()
 {
 	AdaptiveBrightness balance;
 	assert(balance.settings.godrayFinalBrightness == 1.0f);
@@ -1165,7 +1164,6 @@ void CheckFinalGodrayBrightness()
 		globals::state->menuOpen = (flags & 8) != 0;
 		RE::PlayerCharacter::GetSingleton()->hasCell = (flags & 16) != 0;
 		const bool active = (flags & 7) == 7 && !(flags & 8) && (flags & 16);
-		assert(balance.GetEffectiveGodrayFinalBrightness() == (active ? 4.5f : 1.0f));
 		assert(balance.GetEffectiveVolumetricClarity() == (active ? 0.75f : 0.0f));
 		assert(balance.settings.godrayFinalBrightness == 4.5f);
 		assert(balance.settings.volumetricClarity == 0.75f);
@@ -1189,7 +1187,6 @@ void CheckFinalGodrayBrightness()
 		// Runtime inputs keep nonfinite cases meaningful under /fp:fast.
 		volatile float runtimeInput = input;
 		balance.settings.godrayFinalBrightness = runtimeInput;
-		assert(balance.GetEffectiveGodrayFinalBrightness() == expected);
 		assert(AdaptiveBalanceGodray::SanitizeFinalBrightness(runtimeInput) == expected);
 		assert(AdaptiveBalanceGodray::IsValidFinalBrightness(runtimeInput) == valid);
 	}
@@ -1208,7 +1205,7 @@ void CheckFinalGodrayBrightness()
 	for (const auto& value : std::vector<json>{ true, nullptr, "1" })
 		assert(!ValidateAdaptiveBalanceVisuals({ { "volumetricClarity", value } }).empty());
 	for (const auto value : { 0.0, 1.0, 5.0 })
-		assert(ValidateAdaptiveBalanceVisuals({ { "godrayFinalBrightness", value } }).empty());
+		assert(!ValidateAdaptiveBalanceVisuals({ { "godrayFinalBrightness", value } }).empty());
 	for (const auto& value : std::vector<json>{ -0.01, 5.01, true, nullptr, "1",
 			 std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN() })
 		assert(!ValidateAdaptiveBalanceVisuals({ { "godrayFinalBrightness", value } }).empty());
@@ -1299,7 +1296,7 @@ void CheckVanillaPointLightRequirements()
 int main()
 {
 	CheckVanillaPointLightRequirements();
-	CheckFinalGodrayBrightness();
+	CheckVolumetricClarity();
 	CheckAppearanceProfiles();
 	CheckSkyGradientOwnership();
 	CheckWeatherColors();

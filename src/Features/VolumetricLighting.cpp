@@ -197,7 +197,7 @@ json VolumetricLighting::CapturePerformanceSettingsState() const
 void VolumetricLighting::DrawGodrayTuningSettings()
 {
 	MenuUI::SectionHeading("Godray tuning");
-	MenuUI::DetailNote("These controls affect shafts and volumetric haze together. Adaptive Balance's Volumetric Clarity reduces the smooth veil while retaining local shaft detail.");
+	MenuUI::DetailNote("These controls affect separated shaft detail. Adaptive Balance's Atmospheric Clarity controls broad volumetric haze independently. Broad uniform beams may be classified as haze; invalid depth preserves the original lighting.");
 	const bool tuningAvailable = IsImageSpaceReplacementEnabled();
 	if (!tuningAvailable) {
 		ImGui::TextDisabled("Godray tuning requires ImageSpace pixel-shader replacement.");
@@ -223,8 +223,8 @@ void VolumetricLighting::DrawGodrayProfileSettings(const char* label, GodrayProf
 			ImGui::TextUnformatted(tooltip);
 	};
 
-	drawSlider("Godray Intensity", profile.ShaftIntensity, 0.0f, VolumetricLightingTuning::kShaftIntensityMax, "Linearly scales volumetric godray brightness.");
-	drawSlider("Godray Opacity", profile.Opacity, 0.0f, VolumetricLightingTuning::kOpacityMax, "Shapes shaft visibility after temporal blending without changing weather density. 1.0 is default.");
+	drawSlider("Godray Intensity", profile.ShaftIntensity, 0.0f, VolumetricLightingTuning::kShaftIntensityMax, "Scales separated godray detail without changing broad haze. 1.0 is default.");
+	drawSlider("Godray Opacity", profile.Opacity, 0.0f, VolumetricLightingTuning::kOpacityMax, "Shapes the separated shaft contribution after colour conversion without changing broad haze. 1.0 is default.");
 	drawSlider("Godray Saturation", profile.Saturation, 0.0f, VolumetricLightingTuning::kSaturationMax, "Adjusts weather godray saturation while preserving brightness. 1.0 is default.");
 
 	drawSlider("Custom Color Contribution", profile.CustomColorContribution, 0.0f, 1.0f, "Blends your custom color into the authored weather godray color.");
@@ -730,9 +730,7 @@ VolumetricLighting::VolumetricLightingDescriptor* VolumetricLighting::ApplyVolum
 		return descriptor;
 	}
 
-	const auto profile = feature.GetRuntimeGodrayProfile();
-	const float skySyncIntensity = globals::features::skySync.GetVolumetricLightingIntensityFactor();
-	const float intensityScale = skySyncIntensity * profile.ShaftIntensity;
+	const float intensityScale = globals::features::skySync.GetVolumetricLightingIntensityFactor();
 	if (VolumetricLightingTuning::IsNear(intensityScale, 1.0f))
 		return descriptor;
 

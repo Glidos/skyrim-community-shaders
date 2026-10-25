@@ -3,7 +3,6 @@
 #include "Common/FrameBuffer.hlsli"
 #include "Common/SharedData.hlsli"
 #include "Common/VolumetricLighting.hlsli"
-#include "Common/VolumetricLightingClarity.hlsli"
 
 typedef VS_OUTPUT PS_INPUT;
 
@@ -13,6 +12,8 @@ struct PS_OUTPUT
 };
 
 #if defined(PSHADER)
+#	include "Common/VolumetricLightingClarity.hlsli"
+
 SamplerState VLSourceSampler : register(s0);
 SamplerState LFSourceSampler : register(s1);
 
@@ -37,15 +38,25 @@ PS_OUTPUT main(PS_INPUT input)
 	float2 screenPosition = clamp(FrameBuffer::GetDynamicResolutionAdjustedScreenPosition(input.TexCoord),
 		region.minimumUV, region.maximumUV);
 	float rawVolumetricLighting = VLSourceTex.Sample(VLSourceSampler, screenPosition).x;
-	float volumetricLightingPower = VolumetricLighting::ApplyOpacity(rawVolumetricLighting, SharedData::VolumetricLightingOpacity);
-	float3 godrayColor = VolumetricLighting::ApplyColor(VolumetricLightingColor.xyz,
-		SharedData::VolumetricLightingSaturation, SharedData::VolumetricLightingCustomColor);
-	float processedPower = Color::VolumetricLighting(volumetricLightingPower.xxx).x;
-	float clarity = SharedData::GodrayFinalBrightness > 0.0 ? SharedData::VolumetricLightingClarity.x : 0.0;
-	float clearPower = VolumetricLighting::ApplyClarity(VLSourceTex, VLSourceSampler, screenPosition,
-		region, rawVolumetricLighting, processedPower,
-		clarity, SharedData::VolumetricLightingOpacity);
-	color += godrayColor * clearPower * SharedData::GodrayFinalBrightness;
+	float processedPower = Color::VolumetricLighting(VolumetricLighting::ApplyOpacity(rawVolumetricLighting, 1.0).xxx).x;
+	float3 hazeColor = VolumetricLighting::SanitizeColor(VolumetricLightingColor.xyz);
+	float clarity = VolumetricLighting::IsFinite(SharedData::VolumetricLightingClarity.x) ? saturate(SharedData::VolumetricLightingClarity.x) : 0.0;
+	float intensity = VolumetricLighting::IsFinite(SharedData::VolumetricLightingClarity.y) ? clamp(SharedData::VolumetricLightingClarity.y, 0.0, 3.0) : 1.0;
+	color += hazeColor * processedPower;
+	bool tuneShafts = intensity != 1.0 || SharedData::VolumetricLightingOpacity != 1.0 ||
+	                  SharedData::VolumetricLightingSaturation != 1.0 || SharedData::VolumetricLightingCustomColor.w > 0.0;
+	[branch] if (clarity > 0.0 || tuneShafts)
+	{
+		float2 hazeAndShafts;
+		if (VolumetricLighting::SeparateLighting(VLSourceTex, SharedData::DepthTexture, VLSourceSampler,
+				screenPosition, input.TexCoord, region, FrameBuffer::DynamicResolutionParams1.xy, eyeIndex,
+				rawVolumetricLighting, processedPower, SharedData::CameraData, hazeAndShafts)) {
+			float3 shaftColor = VolumetricLighting::ApplyColor(VolumetricLightingColor.xyz,
+				SharedData::VolumetricLightingSaturation, SharedData::VolumetricLightingCustomColor);
+			float shaftPower = VolumetricLighting::ApplyOpacity(hazeAndShafts.y, SharedData::VolumetricLightingOpacity);
+			color = hazeColor * hazeAndShafts.x * (1.0 - clarity) + shaftColor * shaftPower * intensity;
+		}
+	}
 #	endif
 
 #	if defined(LENS_FLARE)
@@ -57,7 +68,7 @@ PS_OUTPUT main(PS_INPUT input)
 	}
 #	endif
 
-	psout.Color = color;
+	psout.Color = VolumetricLighting::SanitizeColor(color);
 
 	return psout;
 }

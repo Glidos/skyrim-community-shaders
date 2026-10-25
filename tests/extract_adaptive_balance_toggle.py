@@ -61,7 +61,6 @@ def extract(root, output):
         function(source, "void AdaptiveBrightness::SetEnabled("),
         function(source, "void AdaptiveBrightness::SetPerformanceCostMeasurementEnabled("),
         function(source, "bool AdaptiveBrightness::IsRuntimeEnabled()"),
-        function(source, "float AdaptiveBrightness::GetEffectiveGodrayFinalBrightness()"),
         function(source, "float AdaptiveBrightness::GetEffectiveVolumetricClarity()"),
         function(source, "float AdaptiveBrightness::GetEffectiveMoonReflectionStrength()"),
         between(source, "LinearLighting::Settings AdaptiveBrightness::GetNeutralLinearLightingSettings()", "void AdaptiveBrightness::UpdateVanillaPointLightData("),

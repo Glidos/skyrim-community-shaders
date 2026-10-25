@@ -4,7 +4,7 @@
 
 #include <cmath>
 
-/** Global brightness applied after the godray colour transform. */
+/** Atmospheric clarity and retained legacy preset validation. */
 namespace AdaptiveBalanceGodray
 {
 	inline constexpr float kMin = 0.0f;
@@ -20,7 +20,7 @@ namespace AdaptiveBalanceGodray
 		return std::isfinite(a_value) && a_value >= kMin && a_value <= kMax;
 	}
 
-	/** Keep malformed saved values neutral and bound the final GPU multiplier. */
+	/** Keep the inert legacy preset/API value finite and compatible with older exports. */
 	[[nodiscard]] inline float SanitizeFinalBrightness(float a_value) noexcept
 	{
 		return Util::ClampFinite(a_value, kMin, kMax, kDefault);
