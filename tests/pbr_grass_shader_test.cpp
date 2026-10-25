@@ -39,13 +39,13 @@ namespace
 			throw std::runtime_error(reason);
 	}
 
-	ComPtr<ID3DBlob> CompileProgram(const D3D_SHADER_MACRO* defines, bool vertex, const char* source = nullptr)
+	ComPtr<ID3DBlob> CompileProgram(const D3D_SHADER_MACRO* defines, bool vertex, const char* source = nullptr, const char* entry = "VerifyLegacyColor")
 	{
 		Includes includes;
 		ComPtr<ID3DBlob> bytecode, errors;
 		constexpr UINT options = D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_WARNINGS_ARE_ERRORS | D3DCOMPILE_OPTIMIZATION_LEVEL3;
 		const auto result = source ?
-		                        D3DCompile(source, std::strlen(source), "grass-color-regression", defines, &includes, "VerifyLegacyColor", "ps_5_0", options, 0, bytecode.GetAddressOf(), errors.GetAddressOf()) :
+		                        D3DCompile(source, std::strlen(source), "grass-color-regression", defines, &includes, entry, vertex ? "vs_5_0" : "ps_5_0", options, 0, bytecode.GetAddressOf(), errors.GetAddressOf()) :
 		                        D3DCompileFromFile(L"package/Shaders/RunGrass.hlsl", defines, &includes, "main", vertex ? "vs_5_0" : "ps_5_0", options, 0, bytecode.GetAddressOf(), errors.GetAddressOf());
 		if (errors)
 			std::cerr << static_cast<const char*>(errors->GetBufferPointer());
@@ -53,7 +53,7 @@ namespace
 		return bytecode;
 	}
 
-	ComPtr<ID3D11ShaderReflection> Compile(bool vertex, bool vr, bool enhanced, bool pbr, bool depth, bool alpha, bool features, bool optimized)
+	std::vector<D3D_SHADER_MACRO> GrassDefines(bool vertex, bool vr, bool enhanced, bool pbr, bool depth, bool alpha, bool features, bool optimized)
 	{
 		std::vector<D3D_SHADER_MACRO> defines{ { vertex ? "VSHADER" : "PSHADER", "1" } };
 		if (optimized)
@@ -74,6 +74,12 @@ namespace
 				defines.push_back({ feature, "1" });
 		}
 		defines.push_back({ nullptr, nullptr });
+		return defines;
+	}
+
+	ComPtr<ID3D11ShaderReflection> Compile(bool vertex, bool vr, bool enhanced, bool pbr, bool depth, bool alpha, bool features, bool optimized)
+	{
+		auto defines = GrassDefines(vertex, vr, enhanced, pbr, depth, alpha, features, optimized);
 		auto bytecode = CompileProgram(defines.data(), vertex);
 		ComPtr<ID3D11ShaderReflection> reflection;
 		Check(D3DReflect(bytecode->GetBufferPointer(), bytecode->GetBufferSize(), IID_PPV_ARGS(reflection.GetAddressOf())));
@@ -178,11 +184,14 @@ float4 VerifyLegacyColor(float4 input : COLOR0) : SV_Target0 {
 					std::memcmp(legacy->GetBufferPointer(), combined->GetBufferPointer(), legacy->GetBufferSize()) == 0,
 			"Combined PBR grass changed legacy color conversion or light scaling");
 	}
+
+#include "grass_alpha_gpu.h"
 }
 
 int main()
 {
 	try {
+		const auto alphaCases = CheckGrassAlphaCoverage();
 		unsigned compiled = 0;
 		CheckSimplifiedPBR(false);
 		CheckSimplifiedPBR(true);
@@ -223,7 +232,8 @@ int main()
 				}
 			}
 		}
-		std::cout << compiled << " strict grass permutations and material/geometry reflection passed\n";
+		std::cout << compiled << " strict grass permutations and material/geometry reflection passed; "
+				  << alphaCases << " WARP alpha-coverage cases passed\n";
 		return 0;
 	} catch (const std::exception& error) {
 		std::cerr << error.what() << '\n';

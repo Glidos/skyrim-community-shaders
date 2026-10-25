@@ -562,13 +562,15 @@ PS_OUTPUT RenderBasicGrass(PS_INPUT input, bool frontFace)
 
 	float4 baseColor = TexBaseSampler.SampleBias(SampBaseSampler, input.TexCoord.xy, SharedData::MipBias);
 
-#	if defined(RENDER_DEPTH)
+#	if defined(RENDER_DEPTH) || defined(DO_ALPHA_TEST)
 	float diffuseAlpha = input.Color.w * baseColor.w;
 
 	if ((diffuseAlpha - AlphaTestRefRS) < 0) {
 		discard;
 	}
+#	endif
 
+#	if defined(RENDER_DEPTH)
 	psout.PS.xyz = input.Depth.xxx / input.Depth.yyy;
 	psout.PS.w = diffuseAlpha;
 #	else
@@ -780,7 +782,7 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	baseColor.xyz = Color::Diffuse(baseColor.xyz);
 
-#		if defined(RENDER_DEPTH)
+#		if defined(RENDER_DEPTH) || defined(DO_ALPHA_TEST)
 	float diffuseAlpha = input.Color.w * baseColor.w;
 	if ((diffuseAlpha - AlphaTestRefRS) < 0) {
 		discard;
