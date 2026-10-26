@@ -677,6 +677,8 @@ struct GrassBucketRenderer::Impl
 	void EraseResident(RE::BSMultiStreamInstanceTriShape* shape);
 	void AssignQueue(Source& source);
 	void MakeNativeVisible(RE::BSMultiStreamInstanceTriShape* shape);
+	/** @brief Update native visibility while the caller holds captureMutex exclusively. */
+	void MakeNativeVisibleLocked(RE::BSMultiStreamInstanceTriShape* shape);
 	bool MakeResidentRoom(const Source& source);
 	void PrepareFrame();
 	void RefreshFades();
@@ -833,6 +835,11 @@ void GrassBucketRenderer::Impl::AssignQueue(Source& source)
 void GrassBucketRenderer::Impl::MakeNativeVisible(RE::BSMultiStreamInstanceTriShape* shape)
 {
 	std::scoped_lock lock(captureMutex);
+	MakeNativeVisibleLocked(shape);
+}
+
+void GrassBucketRenderer::Impl::MakeNativeVisibleLocked(RE::BSMultiStreamInstanceTriShape* shape)
+{
 	const auto found = residents.find(shape);
 	if (found == residents.end())
 		return;
@@ -2006,43 +2013,48 @@ void GrassBucketRenderer::Impl::PrepareCulling(RE::BSRenderPass* pass, RE::BSSha
 			bucket.plan.Retire();
 			if (bucket.sources.empty())
 				continue;
-			auto& source = bucket.sources.front();
-			if (!source.queue || source.queue->queuedFrame != frame)
-				continue;
-			if (source.queue->members.size() != bucket.sources.size()) {
+			{
+				// Removal hooks must wait until native setup finishes reading the representative.
+				std::scoped_lock lock(captureMutex);
+				auto& source = bucket.sources.front();
+				if (!source.queue || source.queue->queuedFrame != frame)
+					continue;
+				if (source.queue->members.size() != bucket.sources.size()) {
 #ifdef DEVBENCH_BRIDGE_ENABLED
-				if (diagnostics.load(std::memory_order_relaxed))
-					RejectDraw(DrawRejection::QueueMembership);
+					if (diagnostics.load(std::memory_order_relaxed))
+						RejectDraw(DrawRejection::QueueMembership);
 #endif
-				continue;
+					continue;
+				}
+				RE::BSMultiStreamInstanceTriShape* representative = source.identity;
+				if (source.queue && source.queue->queuedFrame == frame)
+					representative = source.queue->representative.load(std::memory_order_acquire);
+				const auto member = std::find_if(bucket.sources.begin(), bucket.sources.end(), [&](const Source& item) {
+					return item.identity == representative && item.lifetime->alive.load(std::memory_order_acquire) &&
+					       item.generation == item.lifetime->generation.load(std::memory_order_acquire) && CurrentGeometry(item) && CurrentContract(item) && CurrentGroups(item);
+				});
+				if (member == bucket.sources.end() || member->lights.size() > UINT8_MAX)
+					continue;
+				auto prototype = *pass;
+				prototype.geometry = representative;
+				prototype.shaderProperty = member->property.get();
+				prototype.sceneLights = member->lights.empty() ? nullptr : member->lights.data();
+				prototype.numLights = uint8_t(member->lights.size());
+				MakeNativeVisibleLocked(representative);
+				const bool reuseCurrent = savedGeometryValid && pass == currentSetupPass && shader == currentNativeShader && flags == currentSetupFlags &&
+				                          pass->geometry == representative && pass->shaderProperty == member->property.get() &&
+				                          pass->numLights == member->lights.size() &&
+				                          (member->lights.empty() || (pass->sceneLights && std::equal(member->lights.begin(), member->lights.end(), pass->sceneLights)));
+				if (reuseCurrent) {
+					geometryCPU = savedGeometry;
+					geometryCPUValid = true;
+				} else {
+					nativeGeometryChanged = true;
+					GrassRuntime::PrepareGeometryWithoutAdvancingWind(shader, &prototype, flags, setup, globals::game::isVR);
+					CopyGeometryConstants();
+				}
+				currentOrigin = member->origin;
 			}
-			RE::BSMultiStreamInstanceTriShape* representative = source.identity;
-			if (source.queue && source.queue->queuedFrame == frame)
-				representative = source.queue->representative.load(std::memory_order_acquire);
-			const auto member = std::find_if(bucket.sources.begin(), bucket.sources.end(), [&](const Source& item) {
-				return item.identity == representative && item.lifetime->alive.load(std::memory_order_acquire) && CurrentGeometry(item) && CurrentContract(item);
-			});
-			if (member == bucket.sources.end() || member->lights.size() > UINT8_MAX)
-				continue;
-			auto prototype = *pass;
-			prototype.geometry = representative;
-			prototype.shaderProperty = member->property.get();
-			prototype.sceneLights = member->lights.empty() ? nullptr : member->lights.data();
-			prototype.numLights = uint8_t(member->lights.size());
-			MakeNativeVisible(representative);
-			const bool reuseCurrent = savedGeometryValid && pass == currentSetupPass && shader == currentNativeShader && flags == currentSetupFlags &&
-			                          pass->geometry == representative && pass->shaderProperty == member->property.get() &&
-			                          pass->numLights == member->lights.size() &&
-			                          (member->lights.empty() || (pass->sceneLights && std::equal(member->lights.begin(), member->lights.end(), pass->sceneLights)));
-			if (reuseCurrent) {
-				geometryCPU = savedGeometry;
-				geometryCPUValid = true;
-			} else {
-				nativeGeometryChanged = true;
-				GrassRuntime::PrepareGeometryWithoutAdvancingWind(shader, &prototype, flags, setup, globals::game::isVR);
-				CopyGeometryConstants();
-			}
-			currentOrigin = member->origin;
 			PrepareBucket(bucket);
 		}
 	}

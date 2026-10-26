@@ -7,11 +7,13 @@
 #include <bit>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <optional>
 #include <shared_mutex>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -224,6 +226,7 @@ struct Queue
 {
 	GrassPolicy::WindHistory windHistory;
 	uint32_t queuedFrame = 1;
+	uint32_t instances = 4, slices = 1;
 	std::atomic<RE::BSMultiStreamInstanceTriShape*> representative = nullptr;
 	std::vector<RE::BSMultiStreamInstanceTriShape*> members;
 };
@@ -236,8 +239,9 @@ struct Source
 	uint64_t descriptor = 1;
 	std::vector<Group> groups;
 	std::shared_ptr<Lifetime> lifetime = std::make_shared<Lifetime>();
-	uint64_t generation = 0;
+	uint64_t generation = 0, cpuRecordBytes = 0;
 	bool groupsCurrent = true;
+	bool forbidNativeGeometry = false;
 	std::shared_ptr<Queue> queue = std::make_shared<Queue>();
 	std::shared_ptr<RE::BSShaderProperty> property;
 	std::vector<RE::BSLight*> lights;
@@ -327,6 +331,8 @@ namespace globals
 using State = globals::State;
 inline bool CurrentGeometry(const Source& source)
 {
+	if (source.forbidNativeGeometry)
+		throw std::runtime_error("Stale preparation read native geometry before lifetime validation");
 	return source.identity->GetGeometryRuntimeData().shaderProperty.get() == source.property.get();
 }
 inline bool CurrentContract(const Source&) { return true; }
@@ -349,6 +355,8 @@ public:
 		Admission currentAdmission{};
 		std::unordered_map<RE::BSMultiStreamInstanceTriShape*, Admission> admitted;
 		std::unordered_map<RE::BSMultiStreamInstanceTriShape*, Source> residents;
+		std::unordered_map<RE::BSMultiStreamInstanceTriShape*, std::pair<std::shared_ptr<Lifetime>, std::string>> identities;
+		uint64_t residentRevision = 0, cpuRecordBytes = 0;
 		std::unordered_map<unsigned, std::weak_ptr<Queue>> queues;
 		GrassPolicy::Settings frameSettings;
 		bool geometryCPUValid = false, failed = false, ready = false, cullingPrepared = false, throwOnPrepare = false;
@@ -374,7 +382,10 @@ public:
 		void PrepareCulling(RE::BSRenderPass*, RE::BSShader*, uint32_t, GrassRuntime::SetupGeometry);
 		void CopyGeometryConstants();
 		void RestoreCurrentGeometry();
-		void MakeNativeVisible(RE::BSMultiStreamInstanceTriShape*) {}
+		void MakeNativeVisible(RE::BSMultiStreamInstanceTriShape*);
+		void MakeNativeVisibleLocked(RE::BSMultiStreamInstanceTriShape*) {}
+		void EraseResident(RE::BSMultiStreamInstanceTriShape*);
+		std::function<void()> beforeBucketWork;
 		void RejectDraw(DrawRejection) {}
 		void UploadCulling()
 		{
@@ -383,6 +394,8 @@ public:
 		}
 		bool PrepareBucket(Bucket& bucket)
 		{
+			if (beforeBucketWork)
+				beforeBucketWork();
 			++cullingAttempts;
 			if (throwOnPrepare)
 				throw std::runtime_error("Injected preparation failure");
@@ -414,6 +427,7 @@ public:
 												uint32_t, uint32_t, RE::BSGraphics::VertexDesc, RE::BSGraphics::VertexBuffer*) { ++nativeCalls; };
 	void PrepareGeometry(RE::BSRenderPass*, RE::BSShader*, uint32_t, GrassRuntime::SetupGeometry, std::optional<uint32_t>);
 	void FinishGeometry(RE::BSRenderPass*);
+	void RemoveShape(RE::BSMultiStreamInstanceTriShape*);
 	using RenderPass = void (*)(RE::BSRenderPass*, uint32_t, bool, uint32_t);
 	void DrawRenderPass(RE::BSRenderPass*, uint32_t, bool, uint32_t, RenderPass);
 	static void DrawGroup(RE::BSGraphics::Renderer*, RE::BSGraphics::TriShape*, uint32_t, uint32_t,
@@ -444,6 +458,7 @@ struct Fixture
 	bool replacePropertyOnSetup = false;
 	bool initialSnapshotAvailable = true, recoveredSnapshotAvailable = true;
 	bool inOriginalSetup = false;
+	std::function<void(RE::BSRenderPass*)> duringNativeSetup;
 	uint32_t nativeSetupCalls = 0;
 	static inline Fixture* active = nullptr;
 	Fixture()

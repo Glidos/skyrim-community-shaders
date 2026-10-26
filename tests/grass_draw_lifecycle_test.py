@@ -21,6 +21,8 @@ def run_fixture(source: str, devbench: bool) -> subprocess.CompletedProcess:
     methods += block(hooks, "struct BSGrassShader_RestoreGeometry") + ";\n"
     methods += "\n".join(block(source, signature) for signature in (
         "void GrassBucketRenderer::PrepareGeometry(", "void GrassBucketRenderer::DrawGroup(",
+        "void GrassBucketRenderer::Impl::MakeNativeVisible(", "void GrassBucketRenderer::RemoveShape(",
+        "void GrassBucketRenderer::Impl::EraseResident(",
         "void GrassBucketRenderer::Impl::PrepareCulling(", "bool GrassBucketRenderer::Impl::DrawBucket(",
         "bool GrassBucketRenderer::Impl::DrawMainPass(",
         "void GrassBucketRenderer::DrawRenderPass(",
@@ -29,9 +31,13 @@ def run_fixture(source: str, devbench: bool) -> subprocess.CompletedProcess:
         "bool GrassBucketRenderer::Impl::HasBatchDrawState("))
     driver = r'''
 #include "grass_draw_lifecycle_fixture.h"
+#include <chrono>
+#include <future>
+#include <thread>
 PRODUCTION_METHODS
 void Fixture::NativeSetup(RE::BSShader*, RE::BSRenderPass* pass, uint32_t flags) {
     auto& f = *active;
+    if (!f.inOriginalSetup && f.duringNativeSetup) f.duringNativeSetup(pass);
     if (f.inOriginalSetup && f.replacePropertyOnSetup) {
         pass->shaderProperty = f.replacementProperty.get();
         f.shape.geometry.shaderProperty = f.replacementProperty;
@@ -90,6 +96,80 @@ int main() {
                 f.Draw();
                 Require(f.renderer.impl->submissions == 0 && GrassBucketRenderer::nativeCalls == 2,
                     "Native rendering already submitted must prevent later whole-bucket duplication");
+            }
+            for (unsigned invalid = 0; invalid < 7; ++invalid) {
+                Fixture f;
+                f.renderer.impl->ready = true;
+                f.initialSnapshotAvailable = false;
+                f.Setup();
+                auto& source = f.renderer.impl->buckets.front().sources.front();
+                if (invalid == 0) source.lifetime->alive = false;
+                if (invalid == 1) ++source.lifetime->generation;
+                if (invalid == 2) source.groupsCurrent = false;
+                if (invalid == 3) source.queue->members.clear();
+                if (invalid == 4) source.queue->representative = nullptr;
+                if (invalid == 5) source.queue.reset();
+                if (invalid == 6) ++source.queue->queuedFrame;
+                source.forbidNativeGeometry = invalid < 2;
+                f.renderer.impl->PrepareCulling(&f.pass, &f.shader, 0, Fixture::NativeSetup);
+                Require(f.nativeSetupCalls == 1 && f.renderer.impl->cullingAttempts == 0,
+                    "Invalidated representatives must be rejected before native visibility or geometry preparation");
+            }
+            for (bool failNativeSetup : {false, true}) {
+                Fixture f;
+                auto otherShape = f.shape;
+                auto& state = *f.renderer.impl;
+                auto& source = state.buckets.front().sources.front();
+                source.identity = &otherShape;
+                source.queue->members = {&otherShape};
+                source.queue->representative = &otherShape;
+                state.residents.emplace(&otherShape, source);
+                state.identities.emplace(&otherShape, std::make_pair(source.lifetime, std::string{}));
+                state.ready = true;
+                f.Setup();
+                std::promise<bool> attempted;
+                auto attemptedResult = attempted.get_future();
+                std::promise<void> removed;
+                auto removedResult = removed.get_future();
+                std::jthread remover;
+                bool started = false;
+                f.duringNativeSetup = [&](RE::BSRenderPass* pass) {
+                    if (pass->geometry != &otherShape || started) return;
+                    started = true;
+                    remover = std::jthread([&] {
+                        const bool unprotected = state.captureMutex.try_lock();
+                        if (unprotected) state.captureMutex.unlock();
+                        attempted.set_value(!unprotected);
+                        f.renderer.RemoveShape(&otherShape);
+                        otherShape.geometry.shaderProperty.reset();
+                        removed.set_value();
+                    });
+                    Require(attemptedResult.get() && source.lifetime->alive,
+                        "Native representative setup must exclude concurrent removal");
+                    if (failNativeSetup) throw std::runtime_error("Injected native setup failure");
+                };
+                state.beforeBucketWork = [&] {
+                    Require(removedResult.wait_for(std::chrono::seconds(2)) == std::future_status::ready,
+                        "Capture protection must end before buffer and culling preparation");
+                };
+                bool failed = false;
+                try { state.PrepareCulling(&f.pass, &f.shader, 0, Fixture::NativeSetup); }
+                catch (const std::runtime_error& error) {
+                    failed = true;
+                    Require(std::string(error.what()) == "Injected native setup failure",
+                        "Unexpected failure in concurrent preparation");
+                }
+                Require(failed == failNativeSetup && started,
+                    "Native setup failure injection did not reach the representative");
+                Require(removedResult.wait_for(std::chrono::seconds(2)) == std::future_status::ready,
+                    "Removal must finish after normal or exceptional native setup");
+                remover.join();
+                Outcome outcome = Outcome::Native;
+                Require(!source.lifetime->alive && !state.DrawBucket(state.buckets.front(), outcome),
+                    "Removal before first submission must retain native fallback");
+                Require(f.property->windTimer == std::bit_cast<uint32_t>(10.f) &&
+                        f.constants[GrassPolicy::WindVectorOffset(vr) + 7] == 9.f,
+                    "Concurrent removal must not disturb restoration of the real draw's wind");
             }
             for (bool sameLights : {false, true}) {
                 Fixture f;
@@ -453,10 +533,10 @@ def compile_fixture(driver: str, devbench: bool = False) -> subprocess.Completed
                    str(cpp), "/Fe:" + str(executable)]
         if devbench:
             command.append("/DDEVBENCH_BRIDGE_ENABLED")
-        result = subprocess.run(command, cwd=directory, capture_output=True, text=True)
+        result = subprocess.run(command, cwd=directory, capture_output=True, text=True, timeout=60)
         if result.returncode:
             raise RuntimeError(result.stdout + result.stderr)
-        return subprocess.run([str(executable)], cwd=directory, capture_output=True, text=True)
+        return subprocess.run([str(executable)], cwd=directory, capture_output=True, text=True, timeout=10)
 
 
 class GrassDrawLifecycleTests(unittest.TestCase):
