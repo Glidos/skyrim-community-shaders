@@ -1002,6 +1002,16 @@ namespace GrassExtensions
 		static inline REL::Relocation<decltype(thunk)> func;
 	};
 
+	struct BSGrassShader_RestoreGeometry
+	{
+		static void thunk(RE::BSShader* shader, RE::BSRenderPass* pass, uint32_t renderFlags)
+		{
+			globals::features::grassOptimizations.GetRenderer().FinishGeometry(pass);
+			func(shader, pass, renderFlags);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
 	struct BSGrassShader_SetupTechnique
 	{
 		static bool thunk(RE::BSShader* shader, uint32_t technique)
@@ -2432,6 +2442,7 @@ namespace Hooks
 		}
 		stl::write_thunk_call<GrassExtensions::BSGrassShaderProperty_ctor>(REL::RelocationID(15214, 15383).address() + REL::Relocate(0x45B, 0x4F5));
 		stl::write_vfunc<0x6, GrassExtensions::BSGrassShader_SetupGeometry>(RE::VTABLE_BSGrassShader[0]);
+		stl::write_vfunc<0x7, GrassExtensions::BSGrassShader_RestoreGeometry>(RE::VTABLE_BSGrassShader[0]);
 		stl::write_vfunc<0x2, GrassExtensions::BSGrassShader_SetupTechnique>(RE::VTABLE_BSGrassShader[0]);
 		stl::write_vfunc<0x4, GrassExtensions::BSGrassShader_SetupMaterial>(RE::VTABLE_BSGrassShader[0]);
 

@@ -629,6 +629,12 @@ namespace SIE
 		RE::BSGraphics::VertexShader* GetVertexShader(const RE::BSShader& shader, uint32_t descriptor);
 		/** Return an existing vertex shader by exact descriptor without compiling or scheduling work. */
 		RE::BSGraphics::VertexShader* GetVertexShaderIfCached(const RE::BSShader& shader, uint32_t descriptor);
+		/** @brief Retain a requested graphics shader under the cache lock, safe against concurrent eviction. */
+		winrt::com_ptr<ID3D11VertexShader> RetainVertexShader(const RE::BSShader& shader, uint32_t descriptor);
+		/** @brief Retain the exact requested pixel variant without deferred category fallback. */
+		winrt::com_ptr<ID3D11PixelShader> RetainPixelShader(const RE::BSShader& shader, uint32_t descriptor);
+		/** @brief Changes when cached graphics resources are removed or replaced, including targeted clears. */
+		uint64_t GetGraphicsShaderRevision() const noexcept { return graphicsShaderRevision.load(std::memory_order_acquire); }
 		/** Reserved pixel descriptor bit for the authored category output layout. */
 		static constexpr uint32_t GetCharacterCategoryFlag(RE::BSShader::Type type)
 		{
@@ -1145,6 +1151,7 @@ namespace SIE
 		bool ShouldUseAsyncCompilation() const;
 
 		std::stop_source ssource;
+		std::atomic_uint64_t graphicsShaderRevision{ 0 };
 		std::mutex vertexShadersMutex;
 		std::mutex pixelShadersMutex;
 		std::mutex computeShadersMutex;

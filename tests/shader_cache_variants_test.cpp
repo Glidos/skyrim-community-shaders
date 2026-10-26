@@ -152,6 +152,7 @@ namespace SIE
 		std::mutex mapMutex, vertexShadersMutex, pixelShadersMutex, computeShadersMutex;
 		using RuntimeMaps = std::array<std::unordered_map<uint32_t, std::unique_ptr<RuntimeShader>>, RE::BSShader::Total>;
 		RuntimeMaps vertexShaders, pixelShaders, computeShaders;
+		std::atomic_uint64_t graphicsShaderRevision{ 0 };
 		CompilationSet compilationSet;
 		std::vector<std::wstring> deletedPaths;
 		unsigned bytecodeQueries = 0;
@@ -285,7 +286,7 @@ namespace
 		cache.shaderMap[key] = {};
 		FinishWindow(cache, true);
 		Require(cache.activeShaderCaptureStage == Stage::AwaitingMenuClose);
-		Require(cache.lastScopedClearCount == 2 && releases == 2);
+		Require(cache.lastScopedClearCount == 2 && releases == 2 && cache.graphicsShaderRevision == 2);
 		Require(cache.shaderMap.empty() && cache.clearedBytecodeThisCaptureCycle.size() == 1);
 		Require(cache.compilationSet.forgotten.size() == 2 && cache.deletedPaths.size() == 2);
 		Require(cache.deletedPaths[0] != cache.deletedPaths[1]);
@@ -300,7 +301,7 @@ namespace
 		cache.TrackActiveShader(ShaderClass::Pixel, shader, 12);
 		FinishWindow(cache, false);
 		Require(cache.activeShaderCaptureStage == Stage::Idle);
-		Require(cache.lastScopedClearCount == 1 && releases == 3);
+		Require(cache.lastScopedClearCount == 1 && releases == 3 && cache.graphicsShaderRevision == 3);
 		Require(cache.shaderMap.contains(key) && cache.pixelShaders[RE::BSShader::Lighting].contains(10));
 		Require(cache.compilationSet.forgotten.size() == 3 && cache.deletedPaths.size() == 3);
 		Require(globals::deferred->clears == 1 && loaded.clears == 1);
@@ -308,7 +309,7 @@ namespace
 		Require(cache.clearedThisCaptureCycle.empty() && cache.clearedBytecodeThisCaptureCycle.empty());
 		cache.TrackActiveShader(ShaderClass::Pixel, shader, 10);
 		FinishWindow(cache, true);
-		Require(releases == 4 && cache.shaderMap.empty());
+		Require(releases == 4 && cache.shaderMap.empty() && cache.graphicsShaderRevision == 4);
 		Feature::GetFeatureList().clear();
 	}
 

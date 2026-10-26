@@ -10,6 +10,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <shared_mutex>
 #include <stdexcept>
 #include <type_traits>
 #include <unordered_map>
@@ -54,7 +55,28 @@ namespace SKSE::stl
 namespace RE
 {
 	struct BSShader
-	{};
+	{
+		enum class Type
+		{
+			Grass
+		};
+		Type shaderType = Type::Grass;
+	};
+	template <class T>
+	struct NiPointer
+	{
+		std::shared_ptr<T> value;
+		void reset(T* pointer)
+		{
+			value = std::shared_ptr<T>(pointer, [](T*) {});
+		}
+		T* get() const { return value.get(); }
+		NiPointer& operator=(const std::shared_ptr<T>& pointer)
+		{
+			value = pointer;
+			return *this;
+		}
+	};
 	struct BSLight
 	{};
 	struct BSShaderProperty
@@ -139,6 +161,7 @@ namespace RE
 		BSShaderProperty* shaderProperty = nullptr;
 		BSLight** sceneLights = nullptr;
 		uint8_t numLights = 0;
+		BSShader* shader = nullptr;
 	};
 }
 namespace GrassRuntime
@@ -204,6 +227,7 @@ struct Queue
 	std::atomic<RE::BSMultiStreamInstanceTriShape*> representative = nullptr;
 	std::vector<RE::BSMultiStreamInstanceTriShape*> members;
 };
+using QueueGroup = Queue;
 struct Source
 {
 	RE::BSMultiStreamInstanceTriShape* identity;
@@ -264,6 +288,7 @@ namespace globals
 			PBRGrassShading = 4
 		};
 		uint32_t frameCount = 1, modifiedVertexDescriptor = 2, modifiedPixelDescriptor = 3;
+		std::atomic_uint32_t frameCountAtomic{ 1 };
 		struct Permutation
 		{
 			uint32_t ExtraShaderDescriptor = 0;
@@ -319,13 +344,18 @@ public:
 		FakeContext* context = nullptr;
 		FakeBuffer* disabled = nullptr;
 		uint32_t nativeFallbackDepth = 0, currentPass = 0;
+		bool currentMainPass = false, currentDrawObserved = false;
 		std::array<float, 3> currentOrigin{};
 		Admission currentAdmission{};
 		std::unordered_map<RE::BSMultiStreamInstanceTriShape*, Admission> admitted;
+		std::unordered_map<RE::BSMultiStreamInstanceTriShape*, Source> residents;
+		std::unordered_map<unsigned, std::weak_ptr<Queue>> queues;
 		GrassPolicy::Settings frameSettings;
 		bool geometryCPUValid = false, failed = false, ready = false, cullingPrepared = false, throwOnPrepare = false;
 		bool allCulled = false, throwOnUpload = false;
 		bool shaderAllowed = true, depthAllowed = true;
+		bool drawShadersReady = false, pairedShadersAvailable = true;
+		std::shared_mutex captureMutex;
 		float frameHeight = 0;
 		std::vector<int> frameSlices;
 		D3D11_VIEWPORT telemetryViewport;
@@ -366,9 +396,11 @@ public:
 			return true;
 		}
 		bool HasBatchShader() const { return ready && shaderAllowed; }
-		bool MainDepthBound() const { return ready && depthAllowed; }
+		bool MainDepthBound() const { return depthAllowed; }
+		bool PrepareDrawShaders() { return drawShadersReady = pairedShadersAvailable; }
 		bool HasBatchDrawState() const;
 		bool DrawBucket(Bucket&, Outcome&);
+		bool DrawMainPass(Bucket&, const PassKey&, bool);
 		void EmitDraws(const Bucket&)
 		{
 			++submissions;
@@ -381,6 +413,9 @@ public:
 	static inline NativeDraw originalDraw = [](RE::BSGraphics::Renderer*, RE::BSGraphics::TriShape*, uint32_t,
 												uint32_t, uint32_t, RE::BSGraphics::VertexDesc, RE::BSGraphics::VertexBuffer*) { ++nativeCalls; };
 	void PrepareGeometry(RE::BSRenderPass*, RE::BSShader*, uint32_t, GrassRuntime::SetupGeometry, std::optional<uint32_t>);
+	void FinishGeometry(RE::BSRenderPass*);
+	using RenderPass = void (*)(RE::BSRenderPass*, uint32_t, bool, uint32_t);
+	void DrawRenderPass(RE::BSRenderPass*, uint32_t, bool, uint32_t, RenderPass);
 	static void DrawGroup(RE::BSGraphics::Renderer*, RE::BSGraphics::TriShape*, uint32_t, uint32_t,
 		uint32_t, RE::BSGraphics::VertexDesc, RE::BSGraphics::VertexBuffer*);
 };
@@ -428,10 +463,13 @@ struct Fixture
 		renderer.impl->buckets.front().sources.push_back({ &shape, &mesh, 2, 1, { { &instances, false, { &buffer }, 4 } } });
 		shape.geometry.shaderProperty = property;
 		pass.shaderProperty = property.get();
+		pass.shader = &shader;
 		auto& source = renderer.impl->buckets.front().sources.front();
 		source.property = property;
 		source.queue->members = { &shape };
 		source.queue->representative = &shape;
+		renderer.impl->residents.emplace(&shape, source);
+		renderer.impl->queues.emplace(0, source.queue);
 	}
 	void Setup(uint32_t flags = 0);
 	static void NativeSetup(RE::BSShader*, RE::BSRenderPass*, uint32_t);

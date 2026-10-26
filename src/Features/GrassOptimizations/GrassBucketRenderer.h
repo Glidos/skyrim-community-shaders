@@ -16,6 +16,8 @@ public:
 	void EndFrame();
 	/** @brief Preserve geometry inputs and pre-setup wind history for batching at the native draw boundary. */
 	void PrepareGeometry(RE::BSRenderPass*, RE::BSShader*, uint32_t, GrassRuntime::SetupGeometry, std::optional<uint32_t> nativeWindTimer);
+	/** @brief Finish owned coverage before native geometry state is restored, including empty native groups. */
+	void FinishGeometry(RE::BSRenderPass* pass);
 	bool IsHookInstalled() const;
 	/** @brief Whether native integration is installed without a latched rendering failure. */
 	bool IsRenderingAvailable() const;

@@ -217,7 +217,7 @@ namespace
 		FrustumParameters frustum;
 		Parameters params{};
 		std::array<Mesh, 3> meshes;
-		ID3D11InputLayout* layout = nullptr;
+		winrt::com_ptr<ID3D11InputLayout> layout;
 		uint32_t slot = 0;
 		bool prepared = false, empty = false;
 		/** @brief Release draw owners; constants are overwritten before the plan is prepared again. */
@@ -605,6 +605,10 @@ struct GrassBucketRenderer::Impl
 	std::vector<std::unique_ptr<Buffer>> frameConstants;
 	std::vector<Bucket*> cullingBuckets;
 	bool cullingPrepared = false;
+	bool drawShadersChecked = false, drawShadersReady = false;
+	uint64_t drawShaderRevision = 0;
+	std::array<winrt::com_ptr<ID3D11VertexShader>, 2> drawVertexShaders;
+	std::array<winrt::com_ptr<ID3D11PixelShader>, 8> drawPixelShaders;
 	uint64_t resultBytes = 0;
 	GrassLOD::Cache<LODKey, Mesh> lodMeshes;
 	uint64_t lodRevision = UINT64_MAX;
@@ -632,6 +636,7 @@ struct GrassBucketRenderer::Impl
 	std::optional<uint32_t> currentNativeWindTimer;
 	Admission currentAdmission{};
 	uint32_t currentPass = 0;
+	bool currentMainPass = false, currentDrawObserved = false;
 	RE::NiPoint3 currentOrigin;
 	GrassPolicy::Settings frameSettings;
 	float frameCollisionStrength = GrassCollision::kDefaultCollisionStrength;
@@ -690,8 +695,10 @@ struct GrassBucketRenderer::Impl
 	std::array<const Mesh*, 2> LODMeshes(const Source& source);
 	static Mesh LoadLODMesh(const LODKey& key);
 	bool HasBatchShader() const;
+	bool PrepareDrawShaders();
 	void CullSlices(const Bucket& bucket, float radius, uint32_t eyes, uint32_t& instances);
 	bool DrawBucket(Bucket& bucket, Outcome& outcome);
+	bool DrawMainPass(Bucket& bucket, const PassKey& key, bool eligible);
 	bool MainDepthBound() const;
 	bool HasBatchDrawState() const;
 	float frameHeight = 0;
@@ -1229,6 +1236,9 @@ void GrassBucketRenderer::SetupResources()
 void GrassBucketRenderer::ClearShaderCache()
 {
 	impl->cullingPrepared = false;
+	impl->drawShadersChecked = impl->drawShadersReady = false;
+	impl->drawVertexShaders = {};
+	impl->drawPixelShaders = {};
 	for (auto& bucket : impl->buckets) {
 		bucket.plan.Retire();
 		bucket.outcomes.Clear();
@@ -1276,6 +1286,7 @@ void GrassBucketRenderer::Impl::PrepareFrame()
 	current = nullptr;
 	frame = now;
 	cullingPrepared = false;
+	drawShadersChecked = false;
 	for (auto& bucket : buckets) {
 		bucket.outcomes.Clear();
 		bucket.plan.Retire();
@@ -1517,6 +1528,7 @@ void GrassBucketRenderer::PrepareGeometry(RE::BSRenderPass* pass, RE::BSShader* 
 {
 	impl->current = nullptr;
 	impl->currentSetupPass = nullptr;
+	impl->currentMainPass = impl->currentDrawObserved = false;
 	if (!pass || !pass->geometry || !impl->context || !impl->disabled)
 		return;
 	auto cb = impl->disabled->resource.get();
@@ -1548,6 +1560,26 @@ void GrassBucketRenderer::PrepareGeometry(RE::BSRenderPass* pass, RE::BSShader* 
 		impl->failed = true;
 		logger::error("Grass frame preparation failed; retaining native rendering: {}", error.what());
 	}
+}
+
+void GrassBucketRenderer::FinishGeometry(RE::BSRenderPass* pass)
+{
+	if (!pass || impl->currentSetupPass != pass || !impl->current || impl->currentDrawObserved || impl->nativeFallbackDepth ||
+		impl->currentAdmission.bucket >= impl->buckets.size())
+		return;
+	static REL::Relocation<void (*)(uint32_t)> setDirtyStates{ REL::RelocationID(75580, 77386) };
+	setDirtyStates(0);
+	impl->currentMainPass = impl->MainDepthBound();
+	if (!impl->currentMainPass)
+		return;
+	auto& bucket = impl->buckets[impl->currentAdmission.bucket];
+	if (bucket.outcomes.MainOutcome() == Outcome::Batched) {
+		const PassKey key{ pass->passEnum, globals::state->modifiedVertexDescriptor,
+			globals::state->modifiedPixelDescriptor, globals::state->permutationData.ExtraShaderDescriptor };
+		// Removed native groups must not prevent the paired pass from drawing retained coverage.
+		impl->DrawMainPass(bucket, key, false);
+	} else
+		bucket.outcomes.CommitMain(Outcome::Native);
 }
 
 bool GrassBucketRenderer::Impl::MakeRecordRoom(uint64_t replacementBytes)
@@ -1770,6 +1802,36 @@ bool GrassBucketRenderer::Impl::HasBatchShader() const
 	return bound.get() == reinterpret_cast<ID3D11VertexShader*>(shader->shader);
 }
 
+bool GrassBucketRenderer::Impl::PrepareDrawShaders()
+{
+	if (drawShadersChecked)
+		return drawShadersReady;
+	drawShadersChecked = true;
+	const auto revision = globals::shaderCache->GetGraphicsShaderRevision();
+	if (drawShadersReady && drawShaderRevision == revision)
+		return true;
+	drawShadersReady = false;
+	bool ready = true;
+	constexpr auto depthFlag = uint32_t(SIE::ShaderCache::GrassShaderTechniques::RenderDepth);
+	constexpr auto alphaFlag = uint32_t(SIE::ShaderCache::GrassShaderFlags::AlphaTest);
+	constexpr auto categoryFlag = SIE::ShaderCache::GetCharacterCategoryFlag(RE::BSShader::Type::Grass);
+	// Admit a frame only after both output layouts are available; no draw may switch to native later.
+	for (uint32_t depth = 0; depth < 2; ++depth) {
+		const auto descriptor = depth ? depthFlag : 0u;
+		drawVertexShaders[depth] = globals::shaderCache->RetainVertexShader(*currentNativeShader, descriptor);
+		ready &= bool(drawVertexShaders[depth]);
+		for (uint32_t alpha = 0; alpha < 2; ++alpha)
+			for (uint32_t category = 0; category < 2; ++category) {
+				auto& pixel = drawPixelShaders[depth * 4 + alpha * 2 + category];
+				pixel = globals::shaderCache->RetainPixelShader(*currentNativeShader,
+					descriptor | (alpha ? alphaFlag : 0u) | (category ? categoryFlag : 0u));
+				ready &= bool(pixel);
+			}
+	}
+	drawShaderRevision = revision;
+	return drawShadersReady = ready && revision == globals::shaderCache->GetGraphicsShaderRevision();
+}
+
 void GrassBucketRenderer::Impl::CullSlices(const Bucket& bucket, float radius, uint32_t eyes, uint32_t& instances)
 {
 	frustumData = {};
@@ -1907,7 +1969,7 @@ void GrassBucketRenderer::Impl::RestoreCurrentGeometry()
 
 void GrassBucketRenderer::Impl::PrepareCulling(RE::BSRenderPass* pass, RE::BSShader* shader, uint32_t flags, GrassRuntime::SetupGeometry setup)
 {
-	if (cullingPrepared || !setup || !currentNativeWindTimer || !HasBatchDrawState())
+	if (cullingPrepared || !setup || !currentNativeWindTimer || !HasBatchDrawState() || !PrepareDrawShaders())
 		return;
 	D3D11_VIEWPORT viewport{};
 	UINT count = 1;
@@ -1994,25 +2056,25 @@ void GrassBucketRenderer::Impl::PrepareCulling(RE::BSRenderPass* pass, RE::BSSha
 
 bool GrassBucketRenderer::Impl::DrawBucket(Bucket& bucket, Outcome& outcome)
 {
-	if (!bucket.plan.prepared || !geometryCPUValid || !HasBatchDrawState())
+	const auto ownership = bucket.outcomes.MainOutcome();
+	if (ownership == Outcome::Native || !bucket.plan.prepared || !drawShadersReady)
 		return false;
-	const auto eyes = globals::game::isVR ? 2u : 1u;
 	const auto& saved = bucket.plan.geometry;
-	const size_t wind = GrassPolicy::WindVectorOffset(eyes == 2), scale = eyes == 2 ? 148 : 84;
-	// Previous wind is batch-owned; native setup exposes pass-dependent history.
-	if (!std::equal(geometryCPU.begin(), geometryCPU.begin() + eyes * 48, saved.begin()) ||
-		!std::equal(geometryCPU.begin() + wind, geometryCPU.begin() + wind + 4, saved.begin() + wind) ||
-		!std::equal(geometryCPU.begin() + scale, geometryCPU.begin() + scale + 3, saved.begin() + scale) ||
-		geometryCPU[wind + 11] != saved[wind + 11] || geometryCPU[wind + 15] != saved[wind + 15])
-		return false;
-	for (const auto& source : bucket.sources)
-		if (!source.lifetime->alive.load(std::memory_order_acquire) ||
-			source.generation != source.lifetime->generation.load(std::memory_order_acquire) || !CurrentGroups(source))
+	if (!ownership) {
+		if (!HasBatchDrawState())
 			return false;
+		std::shared_lock lock(captureMutex);
+		for (const auto& source : bucket.sources)
+			if (!source.lifetime->alive.load(std::memory_order_acquire) ||
+				source.generation != source.lifetime->generation.load(std::memory_order_acquire) || !CurrentGroups(source))
+				return false;
+	}
+	// Once submitted, owned buffers and constants finish the frame without rereading native groups.
 	outcome = Outcome::Batched;
+	bucket.outcomes.CommitMain(outcome);
 	if (!bucket.plan.empty) {
 		EmitDraws(bucket);
-		bucket.sources.front().queue->windHistory.Commit(frame, saved[wind + 3]);
+		bucket.sources.front().queue->windHistory.Commit(frame, saved[GrassPolicy::WindVectorOffset(globals::game::isVR) + 3]);
 	}
 #ifdef DEVBENCH_BRIDGE_ENABLED
 	if (diagnostics.load(std::memory_order_relaxed)) {
@@ -2115,7 +2177,7 @@ bool GrassBucketRenderer::Impl::PrepareBucket(Bucket& bucket)
 	bucket.plan.geometry = geometryCPU;
 	bucket.plan.frustum = frustumData;
 	bucket.plan.meshes = std::move(meshes);
-	bucket.plan.layout = layout;
+	bucket.plan.layout.copy_from(layout);
 	bucket.plan.prepared = true;
 	return true;
 #undef GRASS_DRAW_REJECT
@@ -2300,11 +2362,19 @@ void GrassBucketRenderer::Impl::DispatchBucket(Bucket& bucket)
 void GrassBucketRenderer::Impl::EmitDraws(const Bucket& bucket)
 {
 	const auto& meshes = bucket.plan.meshes;
-	const auto layout = bucket.plan.layout;
 	const auto eyes = bucket.plan.params.eyes;
 	const auto capacity = bucket.result.capacity;
 	GrassD3D::DrawState restore(context.get());
-	context->IASetInputLayout(layout);
+	const auto descriptor = globals::state->modifiedPixelDescriptor;
+	const auto depth = (descriptor & 0xFu) == uint32_t(SIE::ShaderCache::GrassShaderTechniques::RenderDepth) ? 1u : 0u;
+	const auto alpha = (descriptor & uint32_t(SIE::ShaderCache::GrassShaderFlags::AlphaTest)) ? 1u : 0u;
+	const auto category = (descriptor & SIE::ShaderCache::GetCharacterCategoryFlag(RE::BSShader::Type::Grass)) ? 1u : 0u;
+	context->VSSetShader(drawVertexShaders[depth].get(), nullptr, 0);
+	context->PSSetShader(drawPixelShaders[depth * 4 + alpha * 2 + category].get(), nullptr, 0);
+	auto geometry = frameConstants[bucket.plan.slot / kSlotsPerPage]->resource.get();
+	const UINT geometryFirst = (bucket.plan.slot % kSlotsPerPage) * (kFrameSlotBytes / 16), geometryCount = eyes == 2 ? 48u : 32u;
+	context->VSSetConstantBuffers1(2, 1, &geometry, &geometryFirst, &geometryCount);
+	context->IASetInputLayout(bucket.plan.layout.get());
 	context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	const std::array<ID3D11ShaderResourceView*, 2> sources{ bucket.result.extras->srv.get(), bucket.records->srv.get() };
 	context->VSSetShaderResources(2, UINT(sources.size()), sources.data());
@@ -2365,17 +2435,16 @@ void GrassBucketRenderer::DrawRenderPass(RE::BSRenderPass* pass, uint32_t techni
 	}
 	if (queue)
 		impl->MakeNativeVisible(static_cast<RE::BSMultiStreamInstanceTriShape*>(pass->geometry));
+	impl->current = nullptr;
+	impl->currentMainPass = impl->currentDrawObserved = false;
 	draw(pass, technique, alphaTest, flags);
-	if (!queue)
-		return;
-	if (impl->current == pass->geometry && impl->currentAdmission.bucket < impl->buckets.size()) {
+	if (impl->current == pass->geometry && impl->currentAdmission.bucket < impl->buckets.size() && impl->currentMainPass) {
 		auto& bucket = impl->buckets.at(impl->currentAdmission.bucket);
-		const PassKey key{ pass->passEnum, globals::state->modifiedVertexDescriptor,
-			globals::state->modifiedPixelDescriptor, globals::state->permutationData.ExtraShaderDescriptor };
-		const auto [outcome, firstPass] = bucket.outcomes.Acquire(key);
-		if (!firstPass && *outcome == Outcome::Batched && bucket.sources.front().queue == queue)
+		if (bucket.outcomes.MainOutcome() == Outcome::Batched)
 			return;
 	}
+	if (!queue)
+		return;
 	++impl->nativeFallbackDepth;
 	const SKSE::stl::scope_exit restore([&]() noexcept { --impl->nativeFallbackDepth; });
 	size_t member = 0;
@@ -2404,54 +2473,81 @@ void GrassBucketRenderer::DrawRenderPass(RE::BSRenderPass* pass, uint32_t techni
 	}
 }
 
+bool GrassBucketRenderer::Impl::DrawMainPass(Bucket& bucket, const PassKey& key, bool eligible)
+{
+	static REL::Relocation<void (*)(uint32_t)> setDirtyStates{ REL::RelocationID(75580, 77386) };
+	try {
+		auto [outcome, firstPass] = bucket.outcomes.Acquire(key);
+		if (!firstPass)
+			return *outcome == Outcome::Batched;
+		const auto ownership = bucket.outcomes.MainOutcome();
+		bool batched = false;
+		if (ownership == Outcome::Batched || (!ownership && eligible)) {
+			if (!ownership && !cullingPrepared && currentSetupPass && currentSetup)
+				PrepareCulling(currentSetupPass, currentNativeShader, currentSetupFlags, currentSetup);
+			setDirtyStates(0);
+			batched = DrawBucket(bucket, *outcome);
+		}
+		bucket.outcomes.CommitMain(*outcome);
+#ifdef DEVBENCH_BRIDGE_ENABLED
+		if (!batched && diagnostics.load(std::memory_order_relaxed))
+			++fallbacks;
+#endif
+		return batched;
+	} catch (const std::exception& error) {
+		failed = true;
+		setDirtyStates(0);
+		logger::error("Grass main-view submission failed: {}", error.what());
+		if (bucket.outcomes.MainOutcome() == Outcome::Batched)
+			return true;
+		bucket.outcomes.CommitMain(Outcome::Native);
+		return false;
+	}
+}
+
 void GrassBucketRenderer::DrawGroup(RE::BSGraphics::Renderer* renderer, RE::BSGraphics::TriShape* mesh,
 	uint32_t firstTriangle, uint32_t triangles, uint32_t instances, RE::BSGraphics::VertexDesc descriptor, RE::BSGraphics::VertexBuffer* buffer)
 {
 	auto& self = *globals::features::grassOptimizations.GetRenderer().impl;
+	Bucket* mainBucket = nullptr;
 	try {
+		bool mainPass = false;
 		if (self.current) {
+			self.currentDrawObserved = true;
 			static REL::Relocation<void (*)(uint32_t)> setDirtyStates{ REL::RelocationID(75580, 77386) };
 			setDirtyStates(0);
+			mainPass = self.MainDepthBound();
+		}
+		if (mainPass) {
+			self.currentMainPass = true;
 			auto& bucket = self.buckets.at(self.currentAdmission.bucket);
+			mainBucket = &bucket;
 			const PassKey key{ self.currentPass, globals::state->modifiedVertexDescriptor, globals::state->modifiedPixelDescriptor, globals::state->permutationData.ExtraShaderDescriptor };
-			const auto& source = bucket.sources.at(self.currentAdmission.source);
-			const bool same = source.identity == self.current && mesh == source.mesh && firstTriangle == 0 && triangles == source.triangles &&
-			                  std::bit_cast<uint64_t>(descriptor) == source.descriptor &&
-			                  std::any_of(source.groups.begin(), source.groups.end(), [&](const Group& group) {
-								  return group.identity == buffer && buffer && (group.bytes || reinterpret_cast<ID3D11Buffer*>(buffer->buffer) == group.buffer.get()) &&
-				                         GrassPolicy::NativeCountMatches(group.count, instances);
-							  });
-			auto [outcome, firstPass] = bucket.outcomes.Acquire(key);
-			bool batched = !firstPass && *outcome == Outcome::Batched && same;
-			if (firstPass) {
-				if (same) {
-					try {
-						// Commit pass outcomes only at the native draw boundary, after validating its inputs.
-						if ((!self.cullingPrepared || !self.geometryCPUValid) && self.currentSetupPass && self.currentSetup) {
-							if (!self.cullingPrepared)
-								self.PrepareCulling(self.currentSetupPass, self.currentNativeShader, self.currentSetupFlags, self.currentSetup);
-							else if (self.HasBatchDrawState())
-								self.RestoreCurrentGeometry();
-							setDirtyStates(0);
-						}
-						batched = self.DrawBucket(bucket, *outcome);
-					} catch (const std::exception& error) {
-						self.failed = true;
-						setDirtyStates(0);
-						logger::error("Grass batch unavailable; retaining native rendering: {}", error.what());
-					}
-				}
-#ifdef DEVBENCH_BRIDGE_ENABLED
-				if (!batched && self.diagnostics.load(std::memory_order_relaxed))
-					++self.fallbacks;
-#endif
-			}
-			if (batched)
+			if (bucket.outcomes.MainOutcome() == Outcome::Batched) {
+				self.DrawMainPass(bucket, key, false);
 				return;
+			}
+			if (!bucket.outcomes.MainOutcome()) {
+				const auto& source = bucket.sources.at(self.currentAdmission.source);
+				const bool same = source.identity == self.current && mesh == source.mesh && firstTriangle == 0 && triangles == source.triangles &&
+				                  std::bit_cast<uint64_t>(descriptor) == source.descriptor &&
+				                  std::any_of(source.groups.begin(), source.groups.end(), [&](const Group& group) {
+									  return group.identity == buffer && buffer && (group.bytes || reinterpret_cast<ID3D11Buffer*>(buffer->buffer) == group.buffer.get()) &&
+					                         GrassPolicy::NativeCountMatches(group.count, instances);
+								  });
+				if (self.DrawMainPass(bucket, key, same))
+					return;
+			} else
+				self.DrawMainPass(bucket, key, false);
 		}
 	} catch (const std::exception& error) {
 		self.failed = true;
-		logger::error("Grass draw bookkeeping failed; retaining native rendering: {}", error.what());
+		logger::error("Grass draw bookkeeping failed: {}", error.what());
+		if (mainBucket) {
+			if (mainBucket->outcomes.MainOutcome() == Outcome::Batched)
+				return;
+			mainBucket->outcomes.CommitMain(Outcome::Native);
+		}
 	}
 #ifdef DEVBENCH_BRIDGE_ENABLED
 	if (self.diagnostics.load(std::memory_order_relaxed))

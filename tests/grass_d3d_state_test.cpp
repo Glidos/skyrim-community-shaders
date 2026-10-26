@@ -28,6 +28,8 @@ namespace
 		UINT availableUavs;
 		ComPtr<ID3D11UnorderedAccessView> overlappingUav;
 		ComPtr<ID3D11ComputeShader> shader;
+		ComPtr<ID3D11VertexShader> vertexShader;
+		std::array<ComPtr<ID3D11PixelShader>, 2> pixels;
 		std::array<ComPtr<ID3D11Buffer>, 3> vertices;
 		ComPtr<ID3D11Buffer> indices;
 		ComPtr<ID3D11InputLayout> layout;
@@ -82,9 +84,18 @@ namespace
 			Require(SUCCEEDED(D3DCompile(cs, sizeof(cs), nullptr, nullptr, nullptr, "main", "cs_5_0", 0, 0, &bytecode, nullptr)), "Compile CS");
 			Require(SUCCEEDED(device->CreateComputeShader(bytecode->GetBufferPointer(), bytecode->GetBufferSize(), nullptr, &shader)), "Create CS");
 			Util::SetResourceName(shader.Get(), "GrassStateTest::ComputeShader");
+			for (UINT i = 0; i < pixels.size(); ++i) {
+				bytecode.Reset();
+				const char* ps = i ? "float4 main():SV_Target{return 0;}" : "float4 main():SV_Target{return 1;}";
+				Require(SUCCEEDED(D3DCompile(ps, std::strlen(ps), nullptr, nullptr, nullptr, "main", "ps_5_0", 0, 0, &bytecode, nullptr)), "Compile PS");
+				Require(SUCCEEDED(device->CreatePixelShader(bytecode->GetBufferPointer(), bytecode->GetBufferSize(), nullptr, &pixels[i])), "Create PS");
+				Util::SetResourceName(pixels[i].Get(), "GrassStateTest::PixelShader%u", i);
+			}
 			bytecode.Reset();
 			constexpr char vs[] = "float4 main(float3 pos:POSITION):SV_Position {return float4(pos,1);}";
 			Require(SUCCEEDED(D3DCompile(vs, sizeof(vs), nullptr, nullptr, nullptr, "main", "vs_5_0", 0, 0, &bytecode, nullptr)), "Compile VS");
+			Require(SUCCEEDED(device->CreateVertexShader(bytecode->GetBufferPointer(), bytecode->GetBufferSize(), nullptr, &vertexShader)), "Create VS");
+			Util::SetResourceName(vertexShader.Get(), "GrassStateTest::VertexShader");
 			const D3D11_INPUT_ELEMENT_DESC element{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 };
 			Require(SUCCEEDED(device->CreateInputLayout(&element, 1, bytecode->GetBufferPointer(), bytecode->GetBufferSize(), &layout)), "Create layout");
 			Util::SetResourceName(layout.Get(), "GrassStateTest::Layout");
@@ -171,10 +182,19 @@ namespace
 		auto* cb = f.constants[0].Get();
 		const UINT first = 16, count = 16;
 		c->VSSetConstantBuffers1(9, 1, &cb, &first, &count);
+		auto* geometry = holes ? nullptr : f.constants[1].Get();
+		const UINT geometryFirst = 32, geometryCount = 16;
+		c->VSSetConstantBuffers1(2, 1, &geometry, &geometryFirst, &geometryCount);
+		c->VSSetShader(holes ? nullptr : f.vertexShader.Get(), nullptr, 0);
+		c->PSSetShader(holes ? nullptr : f.pixels[0].Get(), nullptr, 0);
 		const std::array<ID3D11ShaderResourceView*, 3> srvs{ f.srvs[0].Get(), holes ? nullptr : f.srvs[1].Get(), f.srvs[2].Get() };
 		c->VSSetShaderResources(2, UINT(srvs.size()), srvs.data());
 		try {
 			GrassD3D::DrawState restore(c);
+			c->VSSetShader(holes ? f.vertexShader.Get() : nullptr, nullptr, 0);
+			c->PSSetShader(f.pixels[1].Get(), nullptr, 0);
+			auto* changedGeometry = f.constants[2].Get();
+			c->VSSetConstantBuffers(2, 1, &changedGeometry);
 			const std::array<ID3D11Buffer*, 2> changed{ f.vertices[1].Get(), f.vertices[0].Get() };
 			c->IASetVertexBuffers(0, 2, changed.data(), strides.data(), offsets.data());
 			c->IASetIndexBuffer(nullptr, DXGI_FORMAT_R32_UINT, 0);
@@ -200,6 +220,17 @@ namespace
 		Require(index.Get() == f.indices.Get() && format == DXGI_FORMAT_R16_UINT && offset == 6, "Restore index buffer");
 		c->VSGetConstantBuffers1(9, 1, &constants, &begin, &length);
 		Require(constants.Get() == cb && begin == first && length == count, "Restore VS constant window");
+		constants.Reset();
+		c->VSGetConstantBuffers1(2, 1, &constants, &begin, &length);
+		Require(constants.Get() == geometry && (holes || (begin == geometryFirst && length == geometryCount)),
+			"Restore native vertex geometry window after using frame-owned geometry");
+		ComPtr<ID3D11VertexShader> vertexShader;
+		ComPtr<ID3D11PixelShader> pixelShader;
+		c->VSGetShader(&vertexShader, nullptr, nullptr);
+		c->PSGetShader(&pixelShader, nullptr, nullptr);
+		Require(vertexShader.Get() == (holes ? nullptr : f.vertexShader.Get()) &&
+					pixelShader.Get() == (holes ? nullptr : f.pixels[0].Get()),
+			"Restore native shader pair");
 		ComPtr<ID3D11InputLayout> layout;
 		c->IAGetInputLayout(&layout);
 		Require(layout.Get() == f.layout.Get(), "Restore layout");
