@@ -204,11 +204,14 @@ namespace Color
 	}
 
 #if defined(PSHADER) || defined(CSHADER) || defined(COMPUTESHADER)
-	// Attempt to match vanilla materials that are darker than PBR
-	const static float PBRLightingScale = ENABLE_LL_COLOR_ADJUSTMENTS ? 1.0 : 0.65;
+	// Match vanilla materials that are darker than PBR. 0.65 is the linear
+	// factor; gamma uses 0.65^(1/1.6) so the darkening matches after IrradianceToLinear.
+	const static float PBRLightingScale_Gamma = ENABLE_LL_COLOR_ADJUSTMENTS ? 1.0 : 0.7639604;
+	const static float PBRLightingScale_Linear = ENABLE_LL_COLOR_ADJUSTMENTS ? 1.0 : 0.65;
 
-	// Attempt to normalise reflection brightness against DALC
-	const static float ReflectionNormalisationScale = ENABLE_LL_COLOR_ADJUSTMENTS ? 1.0 : 0.65;
+	// Normalise reflection brightness against DALC. Same gamma/linear split as above.
+	const static float ReflectionNormalisationScale_Gamma = ENABLE_LL_COLOR_ADJUSTMENTS ? 1.0 : 0.7639604;
+	const static float ReflectionNormalisationScale_Linear = ENABLE_LL_COLOR_ADJUSTMENTS ? 1.0 : 0.65;
 
 	const static float PBRLightingCompensation = ENABLE_LL_COLOR_ADJUSTMENTS ? 1.0 : Math::PI;
 
@@ -463,8 +466,10 @@ namespace Color
 		return ENABLE_LL_COLOR_ADJUSTMENTS ? SharedData::linearLightingSettings.vanillaDiffuseColorMult : 1.0f;
 	}
 #else
-	const static float PBRLightingScale = 1.0;
-	const static float ReflectionNormalisationScale = 1.0;
+	const static float PBRLightingScale_Gamma = 1.0;
+	const static float PBRLightingScale_Linear = 1.0;
+	const static float ReflectionNormalisationScale_Gamma = 1.0;
+	const static float ReflectionNormalisationScale_Linear = 1.0;
 	const static float PBRLightingCompensation = Math::PI;
 
 	float3 PBRDiffuse(float3 color)

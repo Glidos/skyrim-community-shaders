@@ -50,7 +50,7 @@ float3 GetScalingFactor(float3 albedo)
 
 float3 BurleyDecodeAlbedo(float3 encodedAlbedo)
 {
-	float3 albedo = encodedAlbedo / Color::PBRLightingScale;
+	float3 albedo = encodedAlbedo / Color::PBRLightingScale_Gamma;
 	return max(Color::IrradianceToLinear(albedo), 0.0f);
 }
 

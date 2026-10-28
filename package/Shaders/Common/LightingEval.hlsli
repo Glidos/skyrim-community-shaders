@@ -379,7 +379,7 @@ void EvaluateWetnessLighting(float3 wetnessNormal, DirectContext context, float 
 	float3 wetnessSpecular = D * G * wetnessF * NdotL * lightColor;
 
 #	if !defined(TRUE_PBR)
-	wetnessSpecular *= Color::PBRLightingCompensation * Color::PBRLightingScale;
+	wetnessSpecular *= Color::PBRLightingCompensation * Color::PBRLightingScale_Gamma;
 #	endif
 
 	lightingOutput.diffuse *= 1 - wetnessF;

@@ -80,7 +80,7 @@ namespace LandscapeSeams
 			float3 landColorRGB = landColor.rgb;                                                                                                                                                       \
 			[branch] if (!LandscapeSeams::HasFlag(LandscapeSeams::FlagPbr, INDEX))                                                                                                                     \
 			{                                                                                                                                                                                          \
-				landColorRGB = Color::SrgbToLinear(landColorRGB / Color::PBRLightingScale);                                                                                                            \
+				landColorRGB = Color::SrgbToLinear(landColorRGB / Color::PBRLightingScale_Gamma);                                                                                                            \
 			}                                                                                                                                                                                          \
 			float landAlpha = landColor.a;                                                                                                                                                             \
 			float4 landNormal = SampleTerrainNormal(NORM_TEX, SampColorSampler, uv, sharedOffset);                                                                                                     \

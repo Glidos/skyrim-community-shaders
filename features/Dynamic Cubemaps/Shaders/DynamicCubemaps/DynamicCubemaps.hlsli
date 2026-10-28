@@ -102,7 +102,7 @@ namespace DynamicCubemaps
 
 		float directionalAmbientColorSpecular = Color::RGBToLuminance(Color::Ambient(
 													max(0, SharedData::GetAmbient(R)))) *
-		                                        Color::ReflectionNormalisationScale;
+		                                        Color::ReflectionNormalisationScale_Gamma;
 		float skylightingSpecular = 1.0;
 		float skylightingVisibility = 1.0;
 
@@ -183,7 +183,7 @@ namespace DynamicCubemaps
 		return horizon * (F0 * specularBRDF.x + specularBRDF.y);
 #	else
 		float3 finalIrradiance = 0;
-		float directionalAmbientColorSpecular = Color::RGBToLuminance(Color::Ambient(max(0, SharedData::GetAmbient(R)))) * Color::ReflectionNormalisationScale;
+		float directionalAmbientColorSpecular = Color::RGBToLuminance(Color::Ambient(max(0, SharedData::GetAmbient(R)))) * Color::ReflectionNormalisationScale_Gamma;
 		float skylightingSpecular = 1.0;
 		float skylightingVisibility = 1.0;
 

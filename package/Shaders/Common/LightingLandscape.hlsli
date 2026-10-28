@@ -34,7 +34,7 @@ namespace LandscapeLayers
 				float3 landColorRGB = landColor.rgb;                                                                                                               \
 				[branch] if (!LandscapeLayers::PbrTileUsesFullPBR(TILE))                                                                                           \
 				{                                                                                                                                                  \
-					landColorRGB = Color::SrgbToLinear(landColorRGB / Color::PBRLightingScale);                                                                    \
+					landColorRGB = Color::SrgbToLinear(landColorRGB / Color::PBRLightingScale_Gamma);                                                                    \
 				}                                                                                                                                                  \
 				float landAlpha = landColor.a;                                                                                                                     \
 				float4 landNormal = SampleTerrainNormal(NORM_TEX, NORM_SAMP, uv, sharedOffset);                                                                    \

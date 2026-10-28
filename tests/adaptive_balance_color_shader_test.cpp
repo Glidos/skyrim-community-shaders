@@ -753,11 +753,12 @@ namespace
 										for (Pixel weights : { Pixel{ 1, 0, 1, 0 }, Pixel{ 0, 1, 1, 0 },
 												 Pixel{ 0.4f, 0.7f, 0.35f, 0.25f }, Pixel{ 0, 0, 0.6f, 1 }, Pixel{ 1, 1, 0.35f, 1 } }) {
 											const auto actual = fixture.DrawReflections(context, linear, sceneFlags, appearance, { 0.01f, 0.02f, direct, roughness }, weights, bases);
-											const float scale = pbr && !linearAdjustments ? 0.65f : 1.0f;
+											const float gammaScale = pbr && !linearAdjustments ? 0.7639604f : 1.0f;
+											const float linearScale = pbr && !linearAdjustments ? 0.65f : 1.0f;
 											const float eyeSpecular = scene ? appearance[49] : 1.0f;
 											const float eyeBrightnessLinear = scene ? appearance[50] : 1.0f;
 											const float eyeBrightness = linearAdjustments ? eyeBrightnessLinear : std::pow(eyeBrightnessLinear, 1.0f / 1.6f);
-											float specular = direct * scale * eyeSpecular;
+											float specular = direct * linearScale * eyeSpecular;
 											float fallback = 0;
 											if (dynamic) {
 												specular += weights[0] * eyeSpecular * (wet == 1 ? 1 - weights[3] : 1) * 0.01f;
@@ -770,7 +771,7 @@ namespace
 											auto expected = bases;
 											for (auto& pixel : expected) {
 												for (size_t c = 0; c < 3; ++c) {
-													const float base = (pixel[c] * scale + fallback) * (sky ? weights[2] : 1) * eyeBrightness;
+													const float base = (pixel[c] * gammaScale + fallback) * (sky ? weights[2] : 1) * eyeBrightness;
 													pixel[c] = linearAdjustments ? base + specular : std::pow(std::pow(base, 1.6f) + specular, 1.0f / 1.6f);
 												}
 											}

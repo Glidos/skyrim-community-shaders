@@ -4104,17 +4104,17 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	{
 		lodLandDiffuseColor += directionalAmbientColor;
 		float3 litLodLandColor = vertexColor * lodLandColor.xyz * lodLandFadeFactor * lodLandDiffuseColor;
-		color.xyz = lerp(color.xyz * Color::PBRLightingScale, litLodLandColor, lodLandBlendFactor);
+		color.xyz = lerp(color.xyz * Color::PBRLightingScale_Gamma, litLodLandColor, lodLandBlendFactor);
 
-		specularColor = lerp(specularColor * Color::PBRLightingScale, 0, lodLandBlendFactor);
-		indirectLobeWeights.diffuse = lerp(indirectLobeWeights.diffuse * Color::PBRLightingScale, vertexColor * lodLandColor.xyz * lodLandFadeFactor, lodLandBlendFactor);
+		specularColor = lerp(specularColor * Color::PBRLightingScale_Linear, 0, lodLandBlendFactor);
+		indirectLobeWeights.diffuse = lerp(indirectLobeWeights.diffuse * Color::PBRLightingScale_Gamma, vertexColor * lodLandColor.xyz * lodLandFadeFactor, lodLandBlendFactor);
 		indirectLobeWeights.specular = lerp(indirectLobeWeights.specular, 0, lodLandBlendFactor);
 		material.Roughness = lerp(material.Roughness, 1, lodLandBlendFactor);
 	}
 #	elif defined(TRUE_PBR)
-	color.xyz *= Color::PBRLightingScale;
-	specularColor *= Color::PBRLightingScale;
-	indirectLobeWeights.diffuse *= Color::PBRLightingScale;
+	color.xyz *= Color::PBRLightingScale_Gamma;
+	specularColor *= Color::PBRLightingScale_Linear;
+	indirectLobeWeights.diffuse *= Color::PBRLightingScale_Gamma;
 #	endif
 
 	float3 baseMaterialCubemapSpecular = indirectLobeWeights.specular;

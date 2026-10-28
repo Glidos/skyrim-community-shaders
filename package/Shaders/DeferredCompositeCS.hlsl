@@ -131,7 +131,7 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 							   Masks2Texture[dispatchID.xy]);
 	ssgiAo = saturate(ssgiAo / max(vertexAO, EPSILON_DIVISION));
 
-	float3 linAlbedo = Color::IrradianceToLinear(albedo / Color::PBRLightingScale);
+	float3 linAlbedo = Color::IrradianceToLinear(albedo / Color::PBRLightingScale_Gamma);
 	float3 multiBounceSSGIAo = MultiBounceAO(linAlbedo, ssgiAo);
 
 	float3 directionalAmbientColor = 0;
@@ -202,7 +202,7 @@ void SampleSSGISpecular(uint2 pixCoord, sh2 lobe, inout float ao, out float3 il,
 
 		float3 finalIrradiance = 0;
 
-		float directionalAmbientColorSpecular = Color::RGBToLuminance(Color::Ambient(max(0, SharedData::GetAmbient(R)))) * Color::ReflectionNormalisationScale;
+		float directionalAmbientColorSpecular = Color::RGBToLuminance(Color::Ambient(max(0, SharedData::GetAmbient(R)))) * Color::ReflectionNormalisationScale_Gamma;
 		float skylightingSpecular = 1.0;
 		float skylightingVisibility = 1.0;
 
